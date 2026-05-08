@@ -6,6 +6,7 @@ import type { FeaturePath, FileExplanation, PortMessage, ProjectOverview, RepoRe
 import { DEFAULT_SETTINGS } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
 import { analyzeFeature, analyzeProject, answerQuestion, explainFile } from "../lib/analyzer";
+import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "ask" | "settings";
 
@@ -318,7 +319,9 @@ function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: str
   return (
     <div className="cp-result">
       <div className="cp-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeLinkCodePaths(props.repo)]}>
+          {props.text}
+        </ReactMarkdown>
       </div>
       {props.sources.length > 0 && (
         <div className="cp-sources">
@@ -370,11 +373,6 @@ function readPanelWidth(): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function githubFileUrl(repo: RepoRef, path: string): string {
-  const branch = repo.branch || "main";
-  return `https://github.com/${repo.owner}/${repo.repo}/blob/${encodeURIComponent(branch)}/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 async function send<T>(request: RuntimeRequest): Promise<T> {

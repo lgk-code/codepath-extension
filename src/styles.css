@@ -392,6 +392,16 @@
   color: #57606a;
 }
 
+.cp-markdown .cp-inline-path-link {
+  color: #0969da;
+  text-decoration: none;
+  border-bottom: 1px dotted #0969da;
+}
+
+.cp-markdown .cp-inline-path-link:hover {
+  border-bottom-style: solid;
+}
+
 .cp-sources {
   display: flex;
   flex-wrap: wrap;
