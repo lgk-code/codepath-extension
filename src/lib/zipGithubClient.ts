@@ -50,6 +50,7 @@ export class ZipGithubClient {
           lastError = `${response.status} ${response.statusText}`;
           continue;
         }
+
         const buffer = new Uint8Array(await response.arrayBuffer());
         const zip = unzipSync(buffer);
         const entries = Object.entries(zip)
@@ -59,6 +60,7 @@ export class ZipGithubClient {
             content
           }))
           .filter((entry) => entry.path.length > 0);
+
         this.entries = entries;
         this.resolvedBranch = branch;
         return entries;
@@ -67,7 +69,7 @@ export class ZipGithubClient {
       }
     }
 
-    throw new Error(`无法下载公开仓库 zip，最后一次错误：${lastError}`);
+    throw new Error(`Unable to download public repository zip. Last error: ${lastError}`);
   }
 }
 

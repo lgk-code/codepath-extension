@@ -1,6 +1,7 @@
-import type { PortMessage, RuntimeRequest, RuntimeResponse, Settings } from "../src/types";
+import type { PortMessage, RuntimeRequest, RuntimeResponse, Settings, SettingsDiagnostics } from "../src/types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../src/lib/defaults";
 import { analyzeFeature, analyzeProject, answerQuestion, explainFile } from "../src/lib/analyzer";
+import { GithubClient } from "../src/lib/githubClient";
 
 export default defineBackground(() => {
   chrome.runtime.onConnect.addListener((port) => {
@@ -28,6 +29,10 @@ async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<u
     if (request.type === "save-settings") {
       await storageSet({ [SETTINGS_KEY]: request.settings });
       return ok(request.settings);
+    }
+
+    if (request.type === "test-settings") {
+      return ok(await testSettings(request));
     }
 
     const settings = await getSettings();
@@ -90,6 +95,36 @@ function storageSet(items: Record<string, unknown>): Promise<void> {
 function isSettingsPatch(value: unknown): Partial<Settings> {
   if (!value || typeof value !== "object") return {};
   return value as Partial<Settings>;
+}
+
+async function testSettings(request: Extract<RuntimeRequest, { type: "test-settings" }>): Promise<SettingsDiagnostics> {
+  const settings = await getSettings();
+  const diagnostics: SettingsDiagnostics = {
+    provider: settings.provider,
+    apiKeyPreview: maskSecret(settings.apiKey),
+    hasApiKey: Boolean(settings.apiKey),
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    githubTokenPreview: maskSecret(settings.githubToken || ""),
+    hasGithubToken: Boolean(settings.githubToken)
+  };
+
+  if (request.repo) {
+    try {
+      const repo = await new GithubClient(settings).getRepo(request.repo.owner, request.repo.repo);
+      diagnostics.repoCheck = `GitHub 连接正常：默认分支 ${repo.default_branch}`;
+    } catch (error) {
+      diagnostics.repoCheck = `GitHub 连接失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  return diagnostics;
+}
+
+function maskSecret(value: string): string {
+  if (!value) return "Not set";
+  if (value.length <= 8) return `${value.slice(0, 2)}****`;
+  return `${value.slice(0, 4)}****${value.slice(-4)}`;
 }
 
 function ok<T>(data: T): RuntimeResponse<T> {

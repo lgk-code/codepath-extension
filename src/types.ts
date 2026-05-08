@@ -45,9 +45,21 @@ export type FileExplanation = {
   sources: SourceRef[];
 };
 
+export type SettingsDiagnostics = {
+  provider: Provider;
+  apiKeyPreview: string;
+  hasApiKey: boolean;
+  baseUrl: string;
+  model: string;
+  githubTokenPreview: string;
+  hasGithubToken: boolean;
+  repoCheck?: string;
+};
+
 export type RuntimeRequest =
   | { type: "get-settings" }
   | { type: "save-settings"; settings: Settings }
+  | { type: "test-settings"; repo?: RepoRef }
   | { type: "analyze-project"; repo: RepoRef }
   | { type: "analyze-feature"; repo: RepoRef; feature: string }
   | { type: "explain-file"; repo: RepoRef }
