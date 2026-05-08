@@ -8,8 +8,10 @@ CodePath is a browser extension for reading GitHub source code without cloning, 
 - Analyzes project overview, technology stack, directory roles, entry points, and reading route
 - Analyzes a requested feature path, such as login, upload, search, or training flow
 - Explains the current GitHub file page
-- Supports follow-up questions in the Ask panel
+- Supports global follow-up questions from Overview, Feature, File, and History views
+- Keeps follow-up answers in a conversation history view
 - Renders AI output as Markdown, including tables, lists, code, and bold text
+- Links source references back to GitHub files
 - Uses Qwen/OpenAI-compatible chat completions
 - Supports optional GitHub Token for higher API limits
 
@@ -70,9 +72,6 @@ Do not commit API keys or tokens. Use the minimum required GitHub token permissi
 
 ## Roadmap
 
-- Add a global follow-up input across Overview, Feature, and File tabs
-- Convert Ask into a conversation history view
-- Add clickable source paths that jump to GitHub files
 - Improve background messaging stability and reduce content-script fallbacks
 - Cache repository analysis by owner/repo/branch/commit
 - Add human-friendly error messages for rate limits and model errors

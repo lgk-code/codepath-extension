@@ -9,6 +9,17 @@ import { analyzeFeature, analyzeProject, answerQuestion, explainFile } from "../
 
 type Tab = "overview" | "feature" | "file" | "ask" | "settings";
 
+type ChatTurn = {
+  question: string;
+  answer: ProjectOverview;
+};
+
+const DEFAULT_QUESTIONS = [
+  "What should I read first in this project?",
+  "Explain the main runtime flow step by step.",
+  "Which files are most important for secondary development?"
+];
+
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
   const [collapsed, setCollapsed] = useState(false);
@@ -22,7 +33,7 @@ export function Sidebar() {
   const [featurePath, setFeaturePath] = useState<FeaturePath | null>(null);
   const [fileExplanation, setFileExplanation] = useState<FileExplanation | null>(null);
   const [question, setQuestion] = useState("");
-  const [answers, setAnswers] = useState<Array<{ question: string; answer: ProjectOverview }>>([]);
+  const [answers, setAnswers] = useState<ChatTurn[]>([]);
 
   useEffect(() => {
     send<Settings>({ type: "get-settings" }).then(setSettings).catch((err) => setError(err.message));
@@ -35,7 +46,7 @@ export function Sidebar() {
     return () => window.removeEventListener("codepath:url-change", listener);
   }, []);
 
-  const title = useMemo(() => (repo ? `${repo.owner}/${repo.repo}` : "未识别 GitHub 仓库"), [repo]);
+  const title = useMemo(() => (repo ? `${repo.owner}/${repo.repo}` : "No GitHub repository detected"), [repo]);
 
   async function run<T>(label: string, action: () => Promise<T>, onDone: (value: T) => void) {
     setLoading(label);
@@ -43,7 +54,7 @@ export function Sidebar() {
     try {
       onDone(await action());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(humanizeError(err));
     } finally {
       setLoading("");
     }
@@ -52,6 +63,27 @@ export function Sidebar() {
   async function saveSettings(next: Settings) {
     setSettings(next);
     await send<Settings>({ type: "save-settings", settings: next });
+  }
+
+  function ask(text = question) {
+    const trimmed = text.trim();
+    if (!repo || !trimmed || loading) return;
+
+    run(
+      "Answering question...",
+      () =>
+        send<ProjectOverview>({
+          type: "answer-question",
+          repo,
+          question: trimmed,
+          context: buildAskContext(overview, featurePath, fileExplanation, answers)
+        }),
+      (answer) => {
+        setAnswers((items) => [...items, { question: trimmed, answer }]);
+        setQuestion("");
+        setTab("ask");
+      }
+    );
   }
 
   if (collapsed) {
@@ -78,9 +110,9 @@ export function Sidebar() {
 
       <nav className="cp-tabs">
         <TabButton active={tab === "overview"} icon={<Map size={15} />} onClick={() => setTab("overview")} label="Overview" />
-        <TabButton active={tab === "feature"} icon={<Route size={15} />} onClick={() => setTab("feature")} label="Feature" />
+        <TabButton active={tab === "feature"} icon={<Route size={15} />} onClick={() => setTab("feature")} label="Feature Path" />
         <TabButton active={tab === "file"} icon={<FileCode2 size={15} />} onClick={() => setTab("file")} label="File" />
-        <TabButton active={tab === "ask"} icon={<MessageSquare size={15} />} onClick={() => setTab("ask")} label="Ask" />
+        <TabButton active={tab === "ask"} icon={<MessageSquare size={15} />} onClick={() => setTab("ask")} label="History" />
         <TabButton active={tab === "settings"} icon={<KeyRound size={15} />} onClick={() => setTab("settings")} label="Settings" />
       </nav>
 
@@ -90,93 +122,77 @@ export function Sidebar() {
       <main className="cp-content">
         {tab === "overview" && (
           <section className="cp-section">
-            <p>分析项目整体思路、技术栈、目录作用和推荐阅读路线。</p>
+            <p>Analyze the project idea, tech stack, directory roles, entry points, and suggested reading route.</p>
             <button
               className="cp-primary"
               disabled={!repo || !!loading}
-              onClick={() => repo && run("正在分析项目...", () => send<ProjectOverview>({ type: "analyze-project", repo }), setOverview)}
+              onClick={() => repo && run("Analyzing project...", () => send<ProjectOverview>({ type: "analyze-project", repo }), setOverview)}
             >
               <BookOpen size={16} />
               Analyze Project
             </button>
-            {overview && <MarkdownBlock text={overview.summary} sources={overview.sources.map((item) => item.path)} />}
+            {overview && (
+              <>
+                <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} />
+                <SuggestionList suggestions={overviewSuggestions()} onAsk={ask} />
+              </>
+            )}
           </section>
         )}
 
         {tab === "feature" && (
           <section className="cp-section">
-            <p>输入你想理解的功能，比如登录、上传、搜索、权限。CodePath 会找相关文件并串成实现路径。</p>
-            <input className="cp-input" value={feature} onChange={(event) => setFeature(event.target.value)} placeholder="例如：登录功能" />
+            <p>Enter a feature, such as login, upload, search, training, evaluation, or permissions. CodePath will find related files and connect them into an implementation path.</p>
+            <input className="cp-input" value={feature} onChange={(event) => setFeature(event.target.value)} placeholder="Example: training flow" />
             <button
               className="cp-primary"
               disabled={!repo || !feature.trim() || !!loading}
-              onClick={() => repo && run("正在分析功能路径...", () => send<FeaturePath>({ type: "analyze-feature", repo, feature }), setFeaturePath)}
+              onClick={() => repo && run("Analyzing feature path...", () => send<FeaturePath>({ type: "analyze-feature", repo, feature }), setFeaturePath)}
             >
               <Route size={16} />
               Analyze Feature
             </button>
-            {featurePath && <MarkdownBlock text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} />}
+            {featurePath && (
+              <>
+                <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} />
+                <SuggestionList suggestions={featureSuggestions(featurePath.feature)} onAsk={ask} />
+              </>
+            )}
           </section>
         )}
 
         {tab === "file" && (
           <section className="cp-section">
-            <p>解释当前 GitHub 文件页的作用、主要结构、依赖关系和修改风险。</p>
+            <p>Explain the current GitHub file page: purpose, main structure, dependencies, and modification risks.</p>
             {repo?.path && <div className="cp-path">{repo.path}</div>}
             <button
               className="cp-primary"
               disabled={!repo || repo.pageType !== "file" || !!loading}
-              onClick={() => repo && run("正在解释当前文件...", () => send<FileExplanation>({ type: "explain-file", repo }), setFileExplanation)}
+              onClick={() => repo && run("Explaining current file...", () => send<FileExplanation>({ type: "explain-file", repo }), setFileExplanation)}
             >
               <FileCode2 size={16} />
               Explain Current File
             </button>
-            {fileExplanation && <MarkdownBlock text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} />}
+            {fileExplanation && (
+              <>
+                <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} />
+                <SuggestionList suggestions={fileSuggestions(fileExplanation.path)} onAsk={ask} />
+              </>
+            )}
           </section>
         )}
 
         {tab === "ask" && (
           <section className="cp-section">
-            <p>基于当前仓库继续追问。会优先使用最近一次项目/功能/文件分析作为上下文，并补充检索相关源码。</p>
-            <div className="cp-ask-box">
-              <textarea
-                className="cp-textarea"
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                placeholder="例如：详细解释 vggt.py 的 forward 流程"
-                rows={4}
-              />
-              <button
-                className="cp-primary"
-                disabled={!repo || !question.trim() || !!loading}
-                onClick={() =>
-                  repo &&
-                  run(
-                    "正在回答问题...",
-                    () =>
-                      send<ProjectOverview>({
-                        type: "answer-question",
-                        repo,
-                        question,
-                        context: buildAskContext(overview, featurePath, fileExplanation, answers)
-                      }),
-                    (answer) => {
-                      setAnswers((items) => [...items, { question, answer }]);
-                      setQuestion("");
-                    }
-                  )
-                }
-              >
-                <Send size={16} />
-                Send
-              </button>
-            </div>
-            {answers.length > 0 && (
+            <p>Conversation history for follow-up questions. You can ask from the input fixed at the bottom of the sidebar.</p>
+            {answers.length === 0 ? (
+              <SuggestionList suggestions={DEFAULT_QUESTIONS} onAsk={ask} />
+            ) : (
               <div className="cp-chat-list">
                 {answers.map((item, index) => (
                   <article className="cp-chat-item" key={`${item.question}-${index}`}>
                     <strong>Q: {item.question}</strong>
-                    <MarkdownBlock text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} />
+                    <MarkdownBlock repo={repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} />
                   </article>
                 ))}
               </div>
@@ -186,6 +202,8 @@ export function Sidebar() {
 
         {tab === "settings" && <SettingsPanel settings={settings} onChange={saveSettings} />}
       </main>
+
+      {tab !== "settings" && <GlobalAskInput question={question} loading={!!loading} disabled={!repo} onChange={setQuestion} onAsk={() => ask()} />}
     </aside>
   );
 }
@@ -211,7 +229,7 @@ function ResizeHandle(props: { width: number; onChange: (width: number) => void 
     window.addEventListener("pointerup", onUp);
   }
 
-  return <div className="cp-resize-handle" onPointerDown={startResize} title="拖拽调整宽度" />;
+  return <div className="cp-resize-handle" onPointerDown={startResize} title="Drag to resize" />;
 }
 
 function TabButton(props: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
@@ -219,6 +237,29 @@ function TabButton(props: { active: boolean; icon: React.ReactNode; label: strin
     <button className={props.active ? "cp-tab active" : "cp-tab"} onClick={props.onClick} title={props.label}>
       {props.icon}
     </button>
+  );
+}
+
+function GlobalAskInput(props: { question: string; loading: boolean; disabled: boolean; onChange: (value: string) => void; onAsk: () => void }) {
+  return (
+    <footer className="cp-global-ask">
+      <textarea
+        className="cp-textarea cp-global-textarea"
+        value={props.question}
+        onChange={(event) => props.onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+            event.preventDefault();
+            props.onAsk();
+          }
+        }}
+        placeholder="Ask a follow-up about this repository..."
+        rows={2}
+      />
+      <button className="cp-send-btn" disabled={props.disabled || props.loading || !props.question.trim()} onClick={props.onAsk} title="Send">
+        <Send size={16} />
+      </button>
+    </footer>
   );
 }
 
@@ -249,18 +290,31 @@ function SettingsPanel(props: { settings: Settings; onChange: (settings: Setting
         <input className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} />
       </label>
       <label className="cp-label">
-        GitHub Token 可选
+        GitHub Token (optional)
         <input className="cp-input" type="password" value={draft.githubToken ?? ""} onChange={(event) => setDraft({ ...draft, githubToken: event.target.value })} />
       </label>
       <button className="cp-primary" onClick={() => props.onChange(draft)}>
         Save Settings
       </button>
-      <p className="cp-muted">Qwen 国内百炼默认 Base URL：{DEFAULT_SETTINGS.baseUrl}</p>
+      <p className="cp-muted">Default Qwen DashScope base URL: {DEFAULT_SETTINGS.baseUrl}</p>
     </section>
   );
 }
 
-function MarkdownBlock(props: { text: string; sources: string[] }) {
+function SuggestionList(props: { suggestions: string[]; onAsk: (question: string) => void }) {
+  return (
+    <div className="cp-suggestions">
+      <strong>Follow up</strong>
+      {props.suggestions.map((suggestion) => (
+        <button key={suggestion} className="cp-suggestion" onClick={() => props.onAsk(suggestion)}>
+          {suggestion}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: string[] }) {
   return (
     <div className="cp-result">
       <div className="cp-markdown">
@@ -269,13 +323,43 @@ function MarkdownBlock(props: { text: string; sources: string[] }) {
       {props.sources.length > 0 && (
         <div className="cp-sources">
           <strong>Sources</strong>
-          {props.sources.map((source) => (
-            <span key={source}>{source}</span>
-          ))}
+          {props.sources.map((source) =>
+            props.repo ? (
+              <a key={source} href={githubFileUrl(props.repo, source)} target="_blank" rel="noreferrer">
+                {source}
+              </a>
+            ) : (
+              <span key={source}>{source}</span>
+            )
+          )}
         </div>
       )}
     </div>
   );
+}
+
+function overviewSuggestions(): string[] {
+  return [
+    "Explain the main execution flow step by step.",
+    "Which files should I read first for secondary development?",
+    "Where are the training, inference, and evaluation entry points?"
+  ];
+}
+
+function featureSuggestions(feature: string): string[] {
+  return [
+    `Explain the ${feature} flow with file-by-file steps.`,
+    `If I want to modify ${feature}, which files should I change?`,
+    `What are the risks when changing ${feature}?`
+  ];
+}
+
+function fileSuggestions(path: string): string[] {
+  return [
+    `Explain ${path} line by line at a high level.`,
+    `Who depends on ${path}, and what does it depend on?`,
+    `What should I be careful about before editing ${path}?`
+  ];
 }
 
 function readPanelWidth(): number {
@@ -288,9 +372,14 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function githubFileUrl(repo: RepoRef, path: string): string {
+  const branch = repo.branch || "main";
+  return `https://github.com/${repo.owner}/${repo.repo}/blob/${encodeURIComponent(branch)}/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 async function send<T>(request: RuntimeRequest): Promise<T> {
   const response = await sendBestEffort<T>(request);
-  if (!response.ok) throw new Error(response.error || "请求失败。");
+  if (!response.ok) throw new Error(response.error || "Request failed.");
   return response.data as T;
 }
 
@@ -363,13 +452,13 @@ function buildAskContext(
   overview: ProjectOverview | null,
   featurePath: FeaturePath | null,
   fileExplanation: FileExplanation | null,
-  answers: Array<{ question: string; answer: ProjectOverview }>
+  answers: ChatTurn[]
 ): string {
   const parts = [
-    overview ? `项目总览：\n${overview.summary}` : "",
-    featurePath ? `功能分析 ${featurePath.feature}：\n${featurePath.summary}` : "",
-    fileExplanation ? `文件解释 ${fileExplanation.path}：\n${fileExplanation.summary}` : "",
-    ...answers.slice(-3).map((item) => `历史问题：${item.question}\n回答：${item.answer.summary}`)
+    overview ? `Project overview:\n${overview.summary}` : "",
+    featurePath ? `Feature analysis (${featurePath.feature}):\n${featurePath.summary}` : "",
+    fileExplanation ? `File explanation (${fileExplanation.path}):\n${fileExplanation.summary}` : "",
+    ...answers.slice(-3).map((item) => `Previous question: ${item.question}\nAnswer: ${item.answer.summary}`)
   ].filter(Boolean);
   return parts.join("\n\n---\n\n");
 }
@@ -418,4 +507,18 @@ function sendViaPort<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
 
     port.postMessage({ id, request } satisfies PortMessage);
   });
+}
+
+function humanizeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("API rate limit")) {
+    return "GitHub API rate limit reached. Add a GitHub Token in Settings and try again.";
+  }
+  if (message.includes("401") || message.includes("Unauthorized")) {
+    return "The API key or token was rejected. Check Settings and try again.";
+  }
+  if (message.includes("Failed to fetch")) {
+    return "Network request failed. Check the repository URL, token, or model base URL.";
+  }
+  return message;
 }
