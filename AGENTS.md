@@ -9,7 +9,15 @@ CodePath 是一个基于 WXT、React 和 TypeScript 的浏览器扩展，用来�
 - 安装依赖：`npm install`
 - Windows 下类型检查：`npm.cmd run compile`
 - 构建 Chrome/Edge MV3 扩展：`npm.cmd run build`
+- 启动 CodePath MCP Server：`npm.cmd run mcp`
 - 构建产物目录：`.output/chrome-mv3`
+
+MCP Server 使用环境变量读取配置：
+
+- `CODEPATH_API_KEY` 或 `OPENAI_API_KEY`
+- `CODEPATH_BASE_URL` 或 `OPENAI_BASE_URL`
+- `CODEPATH_MODEL` 或 `OPENAI_MODEL`
+- `CODEPATH_GITHUB_TOKEN` 或 `GITHUB_TOKEN`
 
 ## 扩展重载流程
 

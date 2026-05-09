@@ -1,4 +1,4 @@
-import type { FileExplanation, FeaturePath, ProjectOverview, RepoRef, Settings, TreeFile } from "../types";
+import type { BlueprintMode, FileExplanation, FeaturePath, ProjectOverview, RepoRef, Settings, SkillBlueprint, TreeFile } from "../types";
 import { GithubClient } from "./githubClient";
 import { ZipGithubClient } from "./zipGithubClient";
 import { chat } from "./aiClient";
@@ -41,6 +41,7 @@ const overviewCache = new Map<string, ProjectOverview>();
 const featureCache = new Map<string, FeaturePath>();
 const fileExplanationCache = new Map<string, FileExplanation>();
 const questionCache = new Map<string, ProjectOverview>();
+const skillBlueprintCache = new Map<string, SkillBlueprint>();
 
 const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
   kind: "generic",
@@ -134,6 +135,52 @@ ${formatSnippets(withImports)}`
     sources: withImports.map((item) => ({ path: item.path, reason: "feature candidate" }))
   };
   featureCache.set(cacheKey, result);
+  return result;
+}
+
+export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode): Promise<SkillBlueprint> {
+  const gh = await createSourceClient(repo, settings);
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = skillBlueprintCacheKey(repo, context.branch, feature, mode);
+  const cached = skillBlueprintCache.get(cacheKey);
+  if (cached) return cached;
+
+  const keywords = expandFeatureKeywords(feature);
+  const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 18);
+  const selected = candidates.length > 0 ? candidates : pickImportantFiles(context.usefulFiles, context.profile).slice(0, 18);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, 28000);
+  const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
+
+  const content = await chat(settings, [
+    systemPrompt(context.profile),
+    {
+      role: "user",
+      content: `${skillBlueprintPrompt(mode)}
+
+Repository: ${repo.owner}/${repo.repo}
+Branch: ${context.branch}
+Feature: ${feature}
+Detected project type: ${context.profile.label}
+Expanded keywords: ${keywords.join(", ")}
+
+Repository tree summary:
+${context.treeSummary}
+
+Candidate files:
+${withImports.map((item) => `- ${item.path} (${classifyPath(item.path)}) imports: ${(item.imports ?? []).join(", ") || "none"}`).join("\n")}
+
+Source snippets:
+${formatSnippets(withImports)}`
+    }
+  ]);
+
+  const result = {
+    feature,
+    mode,
+    summary: content,
+    sources: withImports.map((item) => ({ path: item.path, reason: `${mode} candidate` }))
+  };
+  skillBlueprintCache.set(cacheKey, result);
   return result;
 }
 
@@ -335,6 +382,10 @@ function fileExplanationCacheKey(repo: RepoRef, branch: string, path: string): s
 
 function questionCacheKey(repo: RepoRef, branch: string, question: string, context: string): string {
   return `${repoCacheKey(repo, branch)}:question:${normalizeCacheText(question)}:${stringHash(context.slice(0, 16000))}`;
+}
+
+function skillBlueprintCacheKey(repo: RepoRef, branch: string, feature: string, mode: BlueprintMode): string {
+  return `${repoCacheKey(repo, branch)}:blueprint:${mode}:${normalizeCacheText(feature)}`;
 }
 
 function fileCacheKey(repo: RepoRef, branch: string, path: string): string {
@@ -555,6 +606,71 @@ Do not invent files. Cite file paths for every important claim.`;
 
   return `Analyze this GitHub repository. Output a plain-language project guide, tech stack, directory roles, likely entry points, and recommended reading route.
 Do not invent files. Cite file paths for every important claim.`;
+}
+
+function skillBlueprintPrompt(mode: BlueprintMode): string {
+  const common = `Analyze one feature from this GitHub repository and turn it into reusable engineering knowledge.
+Answer in Chinese.
+Only use the provided repository tree and source snippets.
+Do not copy large source code blocks.
+Every important file path must come from the provided candidate files or tree.
+Separate source-confirmed facts from cautious engineering inference.`;
+
+  if (mode === "easyclaw-skill") {
+    return `${common}
+
+Output a Markdown handoff for EasyClaw. Use this exact structure:
+
+# EasyClaw 任务交接
+
+## 任务目标
+## 来源项目
+## 分析功能
+## 功能技术栈
+## 源码确认的实现路径
+## 关键文件
+## 可迁移设计
+## 不应照搬的内容
+## EasyClaw 执行步骤
+## 适合派生的 Sub-agents
+## 需要向用户确认的问题
+## 风险与验证建议`;
+  }
+
+  if (mode === "new-project") {
+    return `${common}
+
+Output a Markdown blueprint for implementing a similar feature in a new project. Use this structure:
+
+# 新项目实现蓝图
+
+## 目标功能
+## 来源项目启发
+## 推荐技术栈
+## 推荐目录结构
+## 模块职责划分
+## 数据结构和接口草案
+## 实现步骤
+## 测试与验证
+## 可迁移模式
+## 不能照搬的细节
+## 需要用户确认的问题`;
+  }
+
+  return `${common}
+
+Output a human-readable technical analysis. Use this structure:
+
+# 功能技术分析
+
+## 功能目标
+## 技术栈
+## 实现路径
+## 关键文件
+## 数据流或调用链
+## 可迁移思路
+## 源码确认与谨慎推断
+## 二次开发建议`;
 }
 
 function truncate(value: string, max: number): string {

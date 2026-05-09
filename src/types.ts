@@ -39,6 +39,15 @@ export type FeaturePath = {
   sources: SourceRef[];
 };
 
+export type BlueprintMode = "human" | "easyclaw-skill" | "new-project";
+
+export type SkillBlueprint = {
+  feature: string;
+  mode: BlueprintMode;
+  summary: string;
+  sources: SourceRef[];
+};
+
 export type FileExplanation = {
   path: string;
   summary: string;

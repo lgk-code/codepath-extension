@@ -8,9 +8,11 @@
     "dev:firefox": "wxt -b firefox",
     "build": "wxt build",
     "build:firefox": "wxt build -b firefox",
-    "compile": "tsc --noEmit"
+    "compile": "tsc --noEmit",
+    "mcp": "tsx scripts/codepath-mcp.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vitejs/plugin-react": "^5.0.0",
     "@wxt-dev/module-react": "^1.2.2",
     "fflate": "^0.8.2",
@@ -19,12 +21,15 @@
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "wxt": "^0.20.25"
+    "wxt": "^0.20.25",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^25.6.2",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
     "@types/unist": "^3.0.3",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

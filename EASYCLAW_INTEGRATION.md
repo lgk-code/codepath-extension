@@ -148,6 +148,24 @@ GitHub 页面侧边栏                 Claw 通讯插件
 - 阅读路线
 - 来源文件
 
+当前 MCP Server 启动命令：
+
+```bash
+npm.cmd run mcp
+```
+
+推荐通过环境变量传入配置：
+
+```powershell
+$env:CODEPATH_API_KEY="你的模型 API Key"
+$env:CODEPATH_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+$env:CODEPATH_MODEL="qwen-plus"
+$env:CODEPATH_GITHUB_TOKEN="可选 GitHub Token"
+npm.cmd run mcp
+```
+
+也兼容 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 和 `GITHUB_TOKEN`。
+
 ### `analyze_github_feature`
 
 输入：
