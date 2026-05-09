@@ -1,4 +1,4 @@
-import type { FileExplanation, FeaturePath, ProjectOverview, RepoRef, Settings, SourceRef, TreeFile } from "../types";
+import type { FileExplanation, FeaturePath, ProjectOverview, RepoRef, Settings, TreeFile } from "../types";
 import { GithubClient } from "./githubClient";
 import { ZipGithubClient } from "./zipGithubClient";
 import { chat } from "./aiClient";
@@ -18,89 +18,232 @@ type SourceClient = {
   getFile(owner: string, repo: string, path: string, ref: string): Promise<string>;
 };
 
-export async function analyzeProject(repo: RepoRef, settings: Settings): Promise<ProjectOverview> {
-  const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
-  const selected = pickImportantFiles(usefulFiles);
-  const snippets = await loadSnippets(gh, repo, branch, selected, 14000);
+type ProjectKind = "python-ml" | "frontend" | "node-backend" | "python-app" | "generic";
 
-  const treeSummary = summarizeTree(usefulFiles);
+type ProjectProfile = {
+  kind: ProjectKind;
+  label: string;
+  confidence: "high" | "medium" | "low";
+  reasons: string[];
+};
+
+type RepoAnalysisContext = {
+  branch: string;
+  files: TreeFile[];
+  usefulFiles: TreeFile[];
+  profile: ProjectProfile;
+  treeSummary: string;
+};
+
+const repoContextCache = new Map<string, RepoAnalysisContext>();
+const snippetCache = new Map<string, string>();
+const overviewCache = new Map<string, ProjectOverview>();
+const featureCache = new Map<string, FeaturePath>();
+const fileExplanationCache = new Map<string, FileExplanation>();
+const questionCache = new Map<string, ProjectOverview>();
+
+const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
+  kind: "generic",
+  label: "Cached repository context",
+  confidence: "medium",
+  reasons: ["Using previous CodePath analysis context"]
+};
+
+export async function analyzeProject(repo: RepoRef, settings: Settings): Promise<ProjectOverview> {
+  const cachedOverview = findCachedOverview(repo);
+  if (cachedOverview) return cachedOverview;
+
+  const gh = await createSourceClient(repo, settings);
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = overviewCacheKey(repo, context.branch);
+  const cached = overviewCache.get(cacheKey);
+  if (cached) return cached;
+
+  const selected = pickImportantFiles(context.usefulFiles, context.profile);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, context.profile.kind === "python-ml" ? 22000 : 16000);
+
   const content = await chat(settings, [
-    systemPrompt(),
+    systemPrompt(context.profile),
     {
       role: "user",
-      content: `请分析这个 GitHub 项目，输出大白话项目导读、技术栈、目录说明、入口文件判断、推荐阅读路线。不要编造不存在的文件；关键结论要引用文件路径。\n\n仓库：${repo.owner}/${repo.repo}\n分支：${branch}\n\n文件树摘要：\n${treeSummary}\n\n关键文件内容：\n${formatSnippets(snippets)}`
+      content: `${projectPrompt(context.profile)}
+
+Repository: ${repo.owner}/${repo.repo}
+Branch: ${context.branch}
+
+Detected project type:
+- ${context.profile.label}
+- Confidence: ${context.profile.confidence}
+- Reasons: ${context.profile.reasons.join("; ") || "No strong signal"}
+
+Repository tree summary:
+${context.treeSummary}
+
+Key file contents:
+${formatSnippets(snippets)}`
     }
   ]);
 
-  return { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  overviewCache.set(cacheKey, overview);
+  return overview;
 }
 
 export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string): Promise<FeaturePath> {
   const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = featureCacheKey(repo, context.branch, feature);
+  const cached = featureCache.get(cacheKey);
+  if (cached) return cached;
+
   const keywords = expandFeatureKeywords(feature);
-  const candidates = scoreFeatureFiles(usefulFiles, keywords).slice(0, 14);
-  const snippets = await loadSnippets(gh, repo, branch, candidates, 22000);
+  const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 16);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, candidates, 24000);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
 
   const content = await chat(settings, [
-    systemPrompt(),
+    systemPrompt(context.profile),
     {
       role: "user",
-      content: `用户想在不部署、不运行项目的情况下理解某个功能。请基于候选源码分析"${feature}"的实现思路，输出：1. 功能大概怎么实现；2. 详细实现路径/步骤；3. 每一步对应文件；4. 二次开发要改哪些地方；5. 哪些结论只是推测。不要编造不存在的文件。\n\n仓库：${repo.owner}/${repo.repo}\n分支：${branch}\n关键词：${keywords.join(", ")}\n\n候选文件：\n${withImports.map((item) => `- ${item.path} (${classifyPath(item.path)}) imports: ${(item.imports ?? []).join(", ") || "无"}`).join("\n")}\n\n源码片段：\n${formatSnippets(withImports)}`
+      content: `The user wants to understand one feature without cloning, deploying, or running the project.
+
+Feature: ${feature}
+Repository: ${repo.owner}/${repo.repo}
+Branch: ${context.branch}
+Detected project type: ${context.profile.label}
+Expanded keywords: ${keywords.join(", ")}
+
+Please output:
+1. What this feature probably does.
+2. The detailed implementation path, step by step.
+3. The file responsible for each step.
+4. What to modify for secondary development.
+5. What is confirmed by source code and what is only a cautious inference.
+
+Candidate files:
+${withImports.map((item) => `- ${item.path} (${classifyPath(item.path)}) imports: ${(item.imports ?? []).join(", ") || "none"}`).join("\n")}
+
+Source snippets:
+${formatSnippets(withImports)}`
     }
   ]);
 
-  return {
+  const result = {
     feature,
     summary: content,
-    sources: withImports.map((item) => ({ path: item.path, reason: "功能候选文件" }))
+    sources: withImports.map((item) => ({ path: item.path, reason: "feature candidate" }))
   };
+  featureCache.set(cacheKey, result);
+  return result;
 }
 
 export async function explainFile(repo: RepoRef, settings: Settings): Promise<FileExplanation> {
-  if (!repo.path) throw new Error("当前页面不是 GitHub 文件页。");
+  if (!repo.path) throw new Error("The current page is not a GitHub file page.");
   const gh = await createSourceClient(repo, settings);
-  const { branch } = await loadTree(gh, repo);
-  const content = await gh.getFile(repo.owner, repo.repo, repo.path, repo.branch || branch);
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = fileExplanationCacheKey(repo, repo.branch || context.branch, repo.path);
+  const cached = fileExplanationCache.get(cacheKey);
+  if (cached) return cached;
+
+  const content = await loadFileCached(gh, repo, repo.branch || context.branch, repo.path);
   const imports = extractImports(content);
 
   const summary = await chat(settings, [
-    systemPrompt(),
+    systemPrompt(context.profile),
     {
       role: "user",
-      content: `请解释当前文件，用户是学习者/二次开发者。输出：这个文件负责什么、主要结构、它可能属于哪个功能、依赖关系、阅读建议和修改风险。不要编造不存在的代码。\n\n仓库：${repo.owner}/${repo.repo}\n文件：${repo.path}\nimports：${imports.join(", ") || "无"}\n\n源码：\n${truncate(content, 18000)}`
+      content: `Explain the current file for a learner or secondary developer.
+
+Repository: ${repo.owner}/${repo.repo}
+Detected project type: ${context.profile.label}
+File: ${repo.path}
+Imports: ${imports.join(", ") || "none"}
+
+Please explain:
+1. What this file is responsible for.
+2. Its main classes/functions/components.
+3. Where it sits in the project.
+4. What it depends on.
+5. What to be careful about before editing it.
+
+Source:
+${truncate(content, 18000)}`
     }
   ]);
 
-  return { path: repo.path, summary, sources: [{ path: repo.path }] };
+  const result = { path: repo.path, summary, sources: [{ path: repo.path }] };
+  fileExplanationCache.set(cacheKey, result);
+  return result;
 }
 
 export async function answerQuestion(repo: RepoRef, settings: Settings, question: string, context?: string): Promise<ProjectOverview> {
+  if (context && context.trim().length > 500 && !needsSourceLookup(question)) {
+    const cacheKey = questionCacheKey(repo, "context", question, context);
+    const cached = questionCache.get(cacheKey);
+    if (cached) return cached;
+
+    const content = await chat(settings, [
+      systemPrompt(GENERIC_CONTEXT_PROFILE),
+      {
+        role: "user",
+        content: `The user is asking a follow-up question based on CodePath's cached repository guide.
+Answer from the previous context first. If the previous context is not enough, say what is missing and suggest which feature/file analysis to run next.
+Do not invent files.
+
+Repository: ${repo.owner}/${repo.repo}
+
+Previous context:
+${truncate(context, 12000)}
+
+User question:
+${question}`
+      }
+    ]);
+
+    const result = { summary: content, sources: [] };
+    questionCache.set(cacheKey, result);
+    return result;
+  }
+
   const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
+  const repoContext = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = questionCacheKey(repo, repoContext.branch, question, context ?? "");
+  const cached = questionCache.get(cacheKey);
+  if (cached) return cached;
+
   const keywords = question
     .toLowerCase()
-    .split(/[\s,，/._-]+/)
+    .split(/[\s,，。/._-]+/)
     .filter((item) => item.length >= 2)
-    .slice(0, 12);
-  const candidates = scoreFeatureFiles(usefulFiles, keywords).slice(0, 12);
-  const selected = candidates.length > 0 ? candidates : pickImportantFiles(usefulFiles).slice(0, 12);
-  const snippets = await loadSnippets(gh, repo, branch, selected, 20000);
+    .slice(0, 14);
+  const candidates = scoreFeatureFiles(repoContext.usefulFiles, keywords, repoContext.profile).slice(0, 14);
+  const selected = candidates.length > 0 ? candidates : pickImportantFiles(repoContext.usefulFiles, repoContext.profile).slice(0, 14);
+  const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, selected, 22000);
 
   const content = await chat(settings, [
-    systemPrompt(),
+    systemPrompt(repoContext.profile),
     {
       role: "user",
-      content: `用户正在基于 CodePath 的项目导读继续追问。请只根据已有上下文和源码片段回答，不要编造不存在的文件。回答要直接、具体，尽量给出文件路径和阅读/修改步骤。\n\n仓库：${repo.owner}/${repo.repo}\n分支：${branch}\n\n上一轮上下文：\n${context ? truncate(context, 9000) : "无"}\n\n用户问题：\n${question}\n\n相关源码片段：\n${formatSnippets(snippets)}`
+      content: `The user is asking a follow-up question based on CodePath's repository guide. Answer only from the previous context and the source snippets. Do not invent files.
+
+Repository: ${repo.owner}/${repo.repo}
+Branch: ${repoContext.branch}
+Detected project type: ${repoContext.profile.label}
+
+Previous context:
+${context ? truncate(context, 9000) : "None"}
+
+User question:
+${question}
+
+Relevant source snippets:
+${formatSnippets(snippets)}`
     }
   ]);
 
-  return { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  const result = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  questionCache.set(cacheKey, result);
+  return result;
 }
 
 async function createSourceClient(repo: RepoRef, settings: Settings): Promise<SourceClient> {
@@ -127,40 +270,35 @@ async function loadTree(gh: SourceClient, repo: RepoRef): Promise<{ branch: stri
   return { branch, files };
 }
 
-function pickImportantFiles(files: TreeFile[]): TreeFile[] {
-  const important = files.filter((file) => isLikelyImportant(file.path));
-  const topLevel = files.filter((file) => !file.path.includes("/") && isUsefulPath(file.path));
-  return uniqueByPath([...important, ...topLevel]).slice(0, 28);
+async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef): Promise<RepoAnalysisContext> {
+  const provisionalKey = repoCacheKey(repo, repo.branch || "default");
+  const provisional = repoContextCache.get(provisionalKey);
+  if (provisional) return provisional;
+
+  const { branch, files } = await loadTree(gh, repo);
+  const key = repoCacheKey(repo, branch);
+  const cached = repoContextCache.get(key);
+  if (cached) return cached;
+
+  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
+  const profile = detectProjectProfile(usefulFiles);
+  const treeSummary = summarizeTree(usefulFiles);
+  const context = { branch, files, usefulFiles, profile, treeSummary };
+  repoContextCache.set(key, context);
+  if (!repo.branch) repoContextCache.set(provisionalKey, context);
+  return context;
 }
 
-function scoreFeatureFiles(files: TreeFile[], keywords: string[]): TreeFile[] {
-  const scored = files
-    .map((file) => {
-      const lower = file.path.toLowerCase();
-      let score = 0;
-      for (const keyword of keywords) {
-        if (lower.includes(keyword)) score += 8;
-      }
-      if (lower.includes("/pages/") || lower.includes("/views/")) score += 2;
-      if (lower.includes("/api/") || lower.includes("/services/") || lower.includes("/store/")) score += 2;
-      if (lower.includes("test") || lower.includes("spec")) score += 1;
-      return { file, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
-  return scored.map((item) => item.file);
-}
-
-async function loadSnippets(gh: SourceClient, repo: RepoRef, branch: string, files: TreeFile[], budget: number): Promise<FileSnippet[]> {
+async function loadSnippetsCached(gh: SourceClient, repo: RepoRef, branch: string, files: TreeFile[], budget: number): Promise<FileSnippet[]> {
   const snippets: FileSnippet[] = [];
   let used = 0;
   for (const file of files) {
     if (used >= budget) break;
     if ((file.size ?? 0) > 180_000) continue;
     try {
-      const content = await gh.getFile(repo.owner, repo.repo, file.path, branch);
+      const content = await loadFileCached(gh, repo, branch, file.path);
       const remaining = budget - used;
-      const clipped = truncate(content, Math.min(6000, remaining));
+      const clipped = truncate(content, Math.min(7000, remaining));
       used += clipped.length;
       snippets.push({ path: file.path, content: clipped });
     } catch {
@@ -168,6 +306,187 @@ async function loadSnippets(gh: SourceClient, repo: RepoRef, branch: string, fil
     }
   }
   return snippets;
+}
+
+async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, path: string): Promise<string> {
+  const key = fileCacheKey(repo, branch, path);
+  const cached = snippetCache.get(key);
+  if (cached !== undefined) return cached;
+  const content = await gh.getFile(repo.owner, repo.repo, path, branch);
+  snippetCache.set(key, content);
+  return content;
+}
+
+function repoCacheKey(repo: RepoRef, branch: string): string {
+  return `${repo.owner}/${repo.repo}@${branch}`;
+}
+
+function overviewCacheKey(repo: RepoRef, branch: string): string {
+  return `${repoCacheKey(repo, branch)}:overview`;
+}
+
+function featureCacheKey(repo: RepoRef, branch: string, feature: string): string {
+  return `${repoCacheKey(repo, branch)}:feature:${normalizeCacheText(feature)}`;
+}
+
+function fileExplanationCacheKey(repo: RepoRef, branch: string, path: string): string {
+  return `${repoCacheKey(repo, branch)}:explain:${path}`;
+}
+
+function questionCacheKey(repo: RepoRef, branch: string, question: string, context: string): string {
+  return `${repoCacheKey(repo, branch)}:question:${normalizeCacheText(question)}:${stringHash(context.slice(0, 16000))}`;
+}
+
+function fileCacheKey(repo: RepoRef, branch: string, path: string): string {
+  return `${repoCacheKey(repo, branch)}:${path}`;
+}
+
+function findCachedOverview(repo: RepoRef): ProjectOverview | undefined {
+  if (repo.branch) return overviewCache.get(overviewCacheKey(repo, repo.branch));
+
+  const prefix = `${repo.owner}/${repo.repo}@`;
+  for (const [key, value] of overviewCache) {
+    if (key.startsWith(prefix) && key.endsWith(":overview")) return value;
+  }
+  return undefined;
+}
+
+function normalizeCacheText(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 240);
+}
+
+function stringHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function needsSourceLookup(question: string): boolean {
+  const lower = question.toLowerCase();
+  const asksForSource =
+    /[\u5177\u4f53\u6e90\u7801\u51fd\u6570\u7c7b\u5b9e\u73b0\u6587\u4ef6\u5165\u53e3\u8c03\u7528\u4f9d\u8d56]/.test(question);
+  return /(?:^|[\s/])[\w.-]+\.(?:py|ts|tsx|js|jsx|vue|go|rs|java|json|ya?ml|toml|md)\b/.test(lower) || asksForSource;
+}
+
+function detectProjectProfile(files: TreeFile[]): ProjectProfile {
+  const paths = files.map((file) => file.path.toLowerCase());
+  const has = (pattern: string | RegExp) =>
+    typeof pattern === "string" ? paths.some((path) => path === pattern || path.includes(pattern)) : paths.some((path) => pattern.test(path));
+
+  const reasons: string[] = [];
+
+  const pythonFiles = paths.filter((path) => path.endsWith(".py")).length;
+  const mlSignals = [
+    "requirements.txt",
+    "environment.yml",
+    "pyproject.toml",
+    "training/",
+    "train.py",
+    "trainer",
+    "models/",
+    "model/",
+    "datasets/",
+    "dataloader",
+    "eval/",
+    "inference",
+    "checkpoint",
+    "torch",
+    "pytorch"
+  ];
+  const mlScore = mlSignals.reduce((score, signal) => score + (has(signal) ? 1 : 0), 0);
+  if (pythonFiles > 0) reasons.push(`${pythonFiles} Python source files`);
+  if (mlScore >= 3) reasons.push(`ML/research structure signals: ${mlScore}`);
+  if (pythonFiles >= 8 && mlScore >= 3) {
+    return { kind: "python-ml", label: "Python ML / research codebase", confidence: mlScore >= 6 ? "high" : "medium", reasons };
+  }
+
+  if (has("package.json") && (has("src/") || has("app/") || has("pages/") || has("vite.config") || has("next.config"))) {
+    return {
+      kind: "frontend",
+      label: "Frontend JavaScript/TypeScript project",
+      confidence: "medium",
+      reasons: ["package.json plus frontend source/config files"]
+    };
+  }
+
+  if (has("package.json") && (has("server") || has("express") || has("fastify") || has("nestjs"))) {
+    return {
+      kind: "node-backend",
+      label: "Node.js backend project",
+      confidence: "medium",
+      reasons: ["package.json plus backend naming signals"]
+    };
+  }
+
+  if (pythonFiles > 0) {
+    return {
+      kind: "python-app",
+      label: "Python project",
+      confidence: "low",
+      reasons
+    };
+  }
+
+  return {
+    kind: "generic",
+    label: "Generic source repository",
+    confidence: "low",
+    reasons: ["No strong framework or project-type signal"]
+  };
+}
+
+function pickImportantFiles(files: TreeFile[], profile: ProjectProfile): TreeFile[] {
+  const topLevel = files.filter((file) => !file.path.includes("/") && isUsefulPath(file.path));
+  const generallyImportant = files.filter((file) => isLikelyImportant(file.path));
+  const profileImportant = files.filter((file) => profilePathScore(file.path, profile) > 0).sort((a, b) => profilePathScore(b.path, profile) - profilePathScore(a.path, profile));
+  return uniqueByPath([...profileImportant, ...generallyImportant, ...topLevel]).slice(0, 34);
+}
+
+function profilePathScore(path: string, profile: ProjectProfile): number {
+  const p = path.toLowerCase();
+  let score = 0;
+  if (p.endsWith("readme.md")) score += 20;
+
+  if (profile.kind === "python-ml") {
+    if (/requirements\.txt|environment\.ya?ml|pyproject\.toml/.test(p)) score += 12;
+    if (/(^|\/)(train|training|trainer|launch|main|infer|inference|eval|evaluate|demo)[\w.-]*\.py$/.test(p)) score += 14;
+    if (p.includes("/models/") || p.includes("/model/")) score += 9;
+    if (p.includes("/heads/") || p.includes("/layers/") || p.includes("/utils/")) score += 5;
+    if (p.includes("/datasets/") || p.includes("dataloader")) score += 8;
+    if (p.includes("config") && (p.endsWith(".yaml") || p.endsWith(".yml") || p.endsWith(".json"))) score += 7;
+    if (p.includes("__pycache__")) score -= 100;
+  }
+
+  if (profile.kind === "frontend") {
+    if (/package\.json|vite\.config|next\.config|tsconfig\.json/.test(p)) score += 12;
+    if (/src\/(main|index|app)\.(ts|tsx|js|jsx)$/.test(p)) score += 14;
+    if (p.includes("/pages/") || p.includes("/routes/") || p.includes("/components/") || p.includes("/api/") || p.includes("/store/")) score += 6;
+  }
+
+  return score;
+}
+
+function scoreFeatureFiles(files: TreeFile[], keywords: string[], profile: ProjectProfile): TreeFile[] {
+  const scored = files
+    .map((file) => {
+      const lower = file.path.toLowerCase();
+      let score = profilePathScore(file.path, profile) * 0.2;
+      for (const keyword of keywords) {
+        if (lower.includes(keyword)) score += 8;
+      }
+      if (lower.includes("/pages/") || lower.includes("/views/")) score += 2;
+      if (lower.includes("/api/") || lower.includes("/services/") || lower.includes("/store/")) score += 2;
+      if (profile.kind === "python-ml" && (lower.includes("/models/") || lower.includes("/training/") || lower.includes("/eval/"))) score += 3;
+      if (lower.includes("test") || lower.includes("spec")) score += 1;
+      if (lower.includes("__pycache__")) score -= 100;
+      return { file, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
+  return scored.map((item) => item.file);
 }
 
 function summarizeTree(files: TreeFile[]): string {
@@ -179,32 +498,68 @@ function summarizeTree(files: TreeFile[]): string {
   const dirText = [...dirs.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 40)
-    .map(([dir, count]) => `- ${dir}: ${count} 个文件`)
+    .map(([dir, count]) => `- ${dir}: ${count} files`)
     .join("\n");
   const sampleFiles = files
-    .slice(0, 120)
+    .slice(0, 140)
     .map((file) => `- ${file.path}`)
     .join("\n");
-  return `主要目录：\n${dirText}\n\n部分文件：\n${sampleFiles}`;
+  return `Main directories:\n${dirText}\n\nSample files:\n${sampleFiles}`;
 }
 
 function formatSnippets(snippets: FileSnippet[]): string {
-  return snippets
-    .map((item) => `\n--- ${item.path} ---\n${item.content}`)
-    .join("\n");
+  return snippets.map((item) => `\n--- ${item.path} ---\n${item.content}`).join("\n");
 }
 
-function systemPrompt() {
+function systemPrompt(profile: ProjectProfile) {
   return {
     role: "system" as const,
-    content:
-      "你是 CodePath，一个 GitHub 源码导读助手。用户不想部署或运行项目，只想通过源码理解项目思路、功能路径和二次开发路线。回答要用中文大白话，先给结论，再给文件路径。只根据提供的源码和文件树判断；没有依据就明确说是推测。"
+    content: `You are CodePath, a GitHub source-code guide for learners and secondary developers.
+The user does not want to deploy or run the project. They want to understand source code ideas, feature paths, and modification routes.
+Answer in clear Chinese. Use plain language, but keep file paths exact.
+Only use the provided tree and source snippets. If something is inferred, label it as inference.
+Detected project type: ${profile.label}.`
   };
+}
+
+function projectPrompt(profile: ProjectProfile): string {
+  if (profile.kind === "python-ml") {
+    return `Analyze this Python ML / research repository for a learner. Focus on:
+1. One-sentence project purpose.
+2. Tech stack and research/ML framework signals.
+3. Directory roles.
+4. Training entry points.
+5. Inference/demo entry points.
+6. Evaluation entry points.
+7. Model architecture reading path.
+8. Dataset/data-loader path.
+9. Checkpoint/config path.
+10. Suggested reading route for secondary development.
+
+Do not invent files. Cite file paths for every important claim.`;
+  }
+
+  if (profile.kind === "frontend") {
+    return `Analyze this frontend repository for a learner. Focus on:
+1. Project purpose.
+2. Tech stack.
+3. App entry point.
+4. Route/page structure.
+5. Component structure.
+6. Data/API layer.
+7. State management if present.
+8. Suggested reading route.
+
+Do not invent files. Cite file paths for every important claim.`;
+  }
+
+  return `Analyze this GitHub repository. Output a plain-language project guide, tech stack, directory roles, likely entry points, and recommended reading route.
+Do not invent files. Cite file paths for every important claim.`;
 }
 
 function truncate(value: string, max: number): string {
   if (value.length <= max) return value;
-  return `${value.slice(0, max)}\n\n... 内容过长，已截断 ...`;
+  return `${value.slice(0, max)}\n\n... content truncated ...`;
 }
 
 function uniqueByPath(files: TreeFile[]): TreeFile[] {

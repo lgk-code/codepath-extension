@@ -54,7 +54,13 @@ export class GithubClient {
     };
     if (this.settings.githubToken) headers.Authorization = `Bearer ${this.settings.githubToken}`;
 
-    const response = await fetch(url, { headers });
+    let response: Response;
+    try {
+      response = await fetch(url, { headers });
+    } catch (error) {
+      throw new Error(`Unable to reach GitHub API: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     if (!response.ok) {
       throw new Error(`GitHub API ${response.status}: ${await response.text()}`);
     }
