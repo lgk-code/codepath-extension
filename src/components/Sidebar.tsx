@@ -23,6 +23,7 @@ type Tab = "overview" | "feature" | "file" | "ask" | "settings";
 type ChatTurn = {
   question: string;
   answer: ProjectOverview;
+  elapsedMs?: number;
 };
 
 const DEFAULT_QUESTIONS = [
@@ -31,7 +32,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-09-cn-ask-settings";
+const UI_VERSION = "dev-2026-05-09-qa-timing";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -40,6 +41,8 @@ export function Sidebar() {
   const [tab, setTab] = useState<Tab>("overview");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState("");
+  const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState("");
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
   const [feature, setFeature] = useState("");
@@ -61,17 +64,29 @@ export function Sidebar() {
     return () => window.removeEventListener("codepath:url-change", listener);
   }, []);
 
+  useEffect(() => {
+    if (!loadingStartedAt) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [loadingStartedAt]);
+
   const title = useMemo(() => (repo ? `${repo.owner}/${repo.repo}` : "No GitHub repository detected"), [repo]);
 
-  async function run<T>(label: string, action: () => Promise<T>, onDone: (value: T) => void) {
+  async function run<T>(label: string, action: () => Promise<T>, onDone: (value: T, elapsedMs: number) => void) {
+    const startedAt = Date.now();
     setLoading(label);
+    setLoadingStartedAt(startedAt);
+    setNow(startedAt);
     setError("");
     try {
-      onDone(await action());
+      const value = await action();
+      onDone(value, Date.now() - startedAt);
     } catch (err) {
       setError(humanizeError(err));
     } finally {
       setLoading("");
+      setLoadingStartedAt(null);
     }
   }
 
@@ -125,8 +140,8 @@ export function Sidebar() {
           question: trimmed,
           context: buildAskContext(overview, featurePath, fileExplanation, answers)
         }),
-      (answer) => {
-        setAnswers((items) => [...items, { question: trimmed, answer }]);
+      (answer, elapsedMs) => {
+        setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs }]);
         setQuestion("");
         setTab("ask");
       }
@@ -164,7 +179,7 @@ export function Sidebar() {
       </nav>
 
       {error && <div className="cp-alert">{error}</div>}
-      {loading && <div className="cp-loading">{loading}</div>}
+      {loading && <div className="cp-loading">{formatLoadingStatus(loading, loadingStartedAt, now)}</div>}
 
       <main className="cp-content">
         {tab === "overview" && (
@@ -239,6 +254,7 @@ export function Sidebar() {
                 {answers.map((item, index) => (
                   <article className="cp-chat-item" key={`${item.question}-${index}`}>
                     <strong>问：{item.question}</strong>
+                    {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
                     <MarkdownBlock repo={repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} />
                   </article>
                 ))}
@@ -497,6 +513,19 @@ function readPanelWidth(): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function formatLoadingStatus(label: string, startedAt: number | null, now: number): string {
+  if (!startedAt) return label;
+  return `${label} 已用时 ${formatElapsed(now - startedAt)}`;
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds} 秒`;
+  return `${minutes} 分 ${seconds.toString().padStart(2, "0")} 秒`;
 }
 
 async function send<T>(request: RuntimeRequest): Promise<T> {

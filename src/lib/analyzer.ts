@@ -27,60 +27,90 @@ type ProjectProfile = {
   reasons: string[];
 };
 
-export async function analyzeProject(repo: RepoRef, settings: Settings): Promise<ProjectOverview> {
-  const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
-  const profile = detectProjectProfile(usefulFiles);
-  const selected = pickImportantFiles(usefulFiles, profile);
-  const snippets = await loadSnippets(gh, repo, branch, selected, profile.kind === "python-ml" ? 22000 : 16000);
+type RepoAnalysisContext = {
+  branch: string;
+  files: TreeFile[];
+  usefulFiles: TreeFile[];
+  profile: ProjectProfile;
+  treeSummary: string;
+};
 
-  const treeSummary = summarizeTree(usefulFiles);
+const repoContextCache = new Map<string, RepoAnalysisContext>();
+const snippetCache = new Map<string, string>();
+const overviewCache = new Map<string, ProjectOverview>();
+const featureCache = new Map<string, FeaturePath>();
+const fileExplanationCache = new Map<string, FileExplanation>();
+const questionCache = new Map<string, ProjectOverview>();
+
+const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
+  kind: "generic",
+  label: "Cached repository context",
+  confidence: "medium",
+  reasons: ["Using previous CodePath analysis context"]
+};
+
+export async function analyzeProject(repo: RepoRef, settings: Settings): Promise<ProjectOverview> {
+  const cachedOverview = findCachedOverview(repo);
+  if (cachedOverview) return cachedOverview;
+
+  const gh = await createSourceClient(repo, settings);
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = overviewCacheKey(repo, context.branch);
+  const cached = overviewCache.get(cacheKey);
+  if (cached) return cached;
+
+  const selected = pickImportantFiles(context.usefulFiles, context.profile);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, context.profile.kind === "python-ml" ? 22000 : 16000);
+
   const content = await chat(settings, [
-    systemPrompt(profile),
+    systemPrompt(context.profile),
     {
       role: "user",
-      content: `${projectPrompt(profile)}
+      content: `${projectPrompt(context.profile)}
 
 Repository: ${repo.owner}/${repo.repo}
-Branch: ${branch}
+Branch: ${context.branch}
 
 Detected project type:
-- ${profile.label}
-- Confidence: ${profile.confidence}
-- Reasons: ${profile.reasons.join("; ") || "No strong signal"}
+- ${context.profile.label}
+- Confidence: ${context.profile.confidence}
+- Reasons: ${context.profile.reasons.join("; ") || "No strong signal"}
 
 Repository tree summary:
-${treeSummary}
+${context.treeSummary}
 
 Key file contents:
 ${formatSnippets(snippets)}`
     }
   ]);
 
-  return { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  overviewCache.set(cacheKey, overview);
+  return overview;
 }
 
 export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string): Promise<FeaturePath> {
   const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
-  const profile = detectProjectProfile(usefulFiles);
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = featureCacheKey(repo, context.branch, feature);
+  const cached = featureCache.get(cacheKey);
+  if (cached) return cached;
+
   const keywords = expandFeatureKeywords(feature);
-  const candidates = scoreFeatureFiles(usefulFiles, keywords, profile).slice(0, 16);
-  const snippets = await loadSnippets(gh, repo, branch, candidates, 24000);
+  const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 16);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, candidates, 24000);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
 
   const content = await chat(settings, [
-    systemPrompt(profile),
+    systemPrompt(context.profile),
     {
       role: "user",
       content: `The user wants to understand one feature without cloning, deploying, or running the project.
 
 Feature: ${feature}
 Repository: ${repo.owner}/${repo.repo}
-Branch: ${branch}
-Detected project type: ${profile.label}
+Branch: ${context.branch}
+Detected project type: ${context.profile.label}
 Expanded keywords: ${keywords.join(", ")}
 
 Please output:
@@ -98,30 +128,34 @@ ${formatSnippets(withImports)}`
     }
   ]);
 
-  return {
+  const result = {
     feature,
     summary: content,
     sources: withImports.map((item) => ({ path: item.path, reason: "feature candidate" }))
   };
+  featureCache.set(cacheKey, result);
+  return result;
 }
 
 export async function explainFile(repo: RepoRef, settings: Settings): Promise<FileExplanation> {
   if (!repo.path) throw new Error("The current page is not a GitHub file page.");
   const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
-  const profile = detectProjectProfile(usefulFiles);
-  const content = await gh.getFile(repo.owner, repo.repo, repo.path, repo.branch || branch);
+  const context = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = fileExplanationCacheKey(repo, repo.branch || context.branch, repo.path);
+  const cached = fileExplanationCache.get(cacheKey);
+  if (cached) return cached;
+
+  const content = await loadFileCached(gh, repo, repo.branch || context.branch, repo.path);
   const imports = extractImports(content);
 
   const summary = await chat(settings, [
-    systemPrompt(profile),
+    systemPrompt(context.profile),
     {
       role: "user",
       content: `Explain the current file for a learner or secondary developer.
 
 Repository: ${repo.owner}/${repo.repo}
-Detected project type: ${profile.label}
+Detected project type: ${context.profile.label}
 File: ${repo.path}
 Imports: ${imports.join(", ") || "none"}
 
@@ -137,32 +171,64 @@ ${truncate(content, 18000)}`
     }
   ]);
 
-  return { path: repo.path, summary, sources: [{ path: repo.path }] };
+  const result = { path: repo.path, summary, sources: [{ path: repo.path }] };
+  fileExplanationCache.set(cacheKey, result);
+  return result;
 }
 
 export async function answerQuestion(repo: RepoRef, settings: Settings, question: string, context?: string): Promise<ProjectOverview> {
+  if (context && context.trim().length > 500 && !needsSourceLookup(question)) {
+    const cacheKey = questionCacheKey(repo, "context", question, context);
+    const cached = questionCache.get(cacheKey);
+    if (cached) return cached;
+
+    const content = await chat(settings, [
+      systemPrompt(GENERIC_CONTEXT_PROFILE),
+      {
+        role: "user",
+        content: `The user is asking a follow-up question based on CodePath's cached repository guide.
+Answer from the previous context first. If the previous context is not enough, say what is missing and suggest which feature/file analysis to run next.
+Do not invent files.
+
+Repository: ${repo.owner}/${repo.repo}
+
+Previous context:
+${truncate(context, 12000)}
+
+User question:
+${question}`
+      }
+    ]);
+
+    const result = { summary: content, sources: [] };
+    questionCache.set(cacheKey, result);
+    return result;
+  }
+
   const gh = await createSourceClient(repo, settings);
-  const { branch, files } = await loadTree(gh, repo);
-  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
-  const profile = detectProjectProfile(usefulFiles);
+  const repoContext = await getRepoAnalysisContext(gh, repo);
+  const cacheKey = questionCacheKey(repo, repoContext.branch, question, context ?? "");
+  const cached = questionCache.get(cacheKey);
+  if (cached) return cached;
+
   const keywords = question
     .toLowerCase()
-    .split(/[\s,，/._-]+/)
+    .split(/[\s,，。/._-]+/)
     .filter((item) => item.length >= 2)
     .slice(0, 14);
-  const candidates = scoreFeatureFiles(usefulFiles, keywords, profile).slice(0, 14);
-  const selected = candidates.length > 0 ? candidates : pickImportantFiles(usefulFiles, profile).slice(0, 14);
-  const snippets = await loadSnippets(gh, repo, branch, selected, 22000);
+  const candidates = scoreFeatureFiles(repoContext.usefulFiles, keywords, repoContext.profile).slice(0, 14);
+  const selected = candidates.length > 0 ? candidates : pickImportantFiles(repoContext.usefulFiles, repoContext.profile).slice(0, 14);
+  const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, selected, 22000);
 
   const content = await chat(settings, [
-    systemPrompt(profile),
+    systemPrompt(repoContext.profile),
     {
       role: "user",
       content: `The user is asking a follow-up question based on CodePath's repository guide. Answer only from the previous context and the source snippets. Do not invent files.
 
 Repository: ${repo.owner}/${repo.repo}
-Branch: ${branch}
-Detected project type: ${profile.label}
+Branch: ${repoContext.branch}
+Detected project type: ${repoContext.profile.label}
 
 Previous context:
 ${context ? truncate(context, 9000) : "None"}
@@ -175,7 +241,9 @@ ${formatSnippets(snippets)}`
     }
   ]);
 
-  return { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  const result = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
+  questionCache.set(cacheKey, result);
+  return result;
 }
 
 async function createSourceClient(repo: RepoRef, settings: Settings): Promise<SourceClient> {
@@ -200,6 +268,107 @@ async function loadTree(gh: SourceClient, repo: RepoRef): Promise<{ branch: stri
   const branch = repo.branch || info.default_branch;
   const files = await gh.getTree(repo.owner, repo.repo, branch);
   return { branch, files };
+}
+
+async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef): Promise<RepoAnalysisContext> {
+  const provisionalKey = repoCacheKey(repo, repo.branch || "default");
+  const provisional = repoContextCache.get(provisionalKey);
+  if (provisional) return provisional;
+
+  const { branch, files } = await loadTree(gh, repo);
+  const key = repoCacheKey(repo, branch);
+  const cached = repoContextCache.get(key);
+  if (cached) return cached;
+
+  const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
+  const profile = detectProjectProfile(usefulFiles);
+  const treeSummary = summarizeTree(usefulFiles);
+  const context = { branch, files, usefulFiles, profile, treeSummary };
+  repoContextCache.set(key, context);
+  if (!repo.branch) repoContextCache.set(provisionalKey, context);
+  return context;
+}
+
+async function loadSnippetsCached(gh: SourceClient, repo: RepoRef, branch: string, files: TreeFile[], budget: number): Promise<FileSnippet[]> {
+  const snippets: FileSnippet[] = [];
+  let used = 0;
+  for (const file of files) {
+    if (used >= budget) break;
+    if ((file.size ?? 0) > 180_000) continue;
+    try {
+      const content = await loadFileCached(gh, repo, branch, file.path);
+      const remaining = budget - used;
+      const clipped = truncate(content, Math.min(7000, remaining));
+      used += clipped.length;
+      snippets.push({ path: file.path, content: clipped });
+    } catch {
+      // Skip files GitHub refuses or cannot decode; the rest of the context is still useful.
+    }
+  }
+  return snippets;
+}
+
+async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, path: string): Promise<string> {
+  const key = fileCacheKey(repo, branch, path);
+  const cached = snippetCache.get(key);
+  if (cached !== undefined) return cached;
+  const content = await gh.getFile(repo.owner, repo.repo, path, branch);
+  snippetCache.set(key, content);
+  return content;
+}
+
+function repoCacheKey(repo: RepoRef, branch: string): string {
+  return `${repo.owner}/${repo.repo}@${branch}`;
+}
+
+function overviewCacheKey(repo: RepoRef, branch: string): string {
+  return `${repoCacheKey(repo, branch)}:overview`;
+}
+
+function featureCacheKey(repo: RepoRef, branch: string, feature: string): string {
+  return `${repoCacheKey(repo, branch)}:feature:${normalizeCacheText(feature)}`;
+}
+
+function fileExplanationCacheKey(repo: RepoRef, branch: string, path: string): string {
+  return `${repoCacheKey(repo, branch)}:explain:${path}`;
+}
+
+function questionCacheKey(repo: RepoRef, branch: string, question: string, context: string): string {
+  return `${repoCacheKey(repo, branch)}:question:${normalizeCacheText(question)}:${stringHash(context.slice(0, 16000))}`;
+}
+
+function fileCacheKey(repo: RepoRef, branch: string, path: string): string {
+  return `${repoCacheKey(repo, branch)}:${path}`;
+}
+
+function findCachedOverview(repo: RepoRef): ProjectOverview | undefined {
+  if (repo.branch) return overviewCache.get(overviewCacheKey(repo, repo.branch));
+
+  const prefix = `${repo.owner}/${repo.repo}@`;
+  for (const [key, value] of overviewCache) {
+    if (key.startsWith(prefix) && key.endsWith(":overview")) return value;
+  }
+  return undefined;
+}
+
+function normalizeCacheText(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 240);
+}
+
+function stringHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function needsSourceLookup(question: string): boolean {
+  const lower = question.toLowerCase();
+  const asksForSource =
+    /[\u5177\u4f53\u6e90\u7801\u51fd\u6570\u7c7b\u5b9e\u73b0\u6587\u4ef6\u5165\u53e3\u8c03\u7528\u4f9d\u8d56]/.test(question);
+  return /(?:^|[\s/])[\w.-]+\.(?:py|ts|tsx|js|jsx|vue|go|rs|java|json|ya?ml|toml|md)\b/.test(lower) || asksForSource;
 }
 
 function detectProjectProfile(files: TreeFile[]): ProjectProfile {
@@ -318,25 +487,6 @@ function scoreFeatureFiles(files: TreeFile[], keywords: string[], profile: Proje
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
   return scored.map((item) => item.file);
-}
-
-async function loadSnippets(gh: SourceClient, repo: RepoRef, branch: string, files: TreeFile[], budget: number): Promise<FileSnippet[]> {
-  const snippets: FileSnippet[] = [];
-  let used = 0;
-  for (const file of files) {
-    if (used >= budget) break;
-    if ((file.size ?? 0) > 180_000) continue;
-    try {
-      const content = await gh.getFile(repo.owner, repo.repo, file.path, branch);
-      const remaining = budget - used;
-      const clipped = truncate(content, Math.min(7000, remaining));
-      used += clipped.length;
-      snippets.push({ path: file.path, content: clipped });
-    } catch {
-      // Skip files GitHub refuses or cannot decode; the rest of the context is still useful.
-    }
-  }
-  return snippets;
 }
 
 function summarizeTree(files: TreeFile[]): string {

@@ -267,6 +267,19 @@
   font-size: 13px;
 }
 
+.cp-chat-meta {
+  display: inline-flex;
+  width: fit-content;
+  margin: 0 0 10px;
+  padding: 3px 7px;
+  border: 1px solid #d8dee4;
+  border-radius: 999px;
+  background: #f6f8fa;
+  color: #57606a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .cp-suggestions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
