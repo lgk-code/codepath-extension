@@ -1,42 +1,42 @@
 # AGENTS.md
 
-## Project Overview
+## 项目概览
 
-CodePath is a WXT React browser extension for reading GitHub repositories without cloning or running them. It injects a sidebar on GitHub pages and uses a Qwen/OpenAI-compatible chat endpoint plus GitHub source metadata to explain projects, features, files, and follow-up questions.
+CodePath 是一个基于 WXT、React 和 TypeScript 的浏览器扩展，用来在 GitHub 页面上直接阅读仓库代码。它会注入一个侧边栏，通过 GitHub 源码信息和兼容 OpenAI Chat Completions 的模型接口，帮助用户理解项目概览、功能路径、当前文件和后续追问。
 
-## Development Commands
+## 开发命令
 
-- Install dependencies with `npm install`.
-- Type-check with `npm.cmd run compile` on Windows.
-- Build the Chrome/Edge MV3 extension with `npm.cmd run build`.
-- The build output is generated in `.output/chrome-mv3`.
+- 安装依赖：`npm install`
+- Windows 下类型检查：`npm.cmd run compile`
+- 构建 Chrome/Edge MV3 扩展：`npm.cmd run build`
+- 构建产物目录：`.output/chrome-mv3`
 
-## Extension Reload Workflow
+## 扩展重载流程
 
-After changing source code:
+源码修改后，按下面流程验证浏览器里的实际效果：
 
-1. Run `npm.cmd run build`.
-2. Copy the contents of `.output/chrome-mv3` into the unpacked extension directory used by the browser.
-3. Reload the unpacked CodePath extension from `edge://extensions`.
-4. Refresh the GitHub tab under test.
+1. 执行 `npm.cmd run build`。
+2. 将 `.output/chrome-mv3` 里的内容复制到浏览器当前加载的未打包扩展目录。
+3. 打开 `edge://extensions`，重新加载 CodePath 扩展。
+4. 刷新正在测试的 GitHub 页面。
 
-Do not commit generated build output, browser profiles, local extension install directories, API keys, or tokens.
+不要提交构建产物、浏览器 profile、本机扩展安装目录、API Key 或 GitHub Token。
 
-## Code Guidelines
+## 代码规范
 
-- Keep changes scoped to the extension behavior being modified.
-- Prefer existing local helpers in `src/lib` before adding new abstractions.
-- Keep user-facing Chinese copy clear and concise.
-- Update the visible CodePath build/version string when changing sidebar behavior so manual browser testing can confirm the loaded build.
-- Never hard-code API keys, GitHub tokens, machine-specific absolute paths, or personal browser profile paths.
+- 改动范围要贴近当前需求，不做无关重构。
+- 优先复用 `src/lib` 中已有的本地工具函数，再考虑新增抽象。
+- 面向用户的中文文案要清楚、简洁、可操作。
+- 修改侧边栏行为时，要同步更新可见的 CodePath 构建版本，方便手动确认浏览器加载的是最新代码。
+- 不要硬编码 API Key、GitHub Token、本机绝对路径或个人浏览器 profile 路径。
 
-## Validation
+## 验证要求
 
-Before publishing changes, run:
+发布或推送前至少执行：
 
 ```bash
 npm.cmd run compile
 npm.cmd run build
 ```
 
-Also scan for secrets or local paths before pushing.
+推送前还要扫描仓库，确认没有真实密钥、Token 或本机路径被提交。
