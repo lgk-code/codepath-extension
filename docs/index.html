@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodePath Extension Demo</title>
+    <meta
+      name="description"
+      content="CodePath 是一个 GitHub 源码阅读浏览器插件，也可以作为 MCP Server 为 OpenClaw 提供项目分析能力。"
+    />
+    <link rel="stylesheet" href="./site.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="CodePath 首页">
+        <span class="brand-mark">CP</span>
+        <span>CodePath</span>
+      </a>
+      <nav class="nav-links" aria-label="页面导航">
+        <a href="#browser">浏览器插件</a>
+        <a href="#mcp">MCP</a>
+        <a href="#workflow">流程</a>
+        <a href="./MCP_USAGE.md">MCP 教程</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">GitHub source reading assistant</p>
+          <h1>CodePath</h1>
+          <p class="lead">
+            直接分析 GitHub 仓库结构，定位功能实现路径和关键源码文件。结果可交给 OpenClaw
+            兼容 agent 继续学习、规划或生成新项目蓝图。
+          </p>
+          <div class="hero-actions" aria-label="主要链接">
+            <a class="primary-action" href="https://github.com/lgk-code/codepath-extension">GitHub 仓库</a>
+            <a class="secondary-action" href="./MCP_USAGE.md">查看 MCP 教程</a>
+          </div>
+        </div>
+
+        <div class="product-shot" aria-label="CodePath 在 GitHub 仓库页面中的演示画面">
+          <div class="browser-bar">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>github.com/lgk-code/codepath-extension</strong>
+          </div>
+          <div class="repo-stage">
+            <div class="repo-pane">
+              <div class="repo-title">
+                <span class="repo-icon"></span>
+                <div>
+                  <strong>lgk-code / codepath-extension</strong>
+                  <small>Browser extension + MCP server</small>
+                </div>
+              </div>
+              <div class="repo-tabs">
+                <span class="active">Code</span>
+                <span>Issues</span>
+                <span>Pull requests</span>
+                <span>Actions</span>
+              </div>
+              <div class="file-list">
+                <span>entrypoints/background.ts</span>
+                <span>src/lib/analyzer.ts</span>
+                <span>scripts/codepath-mcp.ts</span>
+                <span>docs/MCP_USAGE.md</span>
+              </div>
+            </div>
+
+            <aside class="codepath-panel">
+              <div class="panel-header">
+                <div>
+                  <strong>CodePath</strong>
+                  <span>lgk-code / codepath-extension</span>
+                </div>
+                <button type="button" aria-label="关闭演示面板">×</button>
+              </div>
+              <div class="panel-tabs" aria-label="CodePath 功能标签">
+                <button class="active" type="button">概览</button>
+                <button type="button">路径</button>
+                <button type="button">文件</button>
+                <button type="button">问答</button>
+              </div>
+              <div class="analysis-card">
+                <p class="status">已完成仓库结构分析</p>
+                <h2>阅读路线</h2>
+                <ol>
+                  <li>从 `entrypoints` 理解扩展生命周期。</li>
+                  <li>进入 `src/lib/analyzer.ts` 查看分析编排。</li>
+                  <li>使用 MCP 工具生成 OpenClaw 任务草案。</li>
+                </ol>
+                <div class="source-links">
+                  <a href="https://github.com/lgk-code/codepath-extension/blob/main/src/lib/analyzer.ts">analyzer.ts</a>
+                  <a href="https://github.com/lgk-code/codepath-extension/blob/main/scripts/codepath-mcp.ts">codepath-mcp.ts</a>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section id="browser" class="feature-band">
+        <div class="section-heading">
+          <p class="eyebrow">Browser extension</p>
+          <h2>在仓库页面里读源码</h2>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <span class="feature-icon">01</span>
+            <h3>项目概览</h3>
+            <p>识别技术栈、目录职责、入口文件和建议阅读顺序。</p>
+          </article>
+          <article>
+            <span class="feature-icon">02</span>
+            <h3>功能路径</h3>
+            <p>围绕登录、上传、搜索、训练流程等目标定位关键文件和实现步骤。</p>
+          </article>
+          <article>
+            <span class="feature-icon">03</span>
+            <h3>源码追问</h3>
+            <p>保留上下文继续问答，并把源码引用链接回 GitHub 文件。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="mcp" class="mcp-section">
+        <div class="section-heading">
+          <p class="eyebrow">MCP server</p>
+          <h2>让 OpenClaw 直接调用项目分析能力</h2>
+        </div>
+        <div class="terminal-layout">
+          <div class="terminal">
+            <div class="terminal-top">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <pre><code>npm run mcp
+
+tools:
+  analyze_github_project
+  analyze_github_feature
+  generate_openclaw_skill
+  generate_project_blueprint</code></pre>
+          </div>
+          <div class="tool-list">
+            <div>
+              <strong>分析仓库</strong>
+              <span>输出结构、技术栈、入口和阅读路线。</span>
+            </div>
+            <div>
+              <strong>分析功能</strong>
+              <span>返回功能目标、关键文件、实现路径和风险。</span>
+            </div>
+            <div>
+              <strong>生成 Skill</strong>
+              <span>把源码经验整理成 OpenClaw 可执行的任务草案。</span>
+            </div>
+            <div>
+              <strong>生成蓝图</strong>
+              <span>把参考项目能力迁移成新项目实现方案。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" class="workflow">
+        <div class="section-heading">
+          <p class="eyebrow">Workflow</p>
+          <h2>从 GitHub 地址到可执行方案</h2>
+        </div>
+        <div class="flow">
+          <div>
+            <strong>1. 提供仓库地址</strong>
+            <span>用户或 OpenClaw 给出 GitHub URL 和目标功能。</span>
+          </div>
+          <div>
+            <strong>2. CodePath 分析源码</strong>
+            <span>读取仓库文件，提炼实现路径、关键模块和源码依据。</span>
+          </div>
+          <div>
+            <strong>3. OpenClaw 执行任务</strong>
+            <span>根据 Skill 或蓝图继续学习、重构、搭建或验证。</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>CodePath Extension</span>
+      <a href="https://github.com/lgk-code/codepath-extension">GitHub</a>
+      <a href="./MCP_USAGE.md">MCP 使用教程</a>
+      <a href="https://github.com/lgk-code/codepath-extension#readme">README</a>
+    </footer>
+  </body>
+</html>

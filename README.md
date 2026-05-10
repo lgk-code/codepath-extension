@@ -71,6 +71,10 @@ Open the CodePath Settings tab in the sidebar and configure:
 
 Do not commit API keys or tokens. Use the minimum required GitHub token permissions.
 
+## Demo Website
+
+The static demo website lives in `docs/index.html` and is ready for GitHub Pages when Pages is configured to publish from the `docs` directory.
+
 ## MCP / OpenClaw
 
 CodePath can also run as an MCP server for OpenClaw-compatible agents. This lets an agent analyze a GitHub repository directly without opening the browser extension.
