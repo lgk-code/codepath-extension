@@ -71,6 +71,27 @@ Open the CodePath Settings tab in the sidebar and configure:
 
 Do not commit API keys or tokens. Use the minimum required GitHub token permissions.
 
+## MCP / OpenClaw
+
+CodePath can also run as an MCP server for OpenClaw-compatible agents. This lets an agent analyze a GitHub repository directly without opening the browser extension.
+
+Start the MCP server:
+
+```bash
+npm run mcp
+```
+
+Available tools:
+
+- `analyze_github_project`
+- `analyze_github_feature`
+- `generate_openclaw_skill`
+- `generate_project_blueprint`
+
+See [CodePath MCP 使用教程](docs/MCP_USAGE.md) for setup, environment variables, OpenClaw configuration, tool examples, and troubleshooting.
+
+For the integration design, see [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md).
+
 ## Roadmap
 
 - Improve background messaging stability and reduce content-script fallbacks

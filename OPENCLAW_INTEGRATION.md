@@ -184,6 +184,8 @@ GitHub 页面侧边栏                 Claw 通讯插件
 npm.cmd run mcp
 ```
 
+完整使用教程见 [CodePath MCP 使用教程](docs/MCP_USAGE.md)。
+
 推荐通过环境变量传入配置：
 
 ```powershell
