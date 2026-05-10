@@ -39,7 +39,7 @@ export type FeaturePath = {
   sources: SourceRef[];
 };
 
-export type BlueprintMode = "human" | "easyclaw-skill" | "new-project";
+export type BlueprintMode = "human" | "openclaw-skill" | "new-project";
 
 export type SkillBlueprint = {
   feature: string;

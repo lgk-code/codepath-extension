@@ -616,12 +616,12 @@ Do not copy large source code blocks.
 Every important file path must come from the provided candidate files or tree.
 Separate source-confirmed facts from cautious engineering inference.`;
 
-  if (mode === "easyclaw-skill") {
+  if (mode === "openclaw-skill") {
     return `${common}
 
-Output a Markdown handoff for EasyClaw. Use this exact structure:
+Output a Markdown handoff for OpenClaw-compatible agents. Use this exact structure:
 
-# EasyClaw 任务交接
+# OpenClaw 任务交接
 
 ## 任务目标
 ## 来源项目
@@ -631,7 +631,7 @@ Output a Markdown handoff for EasyClaw. Use this exact structure:
 ## 关键文件
 ## 可迁移设计
 ## 不应照搬的内容
-## EasyClaw 执行步骤
+## OpenClaw 执行步骤
 ## 适合派生的 Sub-agents
 ## 需要向用户确认的问题
 ## 风险与验证建议`;

@@ -195,7 +195,7 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 ## 当前进展
 
 - 已实现 CodePath MCP Server，可通过 `npm.cmd run mcp` 启动。
-- EasyClaw 可通过 MCP 发现并调用 `analyze_github_project`、`analyze_github_feature`、`generate_easyclaw_skill`、`generate_project_blueprint`。
+- OpenClaw 可通过 MCP 发现并调用 `analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint`。
 - 已完成基础 smoke test：MCP 客户端可以列出全部工具。
 - 已验证浏览器扩展仍可正常构建，MCP 能力与侧边栏 UI 解耦。
 - 当前 MCP 调用仍依赖环境变量提供模型 API Key、Base URL、模型名称和可选 GitHub Token。
@@ -222,7 +222,7 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 区分“源码确认”和“工程推断”
 - 输出关键文件的职责说明
 - 支持复制 Markdown
-- 状态：MCP 侧已新增 EasyClaw Skill / 新项目蓝图 prompt；浏览器侧 UI 还没有新增 Skill 视图。
+- 状态：MCP 侧已新增 OpenClaw Skill / 新项目蓝图 prompt；浏览器侧 UI 还没有新增 Skill 视图。
 
 ### 第四阶段：缓存和问答体验升级
 
@@ -238,14 +238,14 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 输出标准化 `SKILL.md` 结构
 - 支持面向 OpenClaw / Hermes 的不同语气和粒度
 - 在问答中允许用户继续追问“把这个 Skill 改成更适合新项目搭建”
-- 状态：MCP 工具 `generate_easyclaw_skill` 已实现；浏览器按钮和导出体验待开发。
+- 状态：MCP 工具 `generate_openclaw_skill` 已实现；浏览器按钮和导出体验待开发。
 
 ### 第六阶段：新增蓝图输出
 
 - 支持“根据这个项目的某功能，生成新项目实现方案”
 - 输出目录结构、模块边界、接口草案和开发步骤
 - 标注可以复用的模式和不能照搬的细节
-- 状态：MCP 工具 `generate_project_blueprint` 已实现；后续需要在 EasyClaw 实战中继续调优输出结构。
+- 状态：MCP 工具 `generate_project_blueprint` 已实现；后续需要在 OpenClaw 实战中继续调优输出结构。
 
 ### 第七阶段：本地项目、多模型和知识图谱
 
@@ -266,13 +266,13 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 ## 近期优先级
 
 1. 增加 `deploy:edge` 脚本，自动构建并复制到浏览器加载目录。
-2. 给 MCP 工具增加更清晰的结构化返回，减少 EasyClaw 解析 Markdown 的成本。
+2. 给 MCP 工具增加更清晰的结构化返回，减少 OpenClaw 解析 Markdown 的成本。
 3. 拆分耗时指标，定位慢在 GitHub、源码读取、上下文构造还是模型请求。
 4. 在浏览器侧新增“借鉴 / Skill”视图，复用 `generateSkillBlueprint`。
-5. 增加“复制 EasyClaw 任务交接 Markdown”和“下载 Skill.md”能力。
+5. 增加“复制 OpenClaw 任务交接 Markdown”和“下载 Skill.md”能力。
 6. 设计持久化缓存和“清空缓存”入口。
 7. 优化错误提示和设置页连接诊断。
-8. 用真实 EasyClaw 项目开发任务验证 `generate_easyclaw_skill` 和 `generate_project_blueprint` 的可执行性。
+8. 用真实 OpenClaw 项目开发任务验证 `generate_openclaw_skill` 和 `generate_project_blueprint` 的可执行性。
 
 ## 设计原则
 

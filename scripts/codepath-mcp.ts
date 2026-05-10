@@ -14,7 +14,7 @@ const server = new McpServer({
 
 const githubUrlSchema = z.string().url().describe("GitHub repository or file URL, for example https://github.com/owner/repo");
 const featureSchema = z.string().min(1).describe("Feature or capability to analyze, for example 插件系统, 登录流程, 缓存机制");
-const modeSchema = z.enum(["human", "easyclaw-skill", "new-project"]).default("easyclaw-skill");
+const modeSchema = z.enum(["human", "openclaw-skill", "new-project"]).default("openclaw-skill");
 
 server.registerTool(
   "analyze_github_project",
@@ -59,9 +59,9 @@ server.registerTool(
 );
 
 server.registerTool(
-  "generate_easyclaw_skill",
+  "generate_openclaw_skill",
   {
-    description: "Generate an EasyClaw-ready Skill or task handoff Markdown from a GitHub feature implementation.",
+    description: "Generate an OpenClaw-ready Skill or task handoff Markdown from a GitHub feature implementation.",
     inputSchema: {
       url: githubUrlSchema,
       feature: featureSchema,
@@ -70,7 +70,7 @@ server.registerTool(
   },
   async ({ url, feature, githubToken }) => {
     const repo = parseRepoUrl(url);
-    const result = await generateSkillBlueprint(repo, settingsFromEnv({ githubToken }), feature, "easyclaw-skill");
+    const result = await generateSkillBlueprint(repo, settingsFromEnv({ githubToken }), feature, "openclaw-skill");
     return textResult({
       repo,
       feature: result.feature,
@@ -88,7 +88,7 @@ server.registerTool(
     inputSchema: {
       url: githubUrlSchema,
       feature: featureSchema,
-      mode: modeSchema.describe("Output mode. Use new-project for implementation blueprints, easyclaw-skill for EasyClaw handoff, human for readable analysis."),
+      mode: modeSchema.describe("Output mode. Use new-project for implementation blueprints, openclaw-skill for OpenClaw handoff, human for readable analysis."),
       githubToken: z.string().optional().describe("Optional GitHub token. Prefer environment variable CODEPATH_GITHUB_TOKEN.")
     }
   },
