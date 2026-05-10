@@ -19,6 +19,32 @@ EasyClaw 不一定需要打开浏览器。
 
 长期架构应避免让 EasyClaw 依赖浏览器 UI。浏览器扩展服务人类阅读，MCP/API 服务 agent 自动化。
 
+## 当前实现状态
+
+当前已经完成 MCP 一期能力：
+
+- 新增 `scripts/codepath-mcp.ts`，通过 stdio 暴露 MCP Server。
+- 新增 `npm.cmd run mcp` 启动命令。
+- MCP 客户端可以发现四个工具：
+  - `analyze_github_project`
+  - `analyze_github_feature`
+  - `generate_easyclaw_skill`
+  - `generate_project_blueprint`
+- `generate_easyclaw_skill` 和 `generate_project_blueprint` 已复用 CodePath Analyzer 的仓库树、候选文件、源码片段和模型调用逻辑。
+- 配置通过环境变量传入，不写入仓库：
+  - `CODEPATH_API_KEY` / `OPENAI_API_KEY`
+  - `CODEPATH_BASE_URL` / `OPENAI_BASE_URL`
+  - `CODEPATH_MODEL` / `OPENAI_MODEL`
+  - `CODEPATH_GITHUB_TOKEN` / `GITHUB_TOKEN`
+
+当前仍待完善：
+
+- MCP 返回值目前主要是 JSON 包裹 Markdown，后续需要补更细的结构化字段。
+- 还没有浏览器侧“借鉴 / Skill”视图。
+- 还没有自动导出 `SKILL.md` 文件。
+- 阶段耗时还没有拆分到 MCP 工具返回中。
+- 需要用真实 EasyClaw 开发任务验证输出是否足够可执行。
+
 ## 推荐主流程
 
 ```text
@@ -309,6 +335,7 @@ CodePath 返回给 EasyClaw 的 Markdown 应当稳定、可复制、可作为 Sk
 - 暴露 `analyze_github_project`、`analyze_github_feature`、`generate_easyclaw_skill`、`generate_project_blueprint`。
 - 支持 GitHub Token 和模型配置。
 - 返回 Markdown 和结构化 JSON。
+- 状态：已完成基础 MCP Server；结构化 JSON 还需要继续增强。
 
 ### 第四阶段：EasyClaw 通讯插件
 
@@ -316,6 +343,7 @@ CodePath 返回给 EasyClaw 的 Markdown 应当稳定、可复制、可作为 Sk
 - 支持把返回结果注册为 Skill。
 - 支持派生 sub-agent 执行开发任务。
 - 对需要用户确认的事项进行对话确认。
+- 状态：待在 EasyClaw 中配置并进行真实任务验证。
 
 ### 第五阶段：自动化学习和执行
 

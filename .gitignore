@@ -8,3 +8,5 @@ dist
 .chrome-*/
 reports/
 HANDOFF.md
+analyze-page4d*
+page4d-*.json

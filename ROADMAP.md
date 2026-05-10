@@ -192,12 +192,21 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 
 ## 阶段路线
 
+## 当前进展
+
+- 已实现 CodePath MCP Server，可通过 `npm.cmd run mcp` 启动。
+- EasyClaw 可通过 MCP 发现并调用 `analyze_github_project`、`analyze_github_feature`、`generate_easyclaw_skill`、`generate_project_blueprint`。
+- 已完成基础 smoke test：MCP 客户端可以列出全部工具。
+- 已验证浏览器扩展仍可正常构建，MCP 能力与侧边栏 UI 解耦。
+- 当前 MCP 调用仍依赖环境变量提供模型 API Key、Base URL、模型名称和可选 GitHub Token。
+
 ### 第一阶段：把规划文档化
 
 - 新增本规划文档
 - 明确 CodePath 从“源码解释器”升级为“项目经验提炼器”的方向
 - 保持现有分析、追问、缓存和耗时显示能力稳定
 - 新增或规划 `deploy:edge`，固定开发验证流程
+- 状态：已完成。
 
 ### 第二阶段：稳定开发流程和性能观测
 
@@ -205,6 +214,7 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 拆分耗时指标，显示 GitHub、文件读取、模型请求等阶段耗时
 - 保留总耗时显示
 - 将真实加载目录和重载流程写入文档
+- 状态：部分完成。已有总耗时显示和 Edge 真实加载目录文档；仍需新增 `deploy:edge` 脚本和阶段耗时拆分。
 
 ### 第三阶段：补强功能分析输出
 
@@ -212,6 +222,7 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 区分“源码确认”和“工程推断”
 - 输出关键文件的职责说明
 - 支持复制 Markdown
+- 状态：MCP 侧已新增 EasyClaw Skill / 新项目蓝图 prompt；浏览器侧 UI 还没有新增 Skill 视图。
 
 ### 第四阶段：缓存和问答体验升级
 
@@ -219,6 +230,7 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 显示回答来源类型
 - 增加缓存清理入口
 - 支持“仅基于已有分析回答”和“强制重新查源码”
+- 状态：已有内存缓存；持久化缓存和缓存管理 UI 待开发。
 
 ### 第五阶段：新增 Skill 输出
 
@@ -226,12 +238,14 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 输出标准化 `SKILL.md` 结构
 - 支持面向 OpenClaw / Hermes 的不同语气和粒度
 - 在问答中允许用户继续追问“把这个 Skill 改成更适合新项目搭建”
+- 状态：MCP 工具 `generate_easyclaw_skill` 已实现；浏览器按钮和导出体验待开发。
 
 ### 第六阶段：新增蓝图输出
 
 - 支持“根据这个项目的某功能，生成新项目实现方案”
 - 输出目录结构、模块边界、接口草案和开发步骤
 - 标注可以复用的模式和不能照搬的细节
+- 状态：MCP 工具 `generate_project_blueprint` 已实现；后续需要在 EasyClaw 实战中继续调优输出结构。
 
 ### 第七阶段：本地项目、多模型和知识图谱
 
@@ -239,6 +253,7 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 增强多模型配置和诊断
 - 生成文件职责图、调用链和技术栈图
 - 支持为 OpenClaw / Hermes 批量导出学习材料
+- 状态：待开发。
 
 ### 第八阶段：沉淀可复用知识库
 
@@ -246,16 +261,18 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 - 支持导出 Markdown
 - 后续可考虑本地知识库或长期缓存
 - 为 OpenClaw / Hermes 提供批量学习材料
+- 状态：待开发。
 
 ## 近期优先级
 
-1. 新增 `deploy:edge` 脚本，自动构建并复制到浏览器加载目录。
-2. 拆分耗时指标，定位后续问答慢在 GitHub、源码读取还是模型请求。
-3. 新增“借鉴 / Skill”视图的最小版本。
-4. 扩展 `analyzeFeature` 的 prompt，让它输出技术栈、实现模式和可迁移建议。
-5. 增加“生成 Skill.md”和“复制 Markdown”能力。
+1. 增加 `deploy:edge` 脚本，自动构建并复制到浏览器加载目录。
+2. 给 MCP 工具增加更清晰的结构化返回，减少 EasyClaw 解析 Markdown 的成本。
+3. 拆分耗时指标，定位慢在 GitHub、源码读取、上下文构造还是模型请求。
+4. 在浏览器侧新增“借鉴 / Skill”视图，复用 `generateSkillBlueprint`。
+5. 增加“复制 EasyClaw 任务交接 Markdown”和“下载 Skill.md”能力。
 6. 设计持久化缓存和“清空缓存”入口。
 7. 优化错误提示和设置页连接诊断。
+8. 用真实 EasyClaw 项目开发任务验证 `generate_easyclaw_skill` 和 `generate_project_blueprint` 的可执行性。
 
 ## 设计原则
 
