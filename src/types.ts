@@ -6,6 +6,7 @@ export type Settings = {
   baseUrl: string;
   model: string;
   githubToken?: string;
+  supportsStreaming?: boolean;
 };
 
 export type RepoRef = {
@@ -78,6 +79,8 @@ export type SettingsDiagnostics = {
   hasGithubToken: boolean;
   repoCheck?: string;
   modelCheck?: string;
+  streamingCheck?: string;
+  supportsStreaming?: boolean;
 };
 
 export type CacheClearScope = "repo" | "all";
@@ -139,4 +142,5 @@ export type RuntimeResponse<T> = {
 
 export type PortMessage =
   | { id: string; request: RuntimeRequest }
-  | { id: string; response: RuntimeResponse<unknown> };
+  | { id: string; response: RuntimeResponse<unknown> }
+  | { id: string; event: "stream-start" | "stream-delta" | "stream-done" | "stream-error"; text?: string; error?: string };

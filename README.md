@@ -82,8 +82,9 @@ npm run deploy:edge
 
 2. Open `edge://extensions`, enable developer mode, reload CodePath, then refresh a GitHub repository page.
 3. Open the CodePath sidebar Settings tab and configure API Key, Base URL, model, and optional GitHub Token.
-4. Run Project Overview on a repository page, then try Feature Path, File Explanation, follow-up questions, and Skill / blueprint export.
-5. If you use OpenClaw-compatible tools, start the MCP server with `npm run mcp` and configure the same model environment variables.
+4. Click Save and Test in Settings. CodePath checks the model connection and whether the current API supports streaming output.
+5. Run Project Overview on a repository page, then try Feature Path, File Explanation, follow-up questions, and Skill / blueprint export.
+6. If you use OpenClaw-compatible tools, start the MCP server with `npm run mcp` and configure the same model environment variables.
 
 ## Configuration
 
@@ -93,6 +94,7 @@ Open the CodePath Settings tab in the sidebar and configure:
 - Base URL: default is `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Model: default is `qwen-plus`
 - GitHub Token: optional, used to avoid anonymous GitHub API rate limits
+- Streaming output: detected automatically after Save and Test. If supported, browser-side analysis streams Markdown incrementally; if unsupported, CodePath keeps the original one-shot response behavior.
 
 Do not commit API keys or tokens. Use the minimum required GitHub token permissions.
 

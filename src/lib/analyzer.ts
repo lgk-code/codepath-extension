@@ -17,7 +17,7 @@ import type {
 } from "../types";
 import { GithubClient } from "./githubClient";
 import { ZipGithubClient } from "./zipGithubClient";
-import { chat } from "./aiClient";
+import { chatAuto } from "./aiClient";
 import { classifyPath, isLikelyImportant, isUsefulPath } from "./fileRules";
 import { expandFeatureKeywords } from "./featureKeywords";
 import { extractImports } from "./imports";
@@ -58,6 +58,12 @@ type TimingCollector = {
 
 type TimingNumberKey = "githubMs" | "treeMs" | "fileMs" | "contextMs" | "modelMs" | "totalMs";
 
+type AnalysisRunOptions = {
+  onModelStart?: () => void;
+  onModelDelta?: (text: string) => void;
+  onModelDone?: () => void;
+};
+
 type BrowserStorageArea = {
   get(key: string | null, callback: (items: Record<string, unknown>) => void): void;
   set(items: Record<string, unknown>, callback: () => void): void;
@@ -80,7 +86,7 @@ const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
   reasons: ["Using previous CodePath analysis context"]
 };
 
-export async function analyzeProject(repo: RepoRef, settings: Settings): Promise<ProjectOverview> {
+export async function analyzeProject(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
   const timing = createTiming();
   const cachedOverview = findCachedOverview(repo);
   if (cachedOverview) return withTiming(cachedOverview, timing, { cacheHit: true });
@@ -100,7 +106,7 @@ export async function analyzeProject(repo: RepoRef, settings: Settings): Promise
   const selected = pickImportantFiles(context.usefulFiles, context.profile);
   const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, context.profile.kind === "python-ml" ? 22000 : 16000, timing);
 
-  const content = await measure(timing, "modelMs", () => chat(settings, [
+  const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
     {
       role: "user",
@@ -120,7 +126,7 @@ ${context.treeSummary}
 Key file contents:
 ${formatSnippets(snippets)}`
     }
-  ]));
+  ], options);
 
   const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
   overviewCache.set(cacheKey, overview);
@@ -128,7 +134,7 @@ ${formatSnippets(snippets)}`
   return withTiming(overview, timing);
 }
 
-export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string): Promise<FeaturePath> {
+export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions = {}): Promise<FeaturePath> {
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing));
@@ -141,7 +147,7 @@ export async function analyzeFeature(repo: RepoRef, settings: Settings, feature:
   const snippets = await loadSnippetsCached(gh, repo, context.branch, candidates, 24000, timing);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
 
-  const content = await measure(timing, "modelMs", () => chat(settings, [
+  const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
     {
       role: "user",
@@ -166,7 +172,7 @@ ${withImports.map((item) => `- ${item.path} (${classifyPath(item.path)}) imports
 Source snippets:
 ${formatSnippets(withImports)}`
     }
-  ]));
+  ], options);
 
   const result = {
     feature,
@@ -177,7 +183,7 @@ ${formatSnippets(withImports)}`
   return withTiming(result, timing);
 }
 
-export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode): Promise<SkillBlueprint> {
+export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode, options: AnalysisRunOptions = {}): Promise<SkillBlueprint> {
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing));
@@ -191,7 +197,7 @@ export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, 
   const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, 28000, timing);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
 
-  const content = await measure(timing, "modelMs", () => chat(settings, [
+  const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
     {
       role: "user",
@@ -212,7 +218,7 @@ ${withImports.map((item) => `- ${item.path} (${classifyPath(item.path)}) imports
 Source snippets:
 ${formatSnippets(withImports)}`
     }
-  ]));
+  ], options);
 
   const result = {
     feature,
@@ -224,7 +230,7 @@ ${formatSnippets(withImports)}`
   return withTiming(result, timing);
 }
 
-export async function explainFile(repo: RepoRef, settings: Settings): Promise<FileExplanation> {
+export async function explainFile(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<FileExplanation> {
   const timing = createTiming();
   if (!repo.path) throw new Error("The current page is not a GitHub file page.");
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
@@ -236,7 +242,7 @@ export async function explainFile(repo: RepoRef, settings: Settings): Promise<Fi
   const content = await loadFileCached(gh, repo, repo.branch || context.branch, repo.path, timing);
   const imports = extractImports(content);
 
-  const summary = await measure(timing, "modelMs", () => chat(settings, [
+  const summary = await runModel(timing, settings, [
     systemPrompt(context.profile),
     {
       role: "user",
@@ -257,21 +263,21 @@ Please explain:
 Source:
 ${truncate(content, 18000)}`
     }
-  ]));
+  ], options);
 
   const result = { path: repo.path, summary, sources: [{ path: repo.path }] };
   fileExplanationCache.set(cacheKey, result);
   return withTiming(result, timing);
 }
 
-export async function answerQuestion(repo: RepoRef, settings: Settings, question: string, context?: string): Promise<ProjectOverview> {
+export async function answerQuestion(repo: RepoRef, settings: Settings, question: string, context?: string, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
   const timing = createTiming();
   if (context && context.trim().length > 500 && !needsSourceLookup(question)) {
     const cacheKey = questionCacheKey(repo, "context", question, context);
     const cached = questionCache.get(cacheKey);
     if (cached) return withTiming(cached, timing, { cacheHit: true });
 
-    const content = await measure(timing, "modelMs", () => chat(settings, [
+    const content = await runModel(timing, settings, [
       systemPrompt(GENERIC_CONTEXT_PROFILE),
       {
         role: "user",
@@ -287,7 +293,7 @@ ${truncate(context, 12000)}
 User question:
 ${question}`
       }
-    ]));
+    ], options);
 
     const result = { summary: content, sources: [] };
     questionCache.set(cacheKey, result);
@@ -309,7 +315,7 @@ ${question}`
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(repoContext.usefulFiles, repoContext.profile).slice(0, 14);
   const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, selected, 22000, timing);
 
-  const content = await measure(timing, "modelMs", () => chat(settings, [
+  const content = await runModel(timing, settings, [
     systemPrompt(repoContext.profile),
     {
       role: "user",
@@ -328,7 +334,7 @@ ${question}
 Relevant source snippets:
 ${formatSnippets(snippets)}`
     }
-  ]));
+  ], options);
 
   const result = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
   questionCache.set(cacheKey, result);
@@ -400,6 +406,23 @@ async function measure<T>(collector: TimingCollector | undefined, key: TimingNum
   } finally {
     if (collector) collector.timing[key] = (collector.timing[key] ?? 0) + Date.now() - startedAt;
   }
+}
+
+async function runModel(
+  collector: TimingCollector,
+  settings: Settings,
+  messages: Array<{ role: "system" | "user"; content: string }>,
+  options: AnalysisRunOptions
+): Promise<string> {
+  return measure(collector, "modelMs", async () => {
+    const willStream = settings.supportsStreaming === true && Boolean(options.onModelDelta);
+    if (willStream) options.onModelStart?.();
+    try {
+      return await chatAuto(settings, messages, options.onModelDelta);
+    } finally {
+      if (willStream) options.onModelDone?.();
+    }
+  });
 }
 
 function withTiming<T extends object>(

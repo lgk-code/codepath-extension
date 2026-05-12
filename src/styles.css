@@ -292,6 +292,10 @@
   border-top: 1px solid #d8dee4;
 }
 
+.cp-chat-item-streaming {
+  border-top-color: #54aeff;
+}
+
 .cp-chat-item > strong {
   display: block;
   margin-bottom: 10px;
@@ -410,6 +414,21 @@
 .cp-result {
   border-top: 1px solid #d8dee4;
   padding-top: 12px;
+}
+
+.cp-stream-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cp-stream-placeholder {
+  border: 1px dashed #d0d7de;
+  border-radius: 6px;
+  padding: 10px;
+  color: #57606a;
+  background: #f6f8fa;
+  font-size: 12px;
 }
 
 .cp-markdown {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, ChevronRight, Clipboard, Download, FileCode2, KeyRound, Layers3, Map, MessageSquare, RefreshCw, Route, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -43,13 +43,23 @@ type ChatTurn = {
   timing?: TimingBreakdown;
 };
 
+type StreamTarget = "overview" | "feature" | "file" | "skill" | "ask";
+
+type ActiveStream = {
+  target: StreamTarget;
+  question?: string;
+  text: string;
+  receivedDelta: boolean;
+  expectsStreaming: boolean;
+};
+
 const DEFAULT_QUESTIONS = [
   "我第一次看这个项目，应该先读哪些文件？",
   "用大白话按步骤解释这个项目的主流程。",
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-12-usage-loop";
+const UI_VERSION = "dev-2026-05-13-streaming-ui-fix";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -59,6 +69,7 @@ export function Sidebar() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState("");
   const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
+  const [activeStream, setActiveStream] = useState<ActiveStream | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState("");
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
@@ -77,6 +88,8 @@ export function Sidebar() {
   const [lastCacheClearResult, setLastCacheClearResult] = useState<CacheClearResult | null>(null);
   const [expandedCacheRepos, setExpandedCacheRepos] = useState<Record<string, boolean>>({});
   const [suggestionSeed, setSuggestionSeed] = useState(0);
+  const contentRef = useRef<HTMLElement | null>(null);
+  const autoScrollRef = useRef(true);
 
   useEffect(() => {
     send<Settings>({ type: "get-settings" }).then(setSettings).catch((err) => setError(err.message));
@@ -100,23 +113,55 @@ export function Sidebar() {
     if (tab === "settings") void refreshCacheStats();
   }, [tab, repo?.owner, repo?.repo, repo?.branch]);
 
+  useEffect(() => {
+    if (!activeStream || !autoScrollRef.current) return;
+    const element = contentRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight });
+  }, [activeStream?.text]);
+
   const title = useMemo(() => (repo ? `${repo.owner}/${repo.repo}` : "No GitHub repository detected"), [repo]);
 
-  async function run<T>(label: string, action: () => Promise<T>, onDone: (value: T, elapsedMs: number) => void) {
+  async function run<T>(
+    target: StreamTarget,
+    label: string,
+    action: (onDelta: (text: string) => void) => Promise<T>,
+    onDone: (value: T, elapsedMs: number) => void,
+    meta: { question?: string } = {}
+  ) {
     const startedAt = Date.now();
     setLoading(label);
     setLoadingStartedAt(startedAt);
+    autoScrollRef.current = isContentNearBottom();
+    setActiveStream({ target, question: meta.question, text: "", receivedDelta: false, expectsStreaming: settings.supportsStreaming === true });
     setNow(startedAt);
     setError("");
     try {
-      const value = await action();
+      const value = await action((text) =>
+        setActiveStream((current) =>
+          current && current.target === target
+            ? { ...current, text: current.text + text, receivedDelta: true }
+            : current
+        )
+      );
       onDone(value, Date.now() - startedAt);
     } catch (err) {
       setError(formatRunError(label, repo, Date.now() - startedAt, err));
     } finally {
       setLoading("");
       setLoadingStartedAt(null);
+      setActiveStream(null);
     }
+  }
+
+  function isContentNearBottom() {
+    const element = contentRef.current;
+    if (!element) return true;
+    return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+  }
+
+  function handleContentScroll() {
+    autoScrollRef.current = isContentNearBottom();
   }
 
   async function saveSettings(next: Settings) {
@@ -127,16 +172,10 @@ export function Sidebar() {
       const saved = await send<Settings>({ type: "save-settings", settings: next });
       const verified = await send<Settings>({ type: "get-settings" });
       setSettings({ ...saved, ...verified });
-      setSettingsDiagnostics({
-        provider: verified.provider,
-        apiKeyPreview: maskSecret(verified.apiKey),
-        hasApiKey: Boolean(verified.apiKey),
-        baseUrl: verified.baseUrl,
-        model: verified.model,
-        githubTokenPreview: maskSecret(verified.githubToken || ""),
-        hasGithubToken: Boolean(verified.githubToken)
-      });
-      setSettingsStatus(`设置已保存。API Key: ${maskSecret(verified.apiKey)}`);
+      const diagnostics = await send<SettingsDiagnostics>({ type: "test-settings", repo: repo || undefined });
+      setSettingsDiagnostics(diagnostics);
+      setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming }));
+      setSettingsStatus(`设置已保存并测试。API Key: ${maskSecret(verified.apiKey)}`);
     } catch (err) {
       setSettingsStatus("");
       setError(humanizeError(err));
@@ -149,6 +188,7 @@ export function Sidebar() {
     try {
       const diagnostics = await send<SettingsDiagnostics>({ type: "test-settings", repo: repo || undefined });
       setSettingsDiagnostics(diagnostics);
+      setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming }));
       setSettingsStatus(diagnostics.hasApiKey ? `已保存 API Key: ${diagnostics.apiKeyPreview}` : "未读取到已保存的 Qwen API Key。");
     } catch (err) {
       setSettingsStatus("");
@@ -169,20 +209,22 @@ export function Sidebar() {
     const trimmed = text.trim();
     if (!repo || !trimmed || loading) return;
 
+    setTab("ask");
     run(
+      "ask",
       "正在回答问题...",
-      () =>
+      (onDelta) =>
         send<ProjectOverview>({
           type: "answer-question",
           repo,
           question: trimmed,
           context: buildAskContext(overview, featurePath, fileExplanation, answers)
-        }),
+        }, onDelta),
       (answer, elapsedMs) => {
         setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
         setQuestion("");
-        setTab("ask");
-      }
+      },
+      { question: trimmed }
     );
   }
 
@@ -289,18 +331,19 @@ export function Sidebar() {
       {error && <div className="cp-alert">{error}</div>}
       {loading && <div className="cp-loading">{formatLoadingStatus(loading, loadingStartedAt, now)}</div>}
 
-      <main className="cp-content">
+      <main className="cp-content" ref={contentRef} onScroll={handleContentScroll}>
         {tab === "overview" && (
           <section className="cp-section">
             <p>分析项目用途、技术栈、目录职责、入口文件和推荐阅读路线。</p>
             <button
               className="cp-primary"
               disabled={!repo || !!loading}
-              onClick={() => repo && run("正在分析项目...", () => send<ProjectOverview>({ type: "analyze-project", repo }), setOverview)}
+              onClick={() => repo && run("overview", "正在分析项目...", (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo }, onDelta), setOverview)}
             >
               <BookOpen size={16} />
               分析项目
             </button>
+            {activeStream?.target === "overview" && <StreamPreview repo={repo} stream={activeStream} />}
             {overview && (
               <>
                 <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
@@ -323,11 +366,12 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || !feature.trim() || !!loading}
-              onClick={() => repo && run("正在分析功能路径...", () => send<FeaturePath>({ type: "analyze-feature", repo, feature }), setFeaturePath)}
+              onClick={() => repo && run("feature", "正在分析功能路径...", (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta), setFeaturePath)}
             >
               <Route size={16} />
               分析功能路径
             </button>
+            {activeStream?.target === "feature" && <StreamPreview repo={repo} stream={activeStream} />}
             {featurePath && (
               <>
                 <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
@@ -350,11 +394,12 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || repo.pageType !== "file" || !!loading}
-              onClick={() => repo && run("正在解释当前文件...", () => send<FileExplanation>({ type: "explain-file", repo }), setFileExplanation)}
+              onClick={() => repo && run("file", "正在解释当前文件...", (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta), setFileExplanation)}
             >
               <FileCode2 size={16} />
               解释当前文件
             </button>
+            {activeStream?.target === "file" && <StreamPreview repo={repo} stream={activeStream} />}
             {fileExplanation && (
               <>
                 <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
@@ -393,8 +438,9 @@ export function Sidebar() {
               onClick={() =>
                 repo &&
                 run(
+                  "skill",
                   "正在生成借鉴材料...",
-                  () => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }),
+                  (onDelta) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta),
                   setSkillBlueprint
                 )
               }
@@ -402,6 +448,7 @@ export function Sidebar() {
               <Layers3 size={16} />
               生成 Skill / 蓝图
             </button>
+            {activeStream?.target === "skill" && <StreamPreview repo={repo} stream={activeStream} />}
             {skillBlueprint && (
               <>
                 <div className="cp-action-row">
@@ -435,7 +482,7 @@ export function Sidebar() {
         {tab === "ask" && (
           <section className="cp-section">
             <p>这里是后续追问记录。你可以在底部输入问题，也可以点击推荐问题直接发送。</p>
-            {answers.length === 0 ? (
+            {answers.length === 0 && activeStream?.target !== "ask" ? (
               <SuggestionList suggestions={DEFAULT_QUESTIONS} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
             ) : (
               <div className="cp-chat-list">
@@ -446,6 +493,12 @@ export function Sidebar() {
                     <MarkdownBlock repo={repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
                   </article>
                 ))}
+                {activeStream?.target === "ask" && (
+                  <article className="cp-chat-item cp-chat-item-streaming">
+                    <strong>问：{activeStream.question || "正在回答的问题"}</strong>
+                    <StreamPreview repo={repo} stream={activeStream} />
+                  </article>
+                )}
               </div>
             )}
           </section>
@@ -721,6 +774,12 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
             <dd>{diagnostics.modelCheck}</dd>
           </div>
         )}
+        {(diagnostics?.streamingCheck || props.draft.supportsStreaming !== undefined) && (
+          <div>
+            <dt>流式输出</dt>
+            <dd>{diagnostics?.streamingCheck || (props.draft.supportsStreaming ? "已记录：支持流式输出。" : "已记录：不支持流式输出，将使用普通一次性返回。")}</dd>
+          </div>
+        )}
       </dl>
     </div>
   );
@@ -796,6 +855,24 @@ function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: str
             )
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function StreamPreview(props: { repo: RepoRef | null; stream: ActiveStream }) {
+  const status = props.stream.receivedDelta
+    ? "正在实时接收模型输出..."
+    : props.stream.expectsStreaming
+      ? "流式输出已启用，等待模型首段内容..."
+      : "当前使用普通一次性返回...";
+  return (
+    <div className="cp-stream-preview">
+      <div className="cp-chat-meta">{status}</div>
+      {props.stream.text ? (
+        <MarkdownBlock repo={props.repo} text={props.stream.text} sources={[]} />
+      ) : (
+        <div className="cp-stream-placeholder">模型准备好后会在这里显示回答。</div>
       )}
     </div>
   );
@@ -996,18 +1073,18 @@ function formatElapsedCompact(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
-async function send<T>(request: RuntimeRequest): Promise<T> {
-  const response = await sendBestEffort<T>(request);
+async function send<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<T> {
+  const response = await sendBestEffort<T>(request, onStreamDelta);
   if (!response.ok) throw new Error(response.error || "Request failed.");
   return response.data as T;
 }
 
-async function sendBestEffort<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
+async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<RuntimeResponse<T>> {
   const storageResponse = await sendSettingsViaStorage<T>(request).catch(() => undefined);
   if (storageResponse?.ok) return storageResponse;
 
   const portError: { message?: string } = {};
-  const portResponse = await sendViaPort<T>(request).catch((error) => {
+  const portResponse = await sendViaPort<T>(request, onStreamDelta).catch((error) => {
     portError.message = error instanceof Error ? error.message : String(error);
     return undefined;
   });
@@ -1100,7 +1177,8 @@ function readLocalSettings(): Settings {
     apiKey: window.localStorage.getItem("codepath.apiKey") || "",
     baseUrl: window.localStorage.getItem("codepath.baseUrl") || DEFAULT_SETTINGS.baseUrl,
     model: window.localStorage.getItem("codepath.model") || DEFAULT_SETTINGS.model,
-    githubToken: window.localStorage.getItem("codepath.githubToken") || ""
+    githubToken: window.localStorage.getItem("codepath.githubToken") || "",
+    supportsStreaming: window.localStorage.getItem("codepath.supportsStreaming") === "true"
   };
 }
 
@@ -1109,6 +1187,7 @@ function writeLocalSettings(settings: Settings) {
   window.localStorage.setItem("codepath.baseUrl", settings.baseUrl || DEFAULT_SETTINGS.baseUrl);
   window.localStorage.setItem("codepath.model", settings.model || DEFAULT_SETTINGS.model);
   window.localStorage.setItem("codepath.githubToken", settings.githubToken || "");
+  window.localStorage.setItem("codepath.supportsStreaming", settings.supportsStreaming ? "true" : "false");
 }
 
 function getExtensionSettings(): Promise<Settings> {
@@ -1215,7 +1294,7 @@ function sendViaMessage<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>>
   });
 }
 
-function sendViaPort<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
+function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<RuntimeResponse<T>> {
   return new Promise((resolve, reject) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const port = chrome.runtime.connect({ name: "codepath" });
@@ -1224,8 +1303,13 @@ function sendViaPort<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
     }, 120000);
 
     port.onMessage.addListener((message: unknown) => {
-      const envelope = message as Extract<PortMessage, { response: RuntimeResponse<unknown> }>;
+      const envelope = message as Exclude<PortMessage, { request: RuntimeRequest }>;
       if (envelope.id !== id) return;
+      if ("event" in envelope) {
+        if (envelope.event === "stream-delta" && envelope.text) onStreamDelta?.(envelope.text);
+        if (envelope.event === "stream-error") reject(new Error(envelope.error || "Streaming failed."));
+        return;
+      }
       window.clearTimeout(timeout);
       resolve(envelope.response as RuntimeResponse<T>);
     });

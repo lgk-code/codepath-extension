@@ -11,15 +11,25 @@ import {
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../src/lib/analyzer";
-import { chat } from "../src/lib/aiClient";
+import { chat, probeStreamingSupport } from "../src/lib/aiClient";
 import { GithubClient } from "../src/lib/githubClient";
+
+type StreamHandlers = {
+  onModelStart?: () => void;
+  onModelDelta?: (text: string) => void;
+  onModelDone?: () => void;
+};
 
 export default defineBackground(() => {
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== "codepath") return;
     port.onMessage.addListener((message: unknown) => {
       const envelope = message as Extract<PortMessage, { request: RuntimeRequest }>;
-      handleRequest(envelope.request).then((response) => {
+      handleRequest(envelope.request, {
+        onModelStart: () => port.postMessage({ id: envelope.id, event: "stream-start" } satisfies PortMessage),
+        onModelDelta: (text) => port.postMessage({ id: envelope.id, event: "stream-delta", text } satisfies PortMessage),
+        onModelDone: () => port.postMessage({ id: envelope.id, event: "stream-done" } satisfies PortMessage)
+      }).then((response) => {
         port.postMessage({ id: envelope.id, response } satisfies PortMessage);
       });
     });
@@ -31,7 +41,7 @@ export default defineBackground(() => {
   });
 });
 
-async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<unknown>> {
+async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHandlers = {}): Promise<RuntimeResponse<unknown>> {
   try {
     if (request.type === "get-settings") {
       return ok(await getSettings());
@@ -65,23 +75,23 @@ async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<u
     const settings = await getSettings();
 
     if (request.type === "analyze-project") {
-      return ok(await analyzeProject(request.repo, settings));
+      return ok(await analyzeProject(request.repo, settings, streamHandlers));
     }
 
     if (request.type === "analyze-feature") {
-      return ok(await analyzeFeature(request.repo, settings, request.feature));
+      return ok(await analyzeFeature(request.repo, settings, request.feature, streamHandlers));
     }
 
     if (request.type === "generate-skill-blueprint") {
-      return ok(await generateSkillBlueprint(request.repo, settings, request.feature, request.mode));
+      return ok(await generateSkillBlueprint(request.repo, settings, request.feature, request.mode, streamHandlers));
     }
 
     if (request.type === "explain-file") {
-      return ok(await explainFile(request.repo, settings));
+      return ok(await explainFile(request.repo, settings, streamHandlers));
     }
 
     if (request.type === "answer-question") {
-      return ok(await answerQuestion(request.repo, settings, request.question, request.context));
+      return ok(await answerQuestion(request.repo, settings, request.question, request.context, streamHandlers));
     }
 
     return fail("Unknown request.");
@@ -137,7 +147,8 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
     baseUrl: settings.baseUrl,
     model: settings.model,
     githubTokenPreview: maskSecret(settings.githubToken || ""),
-    hasGithubToken: Boolean(settings.githubToken)
+    hasGithubToken: Boolean(settings.githubToken),
+    supportsStreaming: settings.supportsStreaming
   };
 
   if (request.repo) {
@@ -158,11 +169,19 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
         { role: "user", content: "Reply only: OK" }
       ]);
       diagnostics.modelCheck = `模型连接正常：${settings.model}。`;
+      const streaming = await probeStreamingSupport(settings);
+      diagnostics.supportsStreaming = streaming.supported;
+      diagnostics.streamingCheck = streaming.message;
+      await storageSet({ [SETTINGS_KEY]: { ...settings, supportsStreaming: streaming.supported } });
     } catch (error) {
       diagnostics.modelCheck = formatModelDiagnostic(error);
+      diagnostics.supportsStreaming = false;
+      diagnostics.streamingCheck = "流式输出未测试：模型连接失败，请先修复模型配置。";
     }
   } else {
     diagnostics.modelCheck = "模型连接未测试：未填写 API Key。";
+    diagnostics.supportsStreaming = false;
+    diagnostics.streamingCheck = "流式输出未测试：未填写 API Key。";
   }
 
   return diagnostics;
