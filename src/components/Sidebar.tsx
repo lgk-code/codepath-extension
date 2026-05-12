@@ -228,7 +228,7 @@ export function Sidebar() {
             {overview && (
               <>
                 <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
-                <SuggestionList suggestions={overviewSuggestions()} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList suggestions={overviewSuggestions(overview, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
               </>
             )}
           </section>
@@ -249,7 +249,7 @@ export function Sidebar() {
             {featurePath && (
               <>
                 <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
-                <SuggestionList suggestions={featureSuggestions(featurePath.feature)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList suggestions={featureSuggestions(featurePath, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
               </>
             )}
           </section>
@@ -270,7 +270,7 @@ export function Sidebar() {
             {fileExplanation && (
               <>
                 <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
-                <SuggestionList suggestions={fileSuggestions(fileExplanation.path)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList suggestions={fileSuggestions(fileExplanation, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
               </>
             )}
           </section>
@@ -322,6 +322,7 @@ export function Sidebar() {
                   sources={skillBlueprint.sources.map((item) => item.path)}
                   timing={skillBlueprint.timing}
                 />
+                <SuggestionList suggestions={skillSuggestions(skillBlueprint, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
               </>
             )}
           </section>
@@ -539,7 +540,7 @@ function SuggestionList(props: {
 
   return (
     <div className="cp-suggestions">
-      <strong>推荐追问</strong>
+      <strong>基于当前分析的推荐追问</strong>
       {props.suggestions.map((suggestion) => (
         <div key={suggestion} className="cp-suggestion-row">
           <button
@@ -601,28 +602,130 @@ function TimingMeta(props: { timing: TimingBreakdown }) {
   return <div className="cp-chat-meta">{parts.join(" · ")}</div>;
 }
 
-function overviewSuggestions(): string[] {
-  return [
-    "按步骤解释这个项目的主执行流程。",
-    "如果我要二次开发，应该先读哪些文件？",
-    "训练、推理和评估入口分别在哪里？"
-  ];
+function overviewSuggestions(overview: ProjectOverview, repo: RepoRef | null): string[] {
+  return buildContextualSuggestions({
+    repo,
+    summary: overview.summary,
+    sources: overview.sources.map((source) => source.path),
+    fallback: [
+      "按步骤解释这个项目的主执行流程。",
+      "如果我要二次开发，应该先读哪些文件？",
+      "这个项目的配置、入口和核心模块分别在哪里？"
+    ]
+  });
 }
 
-function featureSuggestions(feature: string): string[] {
-  return [
-    `按文件顺序解释「${feature}」的实现流程。`,
-    `如果我要修改「${feature}」，应该改哪些文件？`,
-    `修改「${feature}」时有哪些风险？`
-  ];
+function featureSuggestions(featurePath: FeaturePath, repo: RepoRef | null): string[] {
+  return buildContextualSuggestions({
+    repo,
+    label: featurePath.feature,
+    summary: featurePath.summary,
+    sources: featurePath.sources.map((source) => source.path),
+    fallback: [
+      `按文件顺序解释「${featurePath.feature}」的实现流程。`,
+      `如果我要修改「${featurePath.feature}」，应该改哪些文件？`,
+      `修改「${featurePath.feature}」时有哪些风险？`
+    ]
+  });
 }
 
-function fileSuggestions(path: string): string[] {
-  return [
-    `用大白话解释 ${path} 的核心逻辑。`,
-    `${path} 依赖谁？又被哪些模块依赖？`,
-    `修改 ${path} 前需要注意什么？`
-  ];
+function fileSuggestions(fileExplanation: FileExplanation, repo: RepoRef | null): string[] {
+  return buildContextualSuggestions({
+    repo,
+    label: fileExplanation.path,
+    summary: fileExplanation.summary,
+    sources: [fileExplanation.path, ...fileExplanation.sources.map((source) => source.path)],
+    fallback: [
+      `用大白话解释 ${fileExplanation.path} 的核心逻辑。`,
+      `${fileExplanation.path} 依赖谁？又被哪些模块依赖？`,
+      `修改 ${fileExplanation.path} 前需要注意什么？`
+    ]
+  });
+}
+
+function skillSuggestions(skillBlueprint: SkillBlueprint, repo: RepoRef | null): string[] {
+  return buildContextualSuggestions({
+    repo,
+    label: skillBlueprint.feature,
+    summary: skillBlueprint.summary,
+    sources: skillBlueprint.sources.map((source) => source.path),
+    fallback: [
+      `把「${skillBlueprint.feature}」拆成 OpenClaw 可执行的开发步骤。`,
+      `基于「${skillBlueprint.feature}」生成新项目最小可运行版本计划。`,
+      `这个 Skill 里哪些内容可以复用，哪些不能照搬？`
+    ]
+  });
+}
+
+function buildContextualSuggestions(input: {
+  repo: RepoRef | null;
+  label?: string;
+  summary: string;
+  sources: string[];
+  fallback: string[];
+}): string[] {
+  const text = `${input.repo ? `${input.repo.owner}/${input.repo.repo} ${input.repo.path ?? ""}` : ""}\n${input.label ?? ""}\n${input.summary}\n${input.sources.join("\n")}`;
+  const lower = text.toLowerCase();
+  const suggestions: string[] = [];
+  const sourceFocus = pickSourceFocus(input.sources);
+  const label = input.label?.trim();
+
+  if (hasAny(lower, ["training/", "train.py", "trainer", "datasets", "dataloader", "torch", "pytorch", "eval/"])) {
+    suggestions.push("训练入口、数据加载、配置文件和评估流程分别在哪里？");
+    suggestions.push("按训练流程顺序说明这些源码文件如何协作。");
+  }
+
+  if (hasAny(lower, ["scripts/codepath-mcp.ts", "mcp", "stdio", "registertool", "server"])) {
+    suggestions.push("MCP 工具是在哪里注册的，输入输出结构是什么？");
+    suggestions.push("OpenClaw 调用这个 MCP 时完整链路怎么走？");
+  }
+
+  if (hasAny(lower, ["src/components", "react", "tsx", "content.tsx", "background.ts", "wxt", "manifest"])) {
+    suggestions.push("浏览器侧边栏、content script 和 background 之间如何通信？");
+    suggestions.push("如果我要改 UI 或新增按钮，应该优先看哪些文件？");
+  }
+
+  if (hasAny(lower, ["route", "routes", "pages/", "router", "api/", "store", "state"])) {
+    suggestions.push("页面路由、状态管理和 API 调用链路分别在哪里？");
+  }
+
+  if (hasAny(lower, ["readme", "package.json", "requirements.txt", "pyproject.toml", "environment.yml", "config", ".yaml", ".yml"])) {
+    suggestions.push("技术栈和启动配置分别能从哪些文件确认？");
+    suggestions.push("哪些配置是二次开发前必须先读懂的？");
+  }
+
+  if (sourceFocus) {
+    suggestions.push(`围绕 ${sourceFocus} 解释它在当前功能里的职责和修改风险。`);
+  }
+
+  if (label) {
+    suggestions.push(`如果要二次开发「${label}」，最小修改路径是什么？`);
+    suggestions.push(`把「${label}」整理成可交给 OpenClaw 的执行步骤。`);
+  }
+
+  return uniqueSuggestions([...suggestions, ...input.fallback]).slice(0, 3);
+}
+
+function hasAny(value: string, needles: string[]): boolean {
+  return needles.some((needle) => value.includes(needle));
+}
+
+function pickSourceFocus(sources: string[]): string {
+  return (
+    sources.find((source) => /(^|\/)(train|training|trainer|launch|main|server|background|content|codepath-mcp)\b/i.test(source)) ||
+    sources.find((source) => /\.(tsx?|jsx?|py|ya?ml|json|md)$/i.test(source)) ||
+    ""
+  );
+}
+
+function uniqueSuggestions(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
 }
 
 function readPanelWidth(): number {

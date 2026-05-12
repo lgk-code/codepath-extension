@@ -9,6 +9,7 @@ CodePath is a browser extension for reading GitHub source code without cloning, 
 - Analyzes a requested feature path, such as login, upload, search, or training flow
 - Explains the current GitHub file page
 - Supports global follow-up questions from Overview, Feature, File, and History views
+- Generates contextual follow-up questions from the current analysis and source references
 - Keeps follow-up answers in a conversation history view
 - Renders AI output as Markdown, including tables, lists, code, and bold text
 - Links source references back to GitHub files
