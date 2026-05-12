@@ -5,7 +5,8 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: "",
   baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   model: "qwen-plus",
-  githubToken: ""
+  githubToken: "",
+  streamingMode: "untested"
 };
 
 export const SETTINGS_KEY = "codepath-settings";

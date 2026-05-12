@@ -94,7 +94,7 @@ Open the CodePath Settings tab in the sidebar and configure:
 - Base URL: default is `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Model: default is `qwen-plus`
 - GitHub Token: optional, used to avoid anonymous GitHub API rate limits
-- Streaming output: detected automatically after Save and Test. If supported, browser-side analysis streams Markdown incrementally; if unsupported, CodePath keeps the original one-shot response behavior.
+- Streaming output: detected automatically after Save and Test. CodePath distinguishes realtime streaming, buffered streaming, unsupported streaming, and one-shot fallback.
 
 Do not commit API keys or tokens. Use the minimum required GitHub token permissions.
 
@@ -136,8 +136,8 @@ For the integration design, see [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md)
 
 ## Roadmap
 
-- Stabilize the real-use loop: docs, regression checks, diagnostics, demo cases, and release workflow
-- Improve project understanding with richer project-type templates and lightweight import graphs
+- Stabilize the real-use loop: streaming diagnostics, regression checks, docs, demo cases, and release workflow
+- Improve project understanding with richer project-type templates, lightweight import graphs, and clearer confirmed/inferred labels
 - Continue validating OpenClaw Skill / blueprint output with real projects
 - Add local project analysis mode after GitHub analysis is stable
 - Build structured knowledge views such as file responsibility maps and feature call chains

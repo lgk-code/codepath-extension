@@ -1,4 +1,4 @@
-import type { Settings } from "../types";
+import type { Settings, StreamingMode } from "../types";
 
 type ChatMessage = {
   role: "system" | "user";
@@ -16,6 +16,15 @@ type ChatResponse = {
 type StreamProbeResult = {
   supported: boolean;
   message: string;
+  mode: StreamingMode;
+  firstDeltaMs?: number;
+  deltaCount?: number;
+};
+
+type StreamResult = {
+  content: string;
+  firstDeltaMs?: number;
+  deltaCount: number;
 };
 
 class StreamingUnsupportedError extends Error {
@@ -59,7 +68,12 @@ export async function chat(settings: Settings, messages: ChatMessage[]): Promise
   return content;
 }
 
-export async function chatAuto(settings: Settings, messages: ChatMessage[], onDelta?: (text: string) => void): Promise<string> {
+export async function chatAuto(
+  settings: Settings,
+  messages: ChatMessage[],
+  onDelta?: (text: string) => void,
+  onFallback?: (reason: string) => void
+): Promise<string> {
   if (!onDelta || settings.supportsStreaming !== true) {
     return chat(settings, messages);
   }
@@ -68,17 +82,18 @@ export async function chatAuto(settings: Settings, messages: ChatMessage[], onDe
     return await chatStream(settings, messages, onDelta);
   } catch (error) {
     if (isAuthOrConfigError(error)) throw error;
+    onFallback?.(formatStreamingProbeError(error));
     return chat(settings, messages);
   }
 }
 
 export async function probeStreamingSupport(settings: Settings): Promise<StreamProbeResult> {
   if (!settings.apiKey) {
-    return { supported: false, message: "流式输出未测试：未填写 API Key。" };
+    return { supported: false, mode: "untested", message: "流式输出未测试：未填写 API Key。" };
   }
 
   try {
-    const content = await chatStream(
+    const result = await chatStreamDetailed(
       settings,
       [
         { role: "system", content: "You are a streaming connection test. Reply with OK." },
@@ -86,15 +101,30 @@ export async function probeStreamingSupport(settings: Settings): Promise<StreamP
       ],
       () => {}
     );
-    return content.trim()
-      ? { supported: true, message: "流式输出支持：当前 API 可使用增量返回。" }
-      : { supported: false, message: "流式输出不支持：接口没有返回有效增量内容，将使用普通一次性返回。" };
+    const mode: StreamingMode = result.deltaCount > 1 ? "realtime" : "buffered";
+    if (!result.content.trim()) {
+      return { supported: false, mode: "unsupported", message: "流式输出不支持：接口没有返回有效增量内容，将使用普通一次性返回。" };
+    }
+    return {
+      supported: true,
+      mode,
+      firstDeltaMs: result.firstDeltaMs,
+      deltaCount: result.deltaCount,
+      message:
+        mode === "realtime"
+          ? `流式输出支持：检测到 ${result.deltaCount} 个增量片段，首段约 ${formatMs(result.firstDeltaMs)} 到达。`
+          : `接口支持 stream=true，但只检测到 1 个增量片段，疑似服务端或代理缓冲；首段约 ${formatMs(result.firstDeltaMs)} 到达。`
+    };
   } catch (error) {
-    return { supported: false, message: `流式输出不支持：${formatStreamingProbeError(error)}。将使用普通一次性返回。` };
+    return { supported: false, mode: "unsupported", message: `流式输出不支持：${formatStreamingProbeError(error)}。将使用普通一次性返回。` };
   }
 }
 
 async function chatStream(settings: Settings, messages: ChatMessage[], onDelta: (text: string) => void): Promise<string> {
+  return (await chatStreamDetailed(settings, messages, onDelta)).content;
+}
+
+async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], onDelta: (text: string) => void): Promise<StreamResult> {
   if (!settings.apiKey) {
     throw new Error("请先在 Settings 中填写模型 API Key。");
   }
@@ -131,6 +161,9 @@ async function chatStream(settings: Settings, messages: ChatMessage[], onDelta: 
   const decoder = new TextDecoder();
   let buffer = "";
   let content = "";
+  let firstDeltaMs: number | undefined;
+  let deltaCount = 0;
+  const startedAt = Date.now();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -142,6 +175,8 @@ async function chatStream(settings: Settings, messages: ChatMessage[], onDelta: 
       const delta = parseSseLine(line);
       if (!delta) continue;
       content += delta;
+      deltaCount += 1;
+      firstDeltaMs ??= Date.now() - startedAt;
       onDelta(delta);
     }
   }
@@ -151,11 +186,13 @@ async function chatStream(settings: Settings, messages: ChatMessage[], onDelta: 
     const delta = parseSseLine(line);
     if (!delta) continue;
     content += delta;
+    deltaCount += 1;
+    firstDeltaMs ??= Date.now() - startedAt;
     onDelta(delta);
   }
 
   if (!content) throw new StreamingUnsupportedError("no streaming delta content");
-  return content;
+  return { content, firstDeltaMs, deltaCount };
 }
 
 function parseSseLine(line: string): string {
@@ -191,4 +228,10 @@ function formatStreamingProbeError(error: unknown): string {
     return "接口没有返回 OpenAI-compatible SSE 数据";
   }
   return message;
+}
+
+function formatMs(value: number | undefined): string {
+  if (value === undefined) return "未知时间";
+  if (value < 1000) return `${value}ms`;
+  return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`;
 }

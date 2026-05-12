@@ -34,7 +34,7 @@ type SourceClient = {
   getFile(owner: string, repo: string, path: string, ref: string): Promise<string>;
 };
 
-type ProjectKind = "python-ml" | "frontend" | "node-backend" | "python-app" | "generic";
+type ProjectKind = "python-ml" | "frontend" | "node-backend" | "python-app" | "library" | "generic";
 
 type ProjectProfile = {
   kind: ProjectKind;
@@ -62,6 +62,7 @@ type AnalysisRunOptions = {
   onModelStart?: () => void;
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
+  onModelFallback?: (reason: string) => void;
 };
 
 type BrowserStorageArea = {
@@ -105,6 +106,7 @@ export async function analyzeProject(repo: RepoRef, settings: Settings, options:
 
   const selected = pickImportantFiles(context.usefulFiles, context.profile);
   const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, context.profile.kind === "python-ml" ? 22000 : 16000, timing);
+  const structuralContext = buildStructuralContext(context, snippets);
 
   const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
@@ -122,6 +124,9 @@ Detected project type:
 
 Repository tree summary:
 ${context.treeSummary}
+
+Structural context:
+${structuralContext}
 
 Key file contents:
 ${formatSnippets(snippets)}`
@@ -146,6 +151,7 @@ export async function analyzeFeature(repo: RepoRef, settings: Settings, feature:
   const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 16);
   const snippets = await loadSnippetsCached(gh, repo, context.branch, candidates, 24000, timing);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
+  const structuralContext = buildStructuralContext(context, withImports);
 
   const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
@@ -158,6 +164,9 @@ Repository: ${repo.owner}/${repo.repo}
 Branch: ${context.branch}
 Detected project type: ${context.profile.label}
 Expanded keywords: ${keywords.join(", ")}
+
+Structural context:
+${structuralContext}
 
 Please output:
 1. What this feature probably does.
@@ -196,6 +205,7 @@ export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, 
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(context.usefulFiles, context.profile).slice(0, 18);
   const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, 28000, timing);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
+  const structuralContext = buildStructuralContext(context, withImports);
 
   const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
@@ -211,6 +221,9 @@ Expanded keywords: ${keywords.join(", ")}
 
 Repository tree summary:
 ${context.treeSummary}
+
+Structural context:
+${structuralContext}
 
 Candidate files:
 ${withImports.map((item) => `- ${item.path} (${classifyPath(item.path)}) imports: ${(item.imports ?? []).join(", ") || "none"}`).join("\n")}
@@ -241,6 +254,7 @@ export async function explainFile(repo: RepoRef, settings: Settings, options: An
 
   const content = await loadFileCached(gh, repo, repo.branch || context.branch, repo.path, timing);
   const imports = extractImports(content);
+  const structuralContext = buildStructuralContext(context, [{ path: repo.path, content, imports }]);
 
   const summary = await runModel(timing, settings, [
     systemPrompt(context.profile),
@@ -252,6 +266,9 @@ Repository: ${repo.owner}/${repo.repo}
 Detected project type: ${context.profile.label}
 File: ${repo.path}
 Imports: ${imports.join(", ") || "none"}
+
+Structural context:
+${structuralContext}
 
 Please explain:
 1. What this file is responsible for.
@@ -314,6 +331,7 @@ ${question}`
   const candidates = scoreFeatureFiles(repoContext.usefulFiles, keywords, repoContext.profile).slice(0, 14);
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(repoContext.usefulFiles, repoContext.profile).slice(0, 14);
   const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, selected, 22000, timing);
+  const structuralContext = buildStructuralContext(repoContext, snippets);
 
   const content = await runModel(timing, settings, [
     systemPrompt(repoContext.profile),
@@ -324,6 +342,9 @@ ${question}`
 Repository: ${repo.owner}/${repo.repo}
 Branch: ${repoContext.branch}
 Detected project type: ${repoContext.profile.label}
+
+Structural context:
+${structuralContext}
 
 Previous context:
 ${context ? truncate(context, 9000) : "None"}
@@ -418,7 +439,7 @@ async function runModel(
     const willStream = settings.supportsStreaming === true && Boolean(options.onModelDelta);
     if (willStream) options.onModelStart?.();
     try {
-      return await chatAuto(settings, messages, options.onModelDelta);
+      return await chatAuto(settings, messages, options.onModelDelta, options.onModelFallback);
     } finally {
       if (willStream) options.onModelDone?.();
     }
@@ -796,21 +817,36 @@ function detectProjectProfile(files: TreeFile[]): ProjectProfile {
   }
 
   if (has("package.json") && (has("src/") || has("app/") || has("pages/") || has("vite.config") || has("next.config"))) {
+    const frontendReasons = ["package.json plus frontend source/config files"];
+    if (has("vite.config")) frontendReasons.push("Vite config detected");
+    if (has("next.config")) frontendReasons.push("Next.js config detected");
+    if (has("src/components/") || has("components/")) frontendReasons.push("component directory detected");
     return {
       kind: "frontend",
       label: "Frontend JavaScript/TypeScript project",
-      confidence: "medium",
-      reasons: ["package.json plus frontend source/config files"]
+      confidence: has("vite.config") || has("next.config") ? "high" : "medium",
+      reasons: frontendReasons
     };
   }
 
-  if (has("package.json") && (has("server") || has("express") || has("fastify") || has("nestjs"))) {
+  if (has("package.json") && (has("server") || has("express") || has("fastify") || has("nestjs") || has("routes/") || has("middleware/"))) {
     return {
       kind: "node-backend",
       label: "Node.js backend project",
       confidence: "medium",
       reasons: ["package.json plus backend naming signals"]
     };
+  }
+
+  if (has("package.json") || has("pyproject.toml") || has("setup.py") || has("cargo.toml") || has("go.mod")) {
+    if (has("src/") || has("lib/") || has("packages/") || has("pkg/")) {
+      return {
+        kind: "library",
+        label: "Library or reusable package",
+        confidence: "medium",
+        reasons: ["package metadata plus reusable source directories"]
+      };
+    }
   }
 
   if (pythonFiles > 0) {
@@ -858,6 +894,23 @@ function profilePathScore(path: string, profile: ProjectProfile): number {
     if (p.includes("/pages/") || p.includes("/routes/") || p.includes("/components/") || p.includes("/api/") || p.includes("/store/")) score += 6;
   }
 
+  if (profile.kind === "node-backend") {
+    if (/package\.json|tsconfig\.json|server\.(ts|js)|app\.(ts|js)|index\.(ts|js)/.test(p)) score += 12;
+    if (p.includes("/routes/") || p.includes("/middleware/") || p.includes("/controllers/") || p.includes("/services/")) score += 8;
+    if (p.includes("/test") || p.includes("/examples/")) score += 3;
+  }
+
+  if (profile.kind === "python-app") {
+    if (/pyproject\.toml|requirements\.txt|setup\.py|main\.py|app\.py|__main__\.py/.test(p)) score += 12;
+    if (p.includes("/cli/") || p.includes("/api/") || p.includes("/services/") || p.includes("/tests/")) score += 5;
+  }
+
+  if (profile.kind === "library") {
+    if (/package\.json|pyproject\.toml|setup\.py|cargo\.toml|go\.mod|readme\.md/.test(p)) score += 12;
+    if (p.includes("/src/") || p.includes("/lib/") || p.includes("/packages/") || p.includes("/pkg/")) score += 8;
+    if (p.includes("/test") || p.includes("/examples/") || p.includes("/docs/")) score += 3;
+  }
+
   return score;
 }
 
@@ -899,6 +952,54 @@ function summarizeTree(files: TreeFile[]): string {
   return `Main directories:\n${dirText}\n\nSample files:\n${sampleFiles}`;
 }
 
+function buildStructuralContext(context: RepoAnalysisContext, snippets: FileSnippet[]): string {
+  const entryCandidates = pickEntryCandidates(context.usefulFiles, context.profile).slice(0, 10);
+  const configCandidates = context.usefulFiles
+    .filter((file) => /(^|\/)(package\.json|pyproject\.toml|requirements\.txt|environment\.ya?ml|vite\.config|next\.config|tsconfig\.json|go\.mod|cargo\.toml|setup\.py|config[\w.-]*\.(json|ya?ml|toml))$/i.test(file.path))
+    .slice(0, 12);
+  const importantDirs = summarizeImportantDirs(context.usefulFiles).slice(0, 12);
+  const importRelations = buildImportRelations(snippets).slice(0, 18);
+  return [
+    `Project type: ${context.profile.label} (${context.profile.confidence})`,
+    `Type signals: ${context.profile.reasons.join("; ") || "No strong signal"}`,
+    `Entry candidates:\n${entryCandidates.map((file) => `- ${file.path}`).join("\n") || "- none detected"}`,
+    `Key config/package files:\n${configCandidates.map((file) => `- ${file.path}`).join("\n") || "- none detected"}`,
+    `Important directories:\n${importantDirs.map(([dir, count]) => `- ${dir}: ${count} useful files`).join("\n") || "- none detected"}`,
+    `Import relationships from selected snippets:\n${importRelations.join("\n") || "- none detected"}`
+  ].join("\n\n");
+}
+
+function pickEntryCandidates(files: TreeFile[], profile: ProjectProfile): TreeFile[] {
+  const patterns: RegExp[] = [
+    /(^|\/)(main|index|app|server|cli|__main__)\.(ts|tsx|js|jsx|py|go|rs)$/i,
+    /(^|\/)(train|training|trainer|launch|infer|inference|eval|evaluate|demo)[\w.-]*\.py$/i,
+    /(^|\/)(vite\.config|next\.config|package\.json|pyproject\.toml)$/i
+  ];
+  if (profile.kind === "frontend") patterns.unshift(/src\/(main|index|app)\.(ts|tsx|js|jsx)$/i);
+  if (profile.kind === "node-backend") patterns.unshift(/(^|\/)(server|app|index)\.(ts|js)$/i);
+  return files.filter((file) => patterns.some((pattern) => pattern.test(file.path))).slice(0, 20);
+}
+
+function summarizeImportantDirs(files: TreeFile[]): Array<[string, number]> {
+  const dirs = new Map<string, number>();
+  for (const file of files) {
+    const parts = file.path.split("/");
+    const dir = parts.length > 1 ? parts.slice(0, Math.min(2, parts.length - 1)).join("/") : "(root)";
+    dirs.set(dir, (dirs.get(dir) ?? 0) + 1);
+  }
+  return [...dirs.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+}
+
+function buildImportRelations(snippets: FileSnippet[]): string[] {
+  return snippets
+    .map((snippet) => {
+      const imports = snippet.imports ?? extractImports(snippet.content);
+      if (imports.length === 0) return "";
+      return `- ${snippet.path} imports ${imports.slice(0, 8).join(", ")}`;
+    })
+    .filter(Boolean);
+}
+
 function formatSnippets(snippets: FileSnippet[]): string {
   return snippets.map((item) => `\n--- ${item.path} ---\n${item.content}`).join("\n");
 }
@@ -909,7 +1010,8 @@ function systemPrompt(profile: ProjectProfile) {
     content: `You are CodePath, a GitHub source-code guide for learners and secondary developers.
 The user does not want to deploy or run the project. They want to understand source code ideas, feature paths, and modification routes.
 Answer in clear Chinese. Use plain language, but keep file paths exact.
-Only use the provided tree and source snippets. If something is inferred, label it as inference.
+Only use the provided tree, structural context, and source snippets.
+Use stable sections named: 源码确认, 谨慎推断, 建议继续验证. Do not present inference as fact.
 Detected project type: ${profile.label}.`
   };
 }
@@ -941,6 +1043,41 @@ Do not invent files. Cite file paths for every important claim.`;
 6. Data/API layer.
 7. State management if present.
 8. Suggested reading route.
+
+Do not invent files. Cite file paths for every important claim.`;
+  }
+
+  if (profile.kind === "node-backend") {
+    return `Analyze this Node.js backend repository for a learner. Focus on:
+1. Project purpose.
+2. Server/application entry point.
+3. Route and middleware flow.
+4. Request/response handling path.
+5. Error handling and tests/examples if present.
+6. Suggested reading route for secondary development.
+
+Do not invent files. Cite file paths for every important claim.`;
+  }
+
+  if (profile.kind === "python-app") {
+    return `Analyze this Python application for a learner. Focus on:
+1. Project purpose.
+2. Runtime entry point.
+3. Configuration and dependency files.
+4. Core modules and service/data flow.
+5. Tests/examples if present.
+6. Suggested reading route for secondary development.
+
+Do not invent files. Cite file paths for every important claim.`;
+  }
+
+  if (profile.kind === "library") {
+    return `Analyze this reusable package/library for a learner. Focus on:
+1. Package purpose.
+2. Public entry points and exported modules.
+3. Internal module responsibilities.
+4. Examples/tests/docs reading path.
+5. What to reuse or adapt in a new project.
 
 Do not invent files. Cite file paths for every important claim.`;
   }

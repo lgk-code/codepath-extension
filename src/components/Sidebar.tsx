@@ -51,6 +51,8 @@ type ActiveStream = {
   text: string;
   receivedDelta: boolean;
   expectsStreaming: boolean;
+  mode: Settings["streamingMode"];
+  fallbackReason?: string;
 };
 
 const DEFAULT_QUESTIONS = [
@@ -59,7 +61,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-13-streaming-ui-fix";
+const UI_VERSION = "dev-2026-05-13-streaming-diagnostics";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -133,7 +135,14 @@ export function Sidebar() {
     setLoading(label);
     setLoadingStartedAt(startedAt);
     autoScrollRef.current = isContentNearBottom();
-    setActiveStream({ target, question: meta.question, text: "", receivedDelta: false, expectsStreaming: settings.supportsStreaming === true });
+    setActiveStream({
+      target,
+      question: meta.question,
+      text: "",
+      receivedDelta: false,
+      expectsStreaming: settings.supportsStreaming === true,
+      mode: settings.streamingMode || "untested"
+    });
     setNow(startedAt);
     setError("");
     try {
@@ -164,6 +173,14 @@ export function Sidebar() {
     autoScrollRef.current = isContentNearBottom();
   }
 
+  function markStreamFallback(target: StreamTarget, reason: string) {
+    setActiveStream((current) =>
+      current && current.target === target
+        ? { ...current, fallbackReason: reason, expectsStreaming: false, mode: "unsupported" }
+        : current
+    );
+  }
+
   async function saveSettings(next: Settings) {
     setSettings(next);
       setSettingsStatus("正在保存设置...");
@@ -174,7 +191,7 @@ export function Sidebar() {
       setSettings({ ...saved, ...verified });
       const diagnostics = await send<SettingsDiagnostics>({ type: "test-settings", repo: repo || undefined });
       setSettingsDiagnostics(diagnostics);
-      setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming }));
+      setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming, streamingMode: diagnostics.streamingMode }));
       setSettingsStatus(`设置已保存并测试。API Key: ${maskSecret(verified.apiKey)}`);
     } catch (err) {
       setSettingsStatus("");
@@ -188,7 +205,7 @@ export function Sidebar() {
     try {
       const diagnostics = await send<SettingsDiagnostics>({ type: "test-settings", repo: repo || undefined });
       setSettingsDiagnostics(diagnostics);
-      setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming }));
+      setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming, streamingMode: diagnostics.streamingMode }));
       setSettingsStatus(diagnostics.hasApiKey ? `已保存 API Key: ${diagnostics.apiKeyPreview}` : "未读取到已保存的 Qwen API Key。");
     } catch (err) {
       setSettingsStatus("");
@@ -219,7 +236,7 @@ export function Sidebar() {
           repo,
           question: trimmed,
           context: buildAskContext(overview, featurePath, fileExplanation, answers)
-        }, onDelta),
+        }, onDelta, (reason) => markStreamFallback("ask", reason)),
       (answer, elapsedMs) => {
         setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
         setQuestion("");
@@ -338,7 +355,7 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || !!loading}
-              onClick={() => repo && run("overview", "正在分析项目...", (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo }, onDelta), setOverview)}
+              onClick={() => repo && run("overview", "正在分析项目...", (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo }, onDelta, (reason) => markStreamFallback("overview", reason)), setOverview)}
             >
               <BookOpen size={16} />
               分析项目
@@ -366,7 +383,7 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || !feature.trim() || !!loading}
-              onClick={() => repo && run("feature", "正在分析功能路径...", (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta), setFeaturePath)}
+              onClick={() => repo && run("feature", "正在分析功能路径...", (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta, (reason) => markStreamFallback("feature", reason)), setFeaturePath)}
             >
               <Route size={16} />
               分析功能路径
@@ -394,7 +411,7 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || repo.pageType !== "file" || !!loading}
-              onClick={() => repo && run("file", "正在解释当前文件...", (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta), setFileExplanation)}
+              onClick={() => repo && run("file", "正在解释当前文件...", (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta, (reason) => markStreamFallback("file", reason)), setFileExplanation)}
             >
               <FileCode2 size={16} />
               解释当前文件
@@ -440,7 +457,7 @@ export function Sidebar() {
                 run(
                   "skill",
                   "正在生成借鉴材料...",
-                  (onDelta) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta),
+                  (onDelta) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta, (reason) => markStreamFallback("skill", reason)),
                   setSkillBlueprint
                 )
               }
@@ -777,12 +794,20 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
         {(diagnostics?.streamingCheck || props.draft.supportsStreaming !== undefined) && (
           <div>
             <dt>流式输出</dt>
-            <dd>{diagnostics?.streamingCheck || (props.draft.supportsStreaming ? "已记录：支持流式输出。" : "已记录：不支持流式输出，将使用普通一次性返回。")}</dd>
+            <dd>{diagnostics?.streamingCheck || streamingModeLabel(props.draft.streamingMode, props.draft.supportsStreaming)}</dd>
           </div>
         )}
       </dl>
     </div>
   );
+}
+
+function streamingModeLabel(mode: Settings["streamingMode"], supported?: boolean): string {
+  if (mode === "realtime") return "已记录：实时流式输出。";
+  if (mode === "buffered") return "已记录：支持 stream=true，但接口疑似缓冲。";
+  if (mode === "unsupported") return "已记录：不支持流式输出，将使用普通一次性返回。";
+  if (supported) return "已记录：支持流式输出。";
+  return "流式输出未测试或不可用，将使用普通一次性返回。";
 }
 
 function SuggestionList(props: {
@@ -861,14 +886,11 @@ function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: str
 }
 
 function StreamPreview(props: { repo: RepoRef | null; stream: ActiveStream }) {
-  const status = props.stream.receivedDelta
-    ? "正在实时接收模型输出..."
-    : props.stream.expectsStreaming
-      ? "流式输出已启用，等待模型首段内容..."
-      : "当前使用普通一次性返回...";
+  const status = streamStatusText(props.stream);
   return (
     <div className="cp-stream-preview">
       <div className="cp-chat-meta">{status}</div>
+      {props.stream.fallbackReason && <div className="cp-stream-placeholder">流式失败后已回退普通返回：{props.stream.fallbackReason}</div>}
       {props.stream.text ? (
         <MarkdownBlock repo={props.repo} text={props.stream.text} sources={[]} />
       ) : (
@@ -876,6 +898,17 @@ function StreamPreview(props: { repo: RepoRef | null; stream: ActiveStream }) {
       )}
     </div>
   );
+}
+
+function streamStatusText(stream: ActiveStream): string {
+  if (stream.fallbackReason) return "已回退普通一次性返回...";
+  if (stream.receivedDelta) return stream.mode === "buffered" ? "接口可能缓冲，正在接收模型输出..." : "正在实时接收模型输出...";
+  if (stream.expectsStreaming) {
+    if (stream.mode === "buffered") return "接口支持 stream=true，但疑似缓冲；正在等待模型内容...";
+    if (stream.mode === "realtime") return "实时流式已启用，等待模型首段内容...";
+    return "流式输出已启用，等待模型首段内容...";
+  }
+  return "当前使用普通一次性返回...";
 }
 
 function TimingMeta(props: { timing: TimingBreakdown }) {
@@ -1073,18 +1106,18 @@ function formatElapsedCompact(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
-async function send<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<T> {
-  const response = await sendBestEffort<T>(request, onStreamDelta);
+async function send<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<T> {
+  const response = await sendBestEffort<T>(request, onStreamDelta, onStreamFallback);
   if (!response.ok) throw new Error(response.error || "Request failed.");
   return response.data as T;
 }
 
-async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<RuntimeResponse<T>> {
+async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<RuntimeResponse<T>> {
   const storageResponse = await sendSettingsViaStorage<T>(request).catch(() => undefined);
   if (storageResponse?.ok) return storageResponse;
 
   const portError: { message?: string } = {};
-  const portResponse = await sendViaPort<T>(request, onStreamDelta).catch((error) => {
+  const portResponse = await sendViaPort<T>(request, onStreamDelta, onStreamFallback).catch((error) => {
     portError.message = error instanceof Error ? error.message : String(error);
     return undefined;
   });
@@ -1178,7 +1211,8 @@ function readLocalSettings(): Settings {
     baseUrl: window.localStorage.getItem("codepath.baseUrl") || DEFAULT_SETTINGS.baseUrl,
     model: window.localStorage.getItem("codepath.model") || DEFAULT_SETTINGS.model,
     githubToken: window.localStorage.getItem("codepath.githubToken") || "",
-    supportsStreaming: window.localStorage.getItem("codepath.supportsStreaming") === "true"
+    supportsStreaming: window.localStorage.getItem("codepath.supportsStreaming") === "true",
+    streamingMode: readLocalStreamingMode()
   };
 }
 
@@ -1188,6 +1222,13 @@ function writeLocalSettings(settings: Settings) {
   window.localStorage.setItem("codepath.model", settings.model || DEFAULT_SETTINGS.model);
   window.localStorage.setItem("codepath.githubToken", settings.githubToken || "");
   window.localStorage.setItem("codepath.supportsStreaming", settings.supportsStreaming ? "true" : "false");
+  window.localStorage.setItem("codepath.streamingMode", settings.streamingMode || "untested");
+}
+
+function readLocalStreamingMode(): Settings["streamingMode"] {
+  const value = window.localStorage.getItem("codepath.streamingMode");
+  if (value === "realtime" || value === "buffered" || value === "unsupported" || value === "untested") return value;
+  return "untested";
 }
 
 function getExtensionSettings(): Promise<Settings> {
@@ -1294,7 +1335,7 @@ function sendViaMessage<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>>
   });
 }
 
-function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<RuntimeResponse<T>> {
+function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<RuntimeResponse<T>> {
   return new Promise((resolve, reject) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const port = chrome.runtime.connect({ name: "codepath" });
@@ -1307,6 +1348,7 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
       if (envelope.id !== id) return;
       if ("event" in envelope) {
         if (envelope.event === "stream-delta" && envelope.text) onStreamDelta?.(envelope.text);
+        if (envelope.event === "stream-fallback") onStreamFallback?.(envelope.text || "未知原因");
         if (envelope.event === "stream-error") reject(new Error(envelope.error || "Streaming failed."));
         return;
       }

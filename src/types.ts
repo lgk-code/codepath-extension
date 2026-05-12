@@ -1,4 +1,5 @@
 export type Provider = "qwen" | "custom";
+export type StreamingMode = "realtime" | "buffered" | "unsupported" | "untested";
 
 export type Settings = {
   provider: Provider;
@@ -7,6 +8,7 @@ export type Settings = {
   model: string;
   githubToken?: string;
   supportsStreaming?: boolean;
+  streamingMode?: StreamingMode;
 };
 
 export type RepoRef = {
@@ -81,6 +83,9 @@ export type SettingsDiagnostics = {
   modelCheck?: string;
   streamingCheck?: string;
   supportsStreaming?: boolean;
+  streamingMode?: StreamingMode;
+  streamFirstDeltaMs?: number;
+  streamDeltaCount?: number;
 };
 
 export type CacheClearScope = "repo" | "all";
@@ -143,4 +148,4 @@ export type RuntimeResponse<T> = {
 export type PortMessage =
   | { id: string; request: RuntimeRequest }
   | { id: string; response: RuntimeResponse<unknown> }
-  | { id: string; event: "stream-start" | "stream-delta" | "stream-done" | "stream-error"; text?: string; error?: string };
+  | { id: string; event: "stream-start" | "stream-delta" | "stream-done" | "stream-error" | "stream-fallback"; text?: string; error?: string };

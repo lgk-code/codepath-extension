@@ -5,6 +5,7 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 ## 当前进展
 
 - 浏览器插件：已支持项目概览、功能路径、当前文件解释、追问、Markdown 渲染、源码路径链接、动态推荐追问、耗时显示。
+- 流式输出：已支持 OpenAI-compatible `stream=true` 的基础增量展示，并开始区分实时流式、接口缓冲、普通返回和失败回退。
 - Skill / 蓝图：已支持在侧边栏生成 OpenClaw Skill、新项目蓝图和给人读的技术分析，并可复制或下载 Markdown。
 - 缓存管理：已支持 tree、overview、file 持久化缓存，设置页可查看项目缓存列表，并按项目或单项删除。
 - MCP：已提供 `analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint` 四个工具，返回结构化 JSON 文本。
@@ -13,6 +14,7 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 ## 近期优先级
 
 1. **真实使用闭环**
+   - 稳定流式体验：设置页显示实时流式、疑似缓冲、不支持流式和连接失败未测试；结果生成时显示当前输出模式。
    - 修复和维护中文文档，确保 README、ROADMAP、MCP 教程和测试清单能直接指导新用户。
    - 把错误诊断拆清楚：GitHub 权限、rate limit、模型 Key、Base URL、模型名、网络失败分别给出操作建议。
    - 固定人工回归流程：compile、build、deploy:edge、MCP 工具名 smoke test、密钥扫描、真实项目手测。
@@ -23,9 +25,9 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
    - 增加 CodePath 自分析案例，展示 WXT、React、MCP、缓存管理在本项目中的调用关系。
 
 3. **分析质量提升**
-   - 增强项目类型模板：前端、Node 后端、Python 应用、Python ML、库项目。
-   - 构建轻量 import graph，辅助判断文件职责和调用链。
-   - 在输出中更稳定地区分“源码确认”和“谨慎推断”。
+   - 增强项目类型模板：前端、Node 后端、Python 应用、Python ML、库项目，并补充入口、配置和目录信号。
+   - 构建轻量 import graph：第一版只基于已读取 snippets，不全仓库深度解析，辅助判断文件职责和调用链。
+   - 在 prompt 和输出中稳定地区分“源码确认”“谨慎推断”“建议继续验证”。
 
 4. **Agent 使用深化**
    - 用 OpenClaw 实战验证 Skill 和蓝图的可执行性。

@@ -18,6 +18,7 @@ type StreamHandlers = {
   onModelStart?: () => void;
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
+  onModelFallback?: (reason: string) => void;
 };
 
 export default defineBackground(() => {
@@ -28,7 +29,8 @@ export default defineBackground(() => {
       handleRequest(envelope.request, {
         onModelStart: () => port.postMessage({ id: envelope.id, event: "stream-start" } satisfies PortMessage),
         onModelDelta: (text) => port.postMessage({ id: envelope.id, event: "stream-delta", text } satisfies PortMessage),
-        onModelDone: () => port.postMessage({ id: envelope.id, event: "stream-done" } satisfies PortMessage)
+        onModelDone: () => port.postMessage({ id: envelope.id, event: "stream-done" } satisfies PortMessage),
+        onModelFallback: (reason) => port.postMessage({ id: envelope.id, event: "stream-fallback", text: reason } satisfies PortMessage)
       }).then((response) => {
         port.postMessage({ id: envelope.id, response } satisfies PortMessage);
       });
@@ -148,7 +150,8 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
     model: settings.model,
     githubTokenPreview: maskSecret(settings.githubToken || ""),
     hasGithubToken: Boolean(settings.githubToken),
-    supportsStreaming: settings.supportsStreaming
+    supportsStreaming: settings.supportsStreaming,
+    streamingMode: settings.streamingMode || "untested"
   };
 
   if (request.repo) {
@@ -171,16 +174,21 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
       diagnostics.modelCheck = `模型连接正常：${settings.model}。`;
       const streaming = await probeStreamingSupport(settings);
       diagnostics.supportsStreaming = streaming.supported;
+      diagnostics.streamingMode = streaming.mode;
+      diagnostics.streamFirstDeltaMs = streaming.firstDeltaMs;
+      diagnostics.streamDeltaCount = streaming.deltaCount;
       diagnostics.streamingCheck = streaming.message;
-      await storageSet({ [SETTINGS_KEY]: { ...settings, supportsStreaming: streaming.supported } });
+      await storageSet({ [SETTINGS_KEY]: { ...settings, supportsStreaming: streaming.supported, streamingMode: streaming.mode } });
     } catch (error) {
       diagnostics.modelCheck = formatModelDiagnostic(error);
       diagnostics.supportsStreaming = false;
+      diagnostics.streamingMode = "untested";
       diagnostics.streamingCheck = "流式输出未测试：模型连接失败，请先修复模型配置。";
     }
   } else {
     diagnostics.modelCheck = "模型连接未测试：未填写 API Key。";
     diagnostics.supportsStreaming = false;
+    diagnostics.streamingMode = "untested";
     diagnostics.streamingCheck = "流式输出未测试：未填写 API Key。";
   }
 
