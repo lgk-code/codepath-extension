@@ -2,6 +2,7 @@ import type {
   BlueprintMode,
   CacheClearResult,
   CacheClearScope,
+  CacheStats,
   FileExplanation,
   FeaturePath,
   ProjectOverview,
@@ -345,6 +346,25 @@ export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef
   clearMap(skillBlueprintCache, prefix);
   const persistentKeysCleared = await persistentClear(repo ? persistentRepoPrefix(repo) : PERSISTENT_CACHE_PREFIX);
   return { scope, memoryCleared: true, persistentKeysCleared };
+}
+
+export async function getAnalysisCacheStats(repo?: RepoRef): Promise<CacheStats> {
+  const storage = getChromeStorage();
+  if (!storage) {
+    return { currentRepoPersistentKeys: 0, allPersistentKeys: 0 };
+  }
+
+  try {
+    const items = await storageGet(storage, null);
+    const keys = Object.keys(items).filter((key) => key.startsWith(PERSISTENT_CACHE_PREFIX));
+    const repoPrefix = repo ? persistentRepoPrefix(repo) : "";
+    return {
+      currentRepoPersistentKeys: repoPrefix ? keys.filter((key) => key.startsWith(repoPrefix)).length : 0,
+      allPersistentKeys: keys.length
+    };
+  } catch {
+    return { currentRepoPersistentKeys: 0, allPersistentKeys: 0 };
+  }
 }
 
 function createTiming(): TimingCollector {

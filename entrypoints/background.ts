@@ -1,6 +1,14 @@
 import type { PortMessage, RuntimeRequest, RuntimeResponse, Settings, SettingsDiagnostics } from "../src/types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../src/lib/defaults";
-import { analyzeFeature, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSkillBlueprint } from "../src/lib/analyzer";
+import {
+  analyzeFeature,
+  analyzeProject,
+  answerQuestion,
+  clearAnalysisCaches,
+  explainFile,
+  generateSkillBlueprint,
+  getAnalysisCacheStats
+} from "../src/lib/analyzer";
 import { chat } from "../src/lib/aiClient";
 import { GithubClient } from "../src/lib/githubClient";
 
@@ -38,6 +46,10 @@ async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<u
 
     if (request.type === "clear-cache") {
       return ok(await clearAnalysisCaches(request.scope, request.repo));
+    }
+
+    if (request.type === "cache-stats") {
+      return ok(await getAnalysisCacheStats(request.repo));
     }
 
     const settings = await getSettings();

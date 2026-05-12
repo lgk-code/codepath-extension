@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BookOpen, ChevronRight, Clipboard, FileCode2, KeyRound, Layers3, Map, MessageSquare, Route, Send, X } from "lucide-react";
+import { BookOpen, ChevronRight, Clipboard, Download, FileCode2, KeyRound, Layers3, Map, MessageSquare, RefreshCw, Route, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -7,6 +7,7 @@ import type {
   FileExplanation,
   BlueprintMode,
   CacheClearResult,
+  CacheStats,
   PortMessage,
   ProjectOverview,
   RepoRef,
@@ -19,7 +20,7 @@ import type {
 } from "../types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
-import { analyzeFeature, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSkillBlueprint } from "../lib/analyzer";
+import { analyzeFeature, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSkillBlueprint, getAnalysisCacheStats } from "../lib/analyzer";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
@@ -37,7 +38,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-12-skill-cache-timing";
+const UI_VERSION = "dev-2026-05-12-export-cache-refresh";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -61,6 +62,9 @@ export function Sidebar() {
   const [answers, setAnswers] = useState<ChatTurn[]>([]);
   const [settingsStatus, setSettingsStatus] = useState("");
   const [settingsDiagnostics, setSettingsDiagnostics] = useState<SettingsDiagnostics | null>(null);
+  const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
+  const [lastCacheClearResult, setLastCacheClearResult] = useState<CacheClearResult | null>(null);
+  const [suggestionSeed, setSuggestionSeed] = useState(0);
 
   useEffect(() => {
     send<Settings>({ type: "get-settings" }).then(setSettings).catch((err) => setError(err.message));
@@ -79,6 +83,10 @@ export function Sidebar() {
     const timer = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(timer);
   }, [loadingStartedAt]);
+
+  useEffect(() => {
+    if (tab === "settings") void refreshCacheStats();
+  }, [tab, repo?.owner, repo?.repo, repo?.branch]);
 
   const title = useMemo(() => (repo ? `${repo.owner}/${repo.repo}` : "No GitHub repository detected"), [repo]);
 
@@ -136,6 +144,15 @@ export function Sidebar() {
     }
   }
 
+  async function refreshCacheStats() {
+    try {
+      const stats = await send<CacheStats>({ type: "cache-stats", repo: repo || undefined });
+      setCacheStats(stats);
+    } catch (err) {
+      setError(humanizeError(err));
+    }
+  }
+
   function ask(text = question) {
     const trimmed = text.trim();
     if (!repo || !trimmed || loading) return;
@@ -162,7 +179,9 @@ export function Sidebar() {
     setError("");
     try {
       const result = await send<CacheClearResult>({ type: "clear-cache", scope, repo: scope === "repo" ? repo || undefined : undefined });
+      setLastCacheClearResult(result);
       setSettingsStatus(`缓存已清空：内存缓存已重置，持久化缓存删除 ${result.persistentKeysCleared} 项。`);
+      await refreshCacheStats();
     } catch (err) {
       setSettingsStatus("");
       setError(humanizeError(err));
@@ -177,6 +196,24 @@ export function Sidebar() {
     } catch {
       setCopyStatus("复制失败，请手动选中内容复制。");
     }
+  }
+
+  function downloadMarkdown(blueprint: SkillBlueprint) {
+    const filename = buildMarkdownFilename(repo, blueprint);
+    const blob = new Blob([blueprint.summary], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setCopyStatus(`已下载 ${filename}`);
+  }
+
+  function refreshSuggestions() {
+    setSuggestionSeed((value) => value + 1);
   }
 
   if (collapsed) {
@@ -228,7 +265,13 @@ export function Sidebar() {
             {overview && (
               <>
                 <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
-                <SuggestionList suggestions={overviewSuggestions(overview, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList
+                  suggestions={overviewSuggestions(overview, repo, suggestionSeed)}
+                  loading={!!loading}
+                  onAsk={ask}
+                  onDraft={setQuestion}
+                  onRefresh={refreshSuggestions}
+                />
               </>
             )}
           </section>
@@ -249,7 +292,13 @@ export function Sidebar() {
             {featurePath && (
               <>
                 <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
-                <SuggestionList suggestions={featureSuggestions(featurePath, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList
+                  suggestions={featureSuggestions(featurePath, repo, suggestionSeed)}
+                  loading={!!loading}
+                  onAsk={ask}
+                  onDraft={setQuestion}
+                  onRefresh={refreshSuggestions}
+                />
               </>
             )}
           </section>
@@ -270,7 +319,13 @@ export function Sidebar() {
             {fileExplanation && (
               <>
                 <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
-                <SuggestionList suggestions={fileSuggestions(fileExplanation, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList
+                  suggestions={fileSuggestions(fileExplanation, repo, suggestionSeed)}
+                  loading={!!loading}
+                  onAsk={ask}
+                  onDraft={setQuestion}
+                  onRefresh={refreshSuggestions}
+                />
               </>
             )}
           </section>
@@ -314,6 +369,10 @@ export function Sidebar() {
                   <button className="cp-secondary" onClick={() => copyMarkdown(skillBlueprint.summary)}>
                     复制 Markdown
                   </button>
+                  <button className="cp-secondary" onClick={() => downloadMarkdown(skillBlueprint)}>
+                    <Download size={14} />
+                    下载 Markdown
+                  </button>
                   {copyStatus && <span className="cp-save-status">{copyStatus}</span>}
                 </div>
                 <MarkdownBlock
@@ -322,7 +381,13 @@ export function Sidebar() {
                   sources={skillBlueprint.sources.map((item) => item.path)}
                   timing={skillBlueprint.timing}
                 />
-                <SuggestionList suggestions={skillSuggestions(skillBlueprint, repo)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+                <SuggestionList
+                  suggestions={skillSuggestions(skillBlueprint, repo, suggestionSeed)}
+                  loading={!!loading}
+                  onAsk={ask}
+                  onDraft={setQuestion}
+                  onRefresh={refreshSuggestions}
+                />
               </>
             )}
           </section>
@@ -355,7 +420,10 @@ export function Sidebar() {
             onChange={saveSettings}
             onTest={testSettings}
             onClearCache={clearCache}
+            onRefreshCacheStats={refreshCacheStats}
             hasRepo={Boolean(repo)}
+            cacheStats={cacheStats}
+            lastCacheClearResult={lastCacheClearResult}
           />
         )}
       </main>
@@ -424,9 +492,12 @@ function SettingsPanel(props: {
   settings: Settings;
   status: string;
   diagnostics: SettingsDiagnostics | null;
+  cacheStats: CacheStats | null;
+  lastCacheClearResult: CacheClearResult | null;
   onChange: (settings: Settings) => void;
   onTest: () => void;
   onClearCache: (scope: "repo" | "all") => void;
+  onRefreshCacheStats: () => void;
   hasRepo: boolean;
 }) {
   const [draft, setDraft] = useState(props.settings);
@@ -475,9 +546,37 @@ function SettingsPanel(props: {
         </button>
       </div>
       {props.status && <p className="cp-save-status">{props.status}</p>}
+      <CacheSummary stats={props.cacheStats} lastClearResult={props.lastCacheClearResult} hasRepo={props.hasRepo} onRefresh={props.onRefreshCacheStats} />
       <SettingsSummary diagnostics={props.diagnostics} draft={draft} />
       <p className="cp-muted">Qwen DashScope 默认 Base URL：{DEFAULT_SETTINGS.baseUrl}</p>
     </section>
+  );
+}
+
+function CacheSummary(props: { stats: CacheStats | null; lastClearResult: CacheClearResult | null; hasRepo: boolean; onRefresh: () => void }) {
+  return (
+    <div className="cp-settings-summary">
+      <strong>缓存状态</strong>
+      <dl>
+        <div>
+          <dt>当前仓库</dt>
+          <dd>{props.hasRepo ? `${props.stats?.currentRepoPersistentKeys ?? 0} 项持久化缓存` : "未检测到仓库页面"}</dd>
+        </div>
+        <div>
+          <dt>全部缓存</dt>
+          <dd>{props.stats?.allPersistentKeys ?? 0} 项持久化缓存</dd>
+        </div>
+        <div>
+          <dt>最近清理</dt>
+          <dd>{props.lastClearResult ? `${props.lastClearResult.scope === "repo" ? "当前仓库" : "全部"}，删除 ${props.lastClearResult.persistentKeysCleared} 项` : "暂无清理记录"}</dd>
+        </div>
+      </dl>
+      <div className="cp-cache-actions">
+        <button className="cp-secondary" onClick={props.onRefresh}>
+          刷新缓存状态
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -529,6 +628,7 @@ function SuggestionList(props: {
   loading: boolean;
   onAsk: (question: string) => void;
   onDraft: (question: string) => void;
+  onRefresh?: () => void;
 }) {
   async function copySuggestion(suggestion: string) {
     try {
@@ -540,7 +640,15 @@ function SuggestionList(props: {
 
   return (
     <div className="cp-suggestions">
-      <strong>基于当前分析的推荐追问</strong>
+      <div className="cp-suggestions-header">
+        <strong>基于当前分析的推荐追问</strong>
+        {props.onRefresh && (
+          <button className="cp-mini-btn" disabled={props.loading} onClick={props.onRefresh} title="重新排列本地推荐追问">
+            <RefreshCw size={13} />
+            刷新推荐追问
+          </button>
+        )}
+      </div>
       {props.suggestions.map((suggestion) => (
         <div key={suggestion} className="cp-suggestion-row">
           <button
@@ -596,15 +704,16 @@ function TimingMeta(props: { timing: TimingBreakdown }) {
     props.timing.modelMs !== undefined ? `模型 ${formatElapsedCompact(props.timing.modelMs)}` : "",
     props.timing.githubMs !== undefined ? `GitHub ${formatElapsedCompact((props.timing.githubMs ?? 0) + (props.timing.treeMs ?? 0))}` : "",
     props.timing.fileMs !== undefined ? `文件 ${formatElapsedCompact(props.timing.fileMs)}` : "",
-    props.timing.cacheHit ? "来自缓存" : ""
+    props.timing.cacheHit ? "来自缓存，重新分析请清空当前仓库缓存" : ""
   ].filter(Boolean);
   if (parts.length === 0) return null;
   return <div className="cp-chat-meta">{parts.join(" · ")}</div>;
 }
 
-function overviewSuggestions(overview: ProjectOverview, repo: RepoRef | null): string[] {
+function overviewSuggestions(overview: ProjectOverview, repo: RepoRef | null, seed = 0): string[] {
   return buildContextualSuggestions({
     repo,
+    seed,
     summary: overview.summary,
     sources: overview.sources.map((source) => source.path),
     fallback: [
@@ -615,9 +724,10 @@ function overviewSuggestions(overview: ProjectOverview, repo: RepoRef | null): s
   });
 }
 
-function featureSuggestions(featurePath: FeaturePath, repo: RepoRef | null): string[] {
+function featureSuggestions(featurePath: FeaturePath, repo: RepoRef | null, seed = 0): string[] {
   return buildContextualSuggestions({
     repo,
+    seed,
     label: featurePath.feature,
     summary: featurePath.summary,
     sources: featurePath.sources.map((source) => source.path),
@@ -629,9 +739,10 @@ function featureSuggestions(featurePath: FeaturePath, repo: RepoRef | null): str
   });
 }
 
-function fileSuggestions(fileExplanation: FileExplanation, repo: RepoRef | null): string[] {
+function fileSuggestions(fileExplanation: FileExplanation, repo: RepoRef | null, seed = 0): string[] {
   return buildContextualSuggestions({
     repo,
+    seed,
     label: fileExplanation.path,
     summary: fileExplanation.summary,
     sources: [fileExplanation.path, ...fileExplanation.sources.map((source) => source.path)],
@@ -643,9 +754,10 @@ function fileSuggestions(fileExplanation: FileExplanation, repo: RepoRef | null)
   });
 }
 
-function skillSuggestions(skillBlueprint: SkillBlueprint, repo: RepoRef | null): string[] {
+function skillSuggestions(skillBlueprint: SkillBlueprint, repo: RepoRef | null, seed = 0): string[] {
   return buildContextualSuggestions({
     repo,
+    seed,
     label: skillBlueprint.feature,
     summary: skillBlueprint.summary,
     sources: skillBlueprint.sources.map((source) => source.path),
@@ -660,6 +772,7 @@ function skillSuggestions(skillBlueprint: SkillBlueprint, repo: RepoRef | null):
 function buildContextualSuggestions(input: {
   repo: RepoRef | null;
   label?: string;
+  seed?: number;
   summary: string;
   sources: string[];
   fallback: string[];
@@ -703,7 +816,7 @@ function buildContextualSuggestions(input: {
     suggestions.push(`把「${label}」整理成可交给 OpenClaw 的执行步骤。`);
   }
 
-  return uniqueSuggestions([...suggestions, ...input.fallback]).slice(0, 3);
+  return rotateSuggestions(uniqueSuggestions([...suggestions, ...input.fallback]), input.seed ?? 0).slice(0, 3);
 }
 
 function hasAny(value: string, needles: string[]): boolean {
@@ -726,6 +839,30 @@ function uniqueSuggestions(values: string[]): string[] {
     seen.add(normalized);
     return true;
   });
+}
+
+function rotateSuggestions(values: string[], seed: number): string[] {
+  if (values.length <= 3 || seed <= 0) return values;
+  const offset = seed % values.length;
+  return [...values.slice(offset), ...values.slice(0, offset)];
+}
+
+function buildMarkdownFilename(repo: RepoRef | null, blueprint: SkillBlueprint): string {
+  const owner = sanitizeFilenamePart(repo?.owner || "github");
+  const repoName = sanitizeFilenamePart(repo?.repo || "repo");
+  const feature = sanitizeFilenamePart(blueprint.feature || "feature");
+  const mode = sanitizeFilenamePart(blueprint.mode);
+  return `${owner}-${repoName}-${feature}-${mode}.md`;
+}
+
+function sanitizeFilenamePart(value: string): string {
+  const cleaned = value
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+  return cleaned || "untitled";
 }
 
 function readPanelWidth(): number {
@@ -826,6 +963,10 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 
     if (request.type === "clear-cache") {
       return localOk((await clearAnalysisCaches(request.scope, request.repo)) as T);
+    }
+
+    if (request.type === "cache-stats") {
+      return localOk((await getAnalysisCacheStats(request.repo)) as T);
     }
 
     if (request.type === "explain-file") {

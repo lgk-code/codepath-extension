@@ -160,12 +160,36 @@
 
 .cp-secondary {
   min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
   background: #ffffff;
   color: #24292f;
   font-weight: 600;
   cursor: pointer;
+}
+
+.cp-mini-btn {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #57606a;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cp-mini-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .cp-version-banner {
@@ -295,8 +319,15 @@
   border-top: 1px solid #d8dee4;
 }
 
-.cp-suggestions strong {
+.cp-suggestions-header {
   grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cp-suggestions-header strong {
   font-size: 12px;
   color: #57606a;
 }
@@ -559,6 +590,12 @@
   color: #24292f;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.cp-settings-summary .cp-cache-actions {
+  display: flex;
+  grid-template-columns: none;
+  margin-top: 10px;
 }
 
 .cp-fab {

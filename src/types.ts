@@ -88,11 +88,17 @@ export type CacheClearResult = {
   persistentKeysCleared: number;
 };
 
+export type CacheStats = {
+  currentRepoPersistentKeys: number;
+  allPersistentKeys: number;
+};
+
 export type RuntimeRequest =
   | { type: "get-settings" }
   | { type: "save-settings"; settings: Settings }
   | { type: "test-settings"; repo?: RepoRef }
   | { type: "clear-cache"; scope: CacheClearScope; repo?: RepoRef }
+  | { type: "cache-stats"; repo?: RepoRef }
   | { type: "analyze-project"; repo: RepoRef }
   | { type: "analyze-feature"; repo: RepoRef; feature: string }
   | { type: "generate-skill-blueprint"; repo: RepoRef; feature: string; mode: BlueprintMode }

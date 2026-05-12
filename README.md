@@ -10,6 +10,9 @@ CodePath is a browser extension for reading GitHub source code without cloning, 
 - Explains the current GitHub file page
 - Supports global follow-up questions from Overview, Feature, File, and History views
 - Generates contextual follow-up questions from the current analysis and source references
+- Supports refreshing local follow-up suggestions without an extra model call
+- Generates and exports Skill / blueprint Markdown from the browser sidebar
+- Shows answer timing, cache hits, cache status, and connection diagnostics
 - Keeps follow-up answers in a conversation history view
 - Renders AI output as Markdown, including tables, lists, code, and bold text
 - Links source references back to GitHub files
@@ -82,7 +85,7 @@ Do not commit API keys or tokens. Use the minimum required GitHub token permissi
 
 ## Demo Website
 
-The static demo website lives in `docs/index.html` and is ready for GitHub Pages when Pages is configured to publish from the `docs` directory.
+The static demo website lives in `docs/index.html` and is ready for GitHub Pages when Pages is configured to publish from the `docs` directory. Manual demo regression cases are tracked in [docs/TEST_CASES.md](docs/TEST_CASES.md).
 
 ## MCP / OpenClaw
 
