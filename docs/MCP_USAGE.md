@@ -100,6 +100,17 @@ CodePath MCP server running on stdio
 
 ## 可用工具
 
+所有工具都会返回 JSON 文本，核心字段包括：
+
+- `repo`：仓库信息。
+- `feature`：被分析功能，项目概览工具可能为空。
+- `summary`：主要 Markdown 分析内容。
+- `sources`：源码引用路径。
+- `timing`：阶段耗时，包括 GitHub、tree、文件读取、模型请求和总耗时。
+- `confirmedFacts`：由源码引用支撑的事实列表。
+- `inferredNotes`：需要谨慎看待的推断说明。
+- `nextActions`：建议 OpenClaw / Hermes 继续执行的动作。
+
 ### `analyze_github_project`
 
 分析一个 GitHub 项目整体结构。

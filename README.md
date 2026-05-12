@@ -46,6 +46,14 @@ Build the extension:
 npm run build
 ```
 
+Build and copy the Edge unpacked extension to the local test directory:
+
+```bash
+npm run deploy:edge
+```
+
+Then reload CodePath in `edge://extensions` and refresh the GitHub page.
+
 Type-check:
 
 ```bash
@@ -91,6 +99,8 @@ Available tools:
 - `analyze_github_feature`
 - `generate_openclaw_skill`
 - `generate_project_blueprint`
+
+MCP responses include structured JSON fields such as `repo`, `feature`, `summary`, `sources`, `timing`, `confirmedFacts`, `inferredNotes`, and `nextActions`.
 
 See [CodePath MCP 使用教程](docs/MCP_USAGE.md) for setup, environment variables, OpenClaw configuration, tool examples, and troubleshooting.
 

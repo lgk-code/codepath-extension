@@ -1,6 +1,7 @@
 import type { PortMessage, RuntimeRequest, RuntimeResponse, Settings, SettingsDiagnostics } from "../src/types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../src/lib/defaults";
-import { analyzeFeature, analyzeProject, answerQuestion, explainFile } from "../src/lib/analyzer";
+import { analyzeFeature, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSkillBlueprint } from "../src/lib/analyzer";
+import { chat } from "../src/lib/aiClient";
 import { GithubClient } from "../src/lib/githubClient";
 
 export default defineBackground(() => {
@@ -35,6 +36,10 @@ async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<u
       return ok(await testSettings(request));
     }
 
+    if (request.type === "clear-cache") {
+      return ok(await clearAnalysisCaches(request.scope, request.repo));
+    }
+
     const settings = await getSettings();
 
     if (request.type === "analyze-project") {
@@ -43,6 +48,10 @@ async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<u
 
     if (request.type === "analyze-feature") {
       return ok(await analyzeFeature(request.repo, settings, request.feature));
+    }
+
+    if (request.type === "generate-skill-blueprint") {
+      return ok(await generateSkillBlueprint(request.repo, settings, request.feature, request.mode));
     }
 
     if (request.type === "explain-file") {
@@ -116,6 +125,20 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
     } catch (error) {
       diagnostics.repoCheck = `GitHub 连接失败：${error instanceof Error ? error.message : String(error)}`;
     }
+  }
+
+  if (settings.apiKey) {
+    try {
+      await chat(settings, [
+        { role: "system", content: "You are a connection test. Reply with OK." },
+        { role: "user", content: "Reply only: OK" }
+      ]);
+      diagnostics.modelCheck = "模型连接正常。";
+    } catch (error) {
+      diagnostics.modelCheck = `模型连接失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else {
+    diagnostics.modelCheck = "模型连接未测试：未填写 API Key。";
   }
 
   return diagnostics;

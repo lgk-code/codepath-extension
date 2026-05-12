@@ -5,7 +5,7 @@ import * as z from "zod/v4";
 import { analyzeFeature, analyzeProject, generateSkillBlueprint } from "../src/lib/analyzer";
 import { DEFAULT_SETTINGS } from "../src/lib/defaults";
 import { parseGithubUrl } from "../src/lib/githubUrl";
-import type { BlueprintMode, RepoRef, Settings } from "../src/types";
+import type { BlueprintMode, RepoRef, Settings, SourceRef, TimingBreakdown } from "../src/types";
 
 const server = new McpServer({
   name: "codepath-mcp",
@@ -28,10 +28,11 @@ server.registerTool(
   async ({ url, githubToken }) => {
     const repo = parseRepoUrl(url);
     const result = await analyzeProject(repo, settingsFromEnv({ githubToken }));
-    return textResult({
+    return structuredResult({
       repo,
       summary: result.summary,
-      sources: result.sources
+      sources: result.sources,
+      timing: result.timing
     });
   }
 );
@@ -49,11 +50,12 @@ server.registerTool(
   async ({ url, feature, githubToken }) => {
     const repo = parseRepoUrl(url);
     const result = await analyzeFeature(repo, settingsFromEnv({ githubToken }), feature);
-    return textResult({
+    return structuredResult({
       repo,
       feature: result.feature,
       summary: result.summary,
-      sources: result.sources
+      sources: result.sources,
+      timing: result.timing
     });
   }
 );
@@ -71,12 +73,13 @@ server.registerTool(
   async ({ url, feature, githubToken }) => {
     const repo = parseRepoUrl(url);
     const result = await generateSkillBlueprint(repo, settingsFromEnv({ githubToken }), feature, "openclaw-skill");
-    return textResult({
+    return structuredResult({
       repo,
       feature: result.feature,
       mode: result.mode,
       summary: result.summary,
-      sources: result.sources
+      sources: result.sources,
+      timing: result.timing
     });
   }
 );
@@ -95,12 +98,13 @@ server.registerTool(
   async ({ url, feature, mode, githubToken }) => {
     const repo = parseRepoUrl(url);
     const result = await generateSkillBlueprint(repo, settingsFromEnv({ githubToken }), feature, mode as BlueprintMode);
-    return textResult({
+    return structuredResult({
       repo,
       feature: result.feature,
       mode: result.mode,
       summary: result.summary,
-      sources: result.sources
+      sources: result.sources,
+      timing: result.timing
     });
   }
 );
@@ -136,6 +140,43 @@ function textResult(value: unknown) {
       }
     ]
   };
+}
+
+function structuredResult(value: {
+  repo: RepoRef;
+  feature?: string;
+  mode?: BlueprintMode;
+  summary: string;
+  sources: SourceRef[];
+  timing?: TimingBreakdown;
+}) {
+  return textResult({
+    repo: value.repo,
+    feature: value.feature,
+    mode: value.mode,
+    summary: value.summary,
+    sources: value.sources,
+    timing: value.timing,
+    confirmedFacts: value.sources.map((source) => ({
+      path: source.path,
+      reason: source.reason || "source reference"
+    })),
+    inferredNotes: [
+      "summary 中未直接引用源码路径的结论应视为工程推断",
+      "迁移到新项目前需要结合目标项目约束重新确认"
+    ],
+    nextActions: nextActionsFor(value.mode)
+  });
+}
+
+function nextActionsFor(mode?: BlueprintMode): string[] {
+  if (mode === "new-project") {
+    return ["确认目标项目技术栈", "按蓝图拆分模块", "先实现最小可运行路径", "补充测试与验证"];
+  }
+  if (mode === "openclaw-skill") {
+    return ["将输出保存为 OpenClaw 任务上下文", "让 OpenClaw 先列实施步骤", "执行前确认风险和缺失信息"];
+  }
+  return ["阅读 sources 中的关键文件", "围绕具体功能继续调用 analyze_github_feature", "需要迁移时调用 generate_project_blueprint"];
 }
 
 async function main() {

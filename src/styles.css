@@ -94,7 +94,7 @@
 
 .cp-tabs {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   padding: 8px;
   border-bottom: 1px solid #d8dee4;
@@ -183,6 +183,13 @@
   font-size: 12px;
   color: #1f883d;
   font-weight: 600;
+}
+
+.cp-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .cp-input {

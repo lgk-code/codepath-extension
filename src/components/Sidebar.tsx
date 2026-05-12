@@ -1,29 +1,34 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BookOpen, ChevronRight, Clipboard, FileCode2, KeyRound, Map, MessageSquare, Route, Send, X } from "lucide-react";
+import { BookOpen, ChevronRight, Clipboard, FileCode2, KeyRound, Layers3, Map, MessageSquare, Route, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
   FeaturePath,
   FileExplanation,
+  BlueprintMode,
+  CacheClearResult,
   PortMessage,
   ProjectOverview,
   RepoRef,
   RuntimeRequest,
   RuntimeResponse,
   Settings,
-  SettingsDiagnostics
+  SettingsDiagnostics,
+  SkillBlueprint,
+  TimingBreakdown
 } from "../types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
-import { analyzeFeature, analyzeProject, answerQuestion, explainFile } from "../lib/analyzer";
+import { analyzeFeature, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSkillBlueprint } from "../lib/analyzer";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
-type Tab = "overview" | "feature" | "file" | "ask" | "settings";
+type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
 
 type ChatTurn = {
   question: string;
   answer: ProjectOverview;
   elapsedMs?: number;
+  timing?: TimingBreakdown;
 };
 
 const DEFAULT_QUESTIONS = [
@@ -32,7 +37,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-09-qa-timing";
+const UI_VERSION = "dev-2026-05-12-skill-cache-timing";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -47,6 +52,10 @@ export function Sidebar() {
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
   const [feature, setFeature] = useState("");
   const [featurePath, setFeaturePath] = useState<FeaturePath | null>(null);
+  const [blueprintFeature, setBlueprintFeature] = useState("");
+  const [blueprintMode, setBlueprintMode] = useState<BlueprintMode>("openclaw-skill");
+  const [skillBlueprint, setSkillBlueprint] = useState<SkillBlueprint | null>(null);
+  const [copyStatus, setCopyStatus] = useState("");
   const [fileExplanation, setFileExplanation] = useState<FileExplanation | null>(null);
   const [question, setQuestion] = useState("");
   const [answers, setAnswers] = useState<ChatTurn[]>([]);
@@ -141,11 +150,33 @@ export function Sidebar() {
           context: buildAskContext(overview, featurePath, fileExplanation, answers)
         }),
       (answer, elapsedMs) => {
-        setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs }]);
+        setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
         setQuestion("");
         setTab("ask");
       }
     );
+  }
+
+  async function clearCache(scope: "repo" | "all") {
+    setSettingsStatus(scope === "repo" ? "正在清空当前仓库缓存..." : "正在清空全部缓存...");
+    setError("");
+    try {
+      const result = await send<CacheClearResult>({ type: "clear-cache", scope, repo: scope === "repo" ? repo || undefined : undefined });
+      setSettingsStatus(`缓存已清空：内存缓存已重置，持久化缓存删除 ${result.persistentKeysCleared} 项。`);
+    } catch (err) {
+      setSettingsStatus("");
+      setError(humanizeError(err));
+    }
+  }
+
+  async function copyMarkdown(text: string) {
+    setCopyStatus("");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus("已复制 Markdown。");
+    } catch {
+      setCopyStatus("复制失败，请手动选中内容复制。");
+    }
   }
 
   if (collapsed) {
@@ -174,6 +205,7 @@ export function Sidebar() {
         <TabButton active={tab === "overview"} icon={<Map size={15} />} onClick={() => setTab("overview")} label="项目概览" />
         <TabButton active={tab === "feature"} icon={<Route size={15} />} onClick={() => setTab("feature")} label="功能路径" />
         <TabButton active={tab === "file"} icon={<FileCode2 size={15} />} onClick={() => setTab("file")} label="当前文件" />
+        <TabButton active={tab === "skill"} icon={<Layers3 size={15} />} onClick={() => setTab("skill")} label="借鉴 / Skill" />
         <TabButton active={tab === "ask"} icon={<MessageSquare size={15} />} onClick={() => setTab("ask")} label="问答记录" />
         <TabButton active={tab === "settings"} icon={<KeyRound size={15} />} onClick={() => setTab("settings")} label="设置" />
       </nav>
@@ -195,7 +227,7 @@ export function Sidebar() {
             </button>
             {overview && (
               <>
-                <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} />
+                <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
                 <SuggestionList suggestions={overviewSuggestions()} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
               </>
             )}
@@ -216,7 +248,7 @@ export function Sidebar() {
             </button>
             {featurePath && (
               <>
-                <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} />
+                <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
                 <SuggestionList suggestions={featureSuggestions(featurePath.feature)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
               </>
             )}
@@ -237,8 +269,59 @@ export function Sidebar() {
             </button>
             {fileExplanation && (
               <>
-                <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} />
+                <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
                 <SuggestionList suggestions={fileSuggestions(fileExplanation.path)} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
+              </>
+            )}
+          </section>
+        )}
+
+        {tab === "skill" && (
+          <section className="cp-section">
+            <p>把某个功能提炼成 OpenClaw Skill、新项目蓝图，或给人读的技术分析。第一版先提供 Markdown 复制，方便交给 agent 继续执行。</p>
+            <input
+              className="cp-input"
+              value={blueprintFeature}
+              onChange={(event) => setBlueprintFeature(event.target.value)}
+              placeholder="例如：训练流程、插件系统、缓存机制"
+            />
+            <label className="cp-label">
+              输出用途
+              <select className="cp-input" value={blueprintMode} onChange={(event) => setBlueprintMode(event.target.value as BlueprintMode)}>
+                <option value="openclaw-skill">OpenClaw Skill</option>
+                <option value="new-project">新项目蓝图</option>
+                <option value="human">给人读的技术分析</option>
+              </select>
+            </label>
+            <button
+              className="cp-primary"
+              disabled={!repo || !blueprintFeature.trim() || !!loading}
+              onClick={() =>
+                repo &&
+                run(
+                  "正在生成借鉴材料...",
+                  () => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }),
+                  setSkillBlueprint
+                )
+              }
+            >
+              <Layers3 size={16} />
+              生成 Skill / 蓝图
+            </button>
+            {skillBlueprint && (
+              <>
+                <div className="cp-action-row">
+                  <button className="cp-secondary" onClick={() => copyMarkdown(skillBlueprint.summary)}>
+                    复制 Markdown
+                  </button>
+                  {copyStatus && <span className="cp-save-status">{copyStatus}</span>}
+                </div>
+                <MarkdownBlock
+                  repo={repo}
+                  text={skillBlueprint.summary}
+                  sources={skillBlueprint.sources.map((item) => item.path)}
+                  timing={skillBlueprint.timing}
+                />
               </>
             )}
           </section>
@@ -255,7 +338,7 @@ export function Sidebar() {
                   <article className="cp-chat-item" key={`${item.question}-${index}`}>
                     <strong>问：{item.question}</strong>
                     {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
-                    <MarkdownBlock repo={repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} />
+                    <MarkdownBlock repo={repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
                   </article>
                 ))}
               </div>
@@ -264,7 +347,15 @@ export function Sidebar() {
         )}
 
         {tab === "settings" && (
-          <SettingsPanel settings={settings} status={settingsStatus} diagnostics={settingsDiagnostics} onChange={saveSettings} onTest={testSettings} />
+          <SettingsPanel
+            settings={settings}
+            status={settingsStatus}
+            diagnostics={settingsDiagnostics}
+            onChange={saveSettings}
+            onTest={testSettings}
+            onClearCache={clearCache}
+            hasRepo={Boolean(repo)}
+          />
         )}
       </main>
 
@@ -334,6 +425,8 @@ function SettingsPanel(props: {
   diagnostics: SettingsDiagnostics | null;
   onChange: (settings: Settings) => void;
   onTest: () => void;
+  onClearCache: (scope: "repo" | "all") => void;
+  hasRepo: boolean;
 }) {
   const [draft, setDraft] = useState(props.settings);
 
@@ -370,8 +463,16 @@ function SettingsPanel(props: {
         保存并校验设置
       </button>
       <button className="cp-secondary" onClick={props.onTest}>
-        测试已保存设置
+        测试模型 / GitHub 连接
       </button>
+      <div className="cp-action-row">
+        <button className="cp-secondary" disabled={!props.hasRepo} onClick={() => props.onClearCache("repo")}>
+          清空当前仓库缓存
+        </button>
+        <button className="cp-secondary" onClick={() => props.onClearCache("all")}>
+          清空全部缓存
+        </button>
+      </div>
       {props.status && <p className="cp-save-status">{props.status}</p>}
       <SettingsSummary diagnostics={props.diagnostics} draft={draft} />
       <p className="cp-muted">Qwen DashScope 默认 Base URL：{DEFAULT_SETTINGS.baseUrl}</p>
@@ -409,6 +510,12 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
           <div>
             <dt>GitHub 检查</dt>
             <dd>{diagnostics.repoCheck}</dd>
+          </div>
+        )}
+        {diagnostics?.modelCheck && (
+          <div>
+            <dt>模型检查</dt>
+            <dd>{diagnostics.modelCheck}</dd>
           </div>
         )}
       </dl>
@@ -455,9 +562,10 @@ function SuggestionList(props: {
   );
 }
 
-function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: string[] }) {
+function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: string[]; timing?: TimingBreakdown }) {
   return (
     <div className="cp-result">
+      {props.timing && <TimingMeta timing={props.timing} />}
       <div className="cp-markdown">
         <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeLinkCodePaths(props.repo)]}>
           {props.text}
@@ -479,6 +587,18 @@ function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: str
       )}
     </div>
   );
+}
+
+function TimingMeta(props: { timing: TimingBreakdown }) {
+  const parts = [
+    props.timing.totalMs !== undefined ? `总耗时 ${formatElapsedCompact(props.timing.totalMs)}` : "",
+    props.timing.modelMs !== undefined ? `模型 ${formatElapsedCompact(props.timing.modelMs)}` : "",
+    props.timing.githubMs !== undefined ? `GitHub ${formatElapsedCompact((props.timing.githubMs ?? 0) + (props.timing.treeMs ?? 0))}` : "",
+    props.timing.fileMs !== undefined ? `文件 ${formatElapsedCompact(props.timing.fileMs)}` : "",
+    props.timing.cacheHit ? "来自缓存" : ""
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
+  return <div className="cp-chat-meta">{parts.join(" · ")}</div>;
 }
 
 function overviewSuggestions(): string[] {
@@ -526,6 +646,11 @@ function formatElapsed(ms: number): string {
   const seconds = totalSeconds % 60;
   if (minutes === 0) return `${seconds} 秒`;
   return `${minutes} 分 ${seconds.toString().padStart(2, "0")} 秒`;
+}
+
+function formatElapsedCompact(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
 async function send<T>(request: RuntimeRequest): Promise<T> {
@@ -590,6 +715,14 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 
     if (request.type === "analyze-feature") {
       return localOk((await analyzeFeature(request.repo, settings, request.feature)) as T);
+    }
+
+    if (request.type === "generate-skill-blueprint") {
+      return localOk((await generateSkillBlueprint(request.repo, settings, request.feature, request.mode)) as T);
+    }
+
+    if (request.type === "clear-cache") {
+      return localOk((await clearAnalysisCaches(request.scope, request.repo)) as T);
     }
 
     if (request.type === "explain-file") {
@@ -767,8 +900,20 @@ function humanizeError(error: unknown): string {
   if (message.includes("API rate limit")) {
     return "GitHub API 已触发限流。请在设置里填写 GitHub Token 后再试。";
   }
+  if (message.includes("GitHub API 404")) {
+    return "GitHub 仓库未找到或没有访问权限。私有仓库请在设置里填写有 Contents 读取权限的 GitHub Token。";
+  }
+  if (message.includes("模型接口 401") || message.includes("模型接口 403")) {
+    return "模型 API Key、Base URL 或模型权限被拒绝。请在设置里检查模型配置。";
+  }
+  if (message.includes("模型接口 404")) {
+    return "模型接口返回 404。请检查 Base URL 是否为 OpenAI-compatible 的 /v1 地址，以及模型名称是否正确。";
+  }
   if (message.includes("401") || message.includes("Unauthorized")) {
     return "API Key 或 GitHub Token 被拒绝。请检查设置后再试。";
+  }
+  if (message.includes("Unable to reach model base URL")) {
+    return "无法连接模型 Base URL。请检查网络、Base URL 和本机代理设置。";
   }
   if (message.includes("Failed to fetch")) {
     return "网络请求失败。请检查仓库地址、Token 或模型 Base URL。";

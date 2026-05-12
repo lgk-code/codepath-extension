@@ -9,6 +9,7 @@ CodePath 是一个基于 WXT、React 和 TypeScript 的浏览器扩展，用来�
 - 安装依赖：`npm install`
 - Windows 下类型检查：`npm.cmd run compile`
 - 构建 Chrome/Edge MV3 扩展：`npm.cmd run build`
+- 构建并同步到 Edge 本地加载目录：`npm.cmd run deploy:edge`
 - 启动 CodePath MCP Server：`npm.cmd run mcp`
 - 构建产物目录：`.output/chrome-mv3`
 
@@ -33,9 +34,7 @@ MCP Server 使用环境变量读取配置：
 推荐手动同步流程：
 
 ```powershell
-npm.cmd run build
-Remove-Item -Recurse -Force C:\CodePathExtension\chrome-mv3\*
-Copy-Item -Recurse -Force .output\chrome-mv3\* C:\CodePathExtension\chrome-mv3
+npm.cmd run deploy:edge
 ```
 
 然后在 `edge://extensions` 里重新加载 CodePath 扩展，并刷新 GitHub 页面。
