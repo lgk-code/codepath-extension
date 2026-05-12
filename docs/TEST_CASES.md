@@ -29,6 +29,7 @@ npm.cmd run deploy:edge
 - 期望引用路径：`training/`、`eval/`、`requirements.txt`、`readme.md` 等。
 - 通过标准：回答能说明训练/评估主线，能区分源码确认与谨慎推断，缓存列表能显示并删除 PAGE4D 项目缓存。
 - 分析质量追加标准：能指出训练入口候选、数据加载、配置文件、评估路径，并把源码确认、谨慎推断和建议验证分开。
+- 分析质量 v2 标准：功能路径查询“训练流程”时，候选来源应优先覆盖训练入口、数据加载、配置、评估相关文件，而不是只返回 README。
 - 流式追加标准：项目概览和追问应显示实时流式或疑似缓冲提示；完成后 Markdown、sources、timing 正常。
 
 ## 案例 2：CodePath
@@ -40,6 +41,7 @@ npm.cmd run deploy:edge
 - 期望引用路径：`entrypoints/`、`src/components/Sidebar.tsx`、`src/lib/analyzer.ts`、`scripts/codepath-mcp.ts`。
 - 通过标准：回答能说明插件注入、后台通讯、分析器和 MCP 的分工；解释 `scripts/codepath-mcp.ts` 时能围绕工具注册和环境变量。
 - 分析质量追加标准：能识别 WXT content/background 通讯、Sidebar UI、analyzer、MCP 工具注册和缓存策略的关键路径。
+- 分析质量 v2 标准：项目类型应识别为 WXT / 浏览器插件；功能路径查询“MCP”“缓存管理”“浏览器侧边栏”时，应优先引用 `entrypoints/`、`src/components/Sidebar.tsx`、`src/lib/analyzer.ts`、`scripts/codepath-mcp.ts` 等核心路径，并在结构上下文中展示相对 import 映射。
 
 ## 案例 3：前端项目
 
@@ -49,6 +51,7 @@ npm.cmd run deploy:edge
 - 期望推荐追问：入口文件、插件体系、配置加载、开发服务器、构建流程。
 - 通过标准：能说明核心包目录和调用链，不把文档目录误判为主要实现。
 - 分析质量追加标准：能识别配置加载、插件体系、开发服务器或构建入口，并标注依据路径。
+- 分析质量 v2 标准：功能路径查询“插件体系”时，应优先出现配置、插件容器、开发服务器或构建流程核心文件，且说明哪些结论来自源码确认。
 
 ## 案例 4：后端项目
 
@@ -58,6 +61,7 @@ npm.cmd run deploy:edge
 - 期望推荐追问：路由、middleware、请求响应链路、错误处理、测试入口。
 - 通过标准：能说明主入口、核心模块、测试或示例路径，并给出二次开发注意点。
 - 分析质量追加标准：能识别 middleware、router、request/response 链路和错误处理相关路径。
+- 分析质量 v2 标准：功能路径查询“middleware”或“路由”时，应优先覆盖入口、router、middleware、request/response 相关核心路径。
 
 ## 错误诊断检查
 

@@ -34,7 +34,7 @@ type SourceClient = {
   getFile(owner: string, repo: string, path: string, ref: string): Promise<string>;
 };
 
-type ProjectKind = "python-ml" | "frontend" | "node-backend" | "python-app" | "library" | "generic";
+type ProjectKind = "python-ml" | "browser-extension" | "frontend" | "node-backend" | "python-app" | "library" | "generic";
 
 type ProjectProfile = {
   kind: ProjectKind;
@@ -816,6 +816,20 @@ function detectProjectProfile(files: TreeFile[]): ProjectProfile {
     return { kind: "python-ml", label: "Python ML / research codebase", confidence: mlScore >= 6 ? "high" : "medium", reasons };
   }
 
+  if (has("package.json") && (has("wxt.config") || has("entrypoints/") || has("manifest.json"))) {
+    const extensionReasons = ["package.json plus browser extension entry/config files"];
+    if (has("wxt.config")) extensionReasons.push("WXT config detected");
+    if (has("entrypoints/")) extensionReasons.push("extension entrypoints detected");
+    if (has("src/components/")) extensionReasons.push("sidebar/components directory detected");
+    if (has("scripts/codepath-mcp")) extensionReasons.push("MCP server script detected");
+    return {
+      kind: "browser-extension",
+      label: "Browser extension / WXT project",
+      confidence: has("wxt.config") || has("entrypoints/") ? "high" : "medium",
+      reasons: extensionReasons
+    };
+  }
+
   if (has("package.json") && (has("src/") || has("app/") || has("pages/") || has("vite.config") || has("next.config"))) {
     const frontendReasons = ["package.json plus frontend source/config files"];
     if (has("vite.config")) frontendReasons.push("Vite config detected");
@@ -894,6 +908,17 @@ function profilePathScore(path: string, profile: ProjectProfile): number {
     if (p.includes("/pages/") || p.includes("/routes/") || p.includes("/components/") || p.includes("/api/") || p.includes("/store/")) score += 6;
   }
 
+  if (profile.kind === "browser-extension") {
+    if (/package\.json|wxt\.config|tsconfig\.json/.test(p)) score += 12;
+    if (p.startsWith("entrypoints/")) score += 16;
+    if (p === "entrypoints/content.tsx" || p === "entrypoints/background.ts") score += 8;
+    if (p.includes("sidebar.tsx")) score += 14;
+    if (p.startsWith("src/lib/")) score += 9;
+    if (p.includes("analyzer") || p.includes("aiclient") || p.includes("githubclient")) score += 8;
+    if (p.includes("codepath-mcp")) score += 12;
+    if (p.includes("cache") || p.includes("storage")) score += 5;
+  }
+
   if (profile.kind === "node-backend") {
     if (/package\.json|tsconfig\.json|server\.(ts|js)|app\.(ts|js)|index\.(ts|js)/.test(p)) score += 12;
     if (p.includes("/routes/") || p.includes("/middleware/") || p.includes("/controllers/") || p.includes("/services/")) score += 8;
@@ -915,6 +940,7 @@ function profilePathScore(path: string, profile: ProjectProfile): number {
 }
 
 function scoreFeatureFiles(files: TreeFile[], keywords: string[], profile: ProjectProfile): TreeFile[] {
+  const entryPaths = new Set(pickEntryCandidates(files, profile).map((file) => file.path));
   const scored = files
     .map((file) => {
       const lower = file.path.toLowerCase();
@@ -922,6 +948,8 @@ function scoreFeatureFiles(files: TreeFile[], keywords: string[], profile: Proje
       for (const keyword of keywords) {
         if (lower.includes(keyword)) score += 8;
       }
+      if (entryPaths.has(file.path)) score += 4;
+      score += featureIntentScore(lower, keywords, profile);
       if (lower.includes("/pages/") || lower.includes("/views/")) score += 2;
       if (lower.includes("/api/") || lower.includes("/services/") || lower.includes("/store/")) score += 2;
       if (profile.kind === "python-ml" && (lower.includes("/models/") || lower.includes("/training/") || lower.includes("/eval/"))) score += 3;
@@ -932,6 +960,42 @@ function scoreFeatureFiles(files: TreeFile[], keywords: string[], profile: Proje
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
   return scored.map((item) => item.file);
+}
+
+function featureIntentScore(path: string, keywords: string[], profile: ProjectProfile): number {
+  const joined = keywords.join(" ");
+  let score = 0;
+
+  if (/(训练|train|training|trainer|dataset|dataloader|评估|evaluate|eval|推理|inference)/i.test(joined)) {
+    if (/(^|\/)(train|training|trainer|launch|main)[\w.-]*\.py$/.test(path)) score += 12;
+    if (path.includes("/training/") || path.includes("/datasets/") || path.includes("dataloader")) score += 10;
+    if (path.includes("/eval/") || path.includes("evaluate") || path.includes("visualization")) score += 7;
+    if (path.includes("config") && /\.(ya?ml|json|toml)$/.test(path)) score += 5;
+  }
+
+  if (/(mcp|openclaw|skill|blueprint|工具|注册|server)/i.test(joined)) {
+    if (path.includes("codepath-mcp")) score += 16;
+    if (path.includes("analyzer")) score += 8;
+    if (path.includes("types.ts")) score += 5;
+    if (path.includes("openclaw") || path.includes("mcp_usage")) score += 4;
+  }
+
+  if (/(缓存|cache|storage|持久化|删除|清理)/i.test(joined)) {
+    if (path.includes("analyzer")) score += 10;
+    if (path.includes("sidebar")) score += 8;
+    if (path.includes("background")) score += 6;
+    if (path.includes("types.ts")) score += 5;
+  }
+
+  if (/(侧边栏|sidebar|浏览器|extension|content|background|wxt|插件)/i.test(joined)) {
+    if (path.includes("sidebar")) score += 14;
+    if (path.startsWith("entrypoints/")) score += 12;
+    if (path.includes("wxt.config")) score += 6;
+    if (path.includes("styles.css")) score += 4;
+  }
+
+  if (profile.kind === "browser-extension" && path.includes("entrypoints/")) score += 3;
+  return score;
 }
 
 function summarizeTree(files: TreeFile[]): string {
@@ -955,10 +1019,10 @@ function summarizeTree(files: TreeFile[]): string {
 function buildStructuralContext(context: RepoAnalysisContext, snippets: FileSnippet[]): string {
   const entryCandidates = pickEntryCandidates(context.usefulFiles, context.profile).slice(0, 10);
   const configCandidates = context.usefulFiles
-    .filter((file) => /(^|\/)(package\.json|pyproject\.toml|requirements\.txt|environment\.ya?ml|vite\.config|next\.config|tsconfig\.json|go\.mod|cargo\.toml|setup\.py|config[\w.-]*\.(json|ya?ml|toml))$/i.test(file.path))
+    .filter((file) => /(^|\/)(package\.json|pyproject\.toml|requirements\.txt|environment\.ya?ml|vite\.config|next\.config|wxt\.config|tsconfig\.json|go\.mod|cargo\.toml|setup\.py|config[\w.-]*\.(json|ya?ml|toml))$/i.test(file.path))
     .slice(0, 12);
   const importantDirs = summarizeImportantDirs(context.usefulFiles).slice(0, 12);
-  const importRelations = buildImportRelations(snippets).slice(0, 18);
+  const importRelations = buildImportRelations(snippets, context.usefulFiles).slice(0, 18);
   return [
     `Project type: ${context.profile.label} (${context.profile.confidence})`,
     `Type signals: ${context.profile.reasons.join("; ") || "No strong signal"}`,
@@ -973,9 +1037,16 @@ function pickEntryCandidates(files: TreeFile[], profile: ProjectProfile): TreeFi
   const patterns: RegExp[] = [
     /(^|\/)(main|index|app|server|cli|__main__)\.(ts|tsx|js|jsx|py|go|rs)$/i,
     /(^|\/)(train|training|trainer|launch|infer|inference|eval|evaluate|demo)[\w.-]*\.py$/i,
-    /(^|\/)(vite\.config|next\.config|package\.json|pyproject\.toml)$/i
+    /(^|\/)(vite\.config|next\.config|wxt\.config|package\.json|pyproject\.toml)$/i
   ];
   if (profile.kind === "frontend") patterns.unshift(/src\/(main|index|app)\.(ts|tsx|js|jsx)$/i);
+  if (profile.kind === "browser-extension") {
+    patterns.unshift(
+      /^entrypoints\/(content|background|popup|sidepanel)\.(ts|tsx|js|jsx)$/i,
+      /^src\/components\/sidebar\.(ts|tsx|js|jsx)$/i,
+      /^scripts\/codepath-mcp\.(ts|js)$/i
+    );
+  }
   if (profile.kind === "node-backend") patterns.unshift(/(^|\/)(server|app|index)\.(ts|js)$/i);
   return files.filter((file) => patterns.some((pattern) => pattern.test(file.path))).slice(0, 20);
 }
@@ -990,14 +1061,51 @@ function summarizeImportantDirs(files: TreeFile[]): Array<[string, number]> {
   return [...dirs.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
 }
 
-function buildImportRelations(snippets: FileSnippet[]): string[] {
+function buildImportRelations(snippets: FileSnippet[], files: TreeFile[]): string[] {
+  const paths = files.map((file) => file.path);
   return snippets
     .map((snippet) => {
       const imports = snippet.imports ?? extractImports(snippet.content);
       if (imports.length === 0) return "";
-      return `- ${snippet.path} imports ${imports.slice(0, 8).join(", ")}`;
+      const resolved = imports.slice(0, 8).map((specifier) => formatImportRelation(snippet.path, specifier, paths));
+      return `- ${snippet.path} imports ${resolved.join(", ")}`;
     })
     .filter(Boolean);
+}
+
+function formatImportRelation(fromPath: string, specifier: string, repoPaths: string[]): string {
+  const resolved = resolveImportPath(fromPath, specifier, repoPaths);
+  return resolved ? `${specifier} -> ${resolved}` : specifier;
+}
+
+function resolveImportPath(fromPath: string, specifier: string, repoPaths: string[]): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const fromDir = fromPath.includes("/") ? fromPath.slice(0, fromPath.lastIndexOf("/")) : "";
+  const normalized = normalizePath(`${fromDir}/${specifier}`);
+  const candidates = [
+    normalized,
+    `${normalized}.ts`,
+    `${normalized}.tsx`,
+    `${normalized}.js`,
+    `${normalized}.jsx`,
+    `${normalized}.py`,
+    `${normalized}/index.ts`,
+    `${normalized}/index.tsx`,
+    `${normalized}/index.js`,
+    `${normalized}/index.jsx`,
+    `${normalized}/__init__.py`
+  ];
+  return candidates.find((candidate) => repoPaths.includes(candidate));
+}
+
+function normalizePath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.join("/");
 }
 
 function formatSnippets(snippets: FileSnippet[]): string {
@@ -1043,6 +1151,20 @@ Do not invent files. Cite file paths for every important claim.`;
 6. Data/API layer.
 7. State management if present.
 8. Suggested reading route.
+
+Do not invent files. Cite file paths for every important claim.`;
+  }
+
+  if (profile.kind === "browser-extension") {
+    return `Analyze this browser extension / WXT repository for a learner. Focus on:
+1. Extension purpose.
+2. Tech stack and extension framework signals.
+3. Content/background/side panel entry points.
+4. React sidebar UI structure.
+5. Runtime messaging and model/GitHub data flow.
+6. MCP or agent integration if present.
+7. Cache/settings/error handling paths.
+8. Suggested reading route for secondary development.
 
 Do not invent files. Cite file paths for every important claim.`;
   }

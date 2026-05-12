@@ -61,7 +61,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-13-streaming-diagnostics";
+const UI_VERSION = "dev-2026-05-13-analysis-quality-v2";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));

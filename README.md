@@ -137,7 +137,7 @@ For the integration design, see [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md)
 ## Roadmap
 
 - Stabilize the real-use loop: streaming diagnostics, regression checks, docs, demo cases, and release workflow
-- Improve project understanding with richer project-type templates, lightweight import graphs, and clearer confirmed/inferred labels
+- Improve project understanding with richer project-type templates, WXT/browser-extension recognition, relative import mapping, better feature-file ranking, and clearer confirmed/inferred labels
 - Continue validating OpenClaw Skill / blueprint output with real projects
 - Add local project analysis mode after GitHub analysis is stable
 - Build structured knowledge views such as file responsibility maps and feature call chains

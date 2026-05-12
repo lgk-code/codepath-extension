@@ -4,7 +4,7 @@ import { parseGithubUrl } from "../src/lib/githubUrl";
 import { Sidebar } from "../src/components/Sidebar";
 import "../src/styles.css";
 
-const CONTENT_BUILD = "dev-2026-05-13-streaming-diagnostics";
+const CONTENT_BUILD = "dev-2026-05-13-analysis-quality-v2";
 const ROOT_ID = "codepath-dev-root";
 const LEGACY_ROOT_ID = "codepath-root";
 
