@@ -4,7 +4,7 @@ import { parseGithubUrl } from "../src/lib/githubUrl";
 import { Sidebar } from "../src/components/Sidebar";
 import "../src/styles.css";
 
-const CONTENT_BUILD = "dev-2026-05-12-cache-manager";
+const CONTENT_BUILD = "dev-2026-05-12-usage-loop";
 const ROOT_ID = "codepath-dev-root";
 const LEGACY_ROOT_ID = "codepath-root";
 

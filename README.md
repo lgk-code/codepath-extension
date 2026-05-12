@@ -72,6 +72,19 @@ The Chrome/Edge MV3 build output is generated at:
 
 Load this directory as an unpacked extension in Chrome or Edge.
 
+## Quick Start
+
+1. Build and deploy the unpacked Edge extension:
+
+```bash
+npm run deploy:edge
+```
+
+2. Open `edge://extensions`, enable developer mode, reload CodePath, then refresh a GitHub repository page.
+3. Open the CodePath sidebar Settings tab and configure API Key, Base URL, model, and optional GitHub Token.
+4. Run Project Overview on a repository page, then try Feature Path, File Explanation, follow-up questions, and Skill / blueprint export.
+5. If you use OpenClaw-compatible tools, start the MCP server with `npm run mcp` and configure the same model environment variables.
+
 ## Configuration
 
 Open the CodePath Settings tab in the sidebar and configure:
@@ -82,6 +95,15 @@ Open the CodePath Settings tab in the sidebar and configure:
 - GitHub Token: optional, used to avoid anonymous GitHub API rate limits
 
 Do not commit API keys or tokens. Use the minimum required GitHub token permissions.
+
+## Troubleshooting
+
+- Browser did not update: confirm the Settings tab shows the latest green build version, then reload CodePath in `edge://extensions` and refresh the GitHub page.
+- GitHub 404 or private repository: add a GitHub Token with Contents read permission.
+- GitHub rate limit: add a GitHub Token and retry.
+- Model 401/403: check API Key, model access, and provider account status.
+- Model 404: check that Base URL is an OpenAI-compatible `/v1` endpoint and the model name is correct.
+- Slow answers: check the timing line in each result to see whether time is spent on GitHub, file reads, context construction, or the model request.
 
 ## Demo Website
 
@@ -112,12 +134,13 @@ For the integration design, see [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md)
 
 ## Roadmap
 
-- Improve background messaging stability and reduce content-script fallbacks
-- Cache repository analysis by owner/repo/branch/commit
-- Add human-friendly error messages for rate limits and model errors
-- Add local project analysis mode
-- Build import graph and file relationship navigation
-- Add richer project-type templates for backend, CLI, and library repositories
+- Stabilize the real-use loop: docs, regression checks, diagnostics, demo cases, and release workflow
+- Improve project understanding with richer project-type templates and lightweight import graphs
+- Continue validating OpenClaw Skill / blueprint output with real projects
+- Add local project analysis mode after GitHub analysis is stable
+- Build structured knowledge views such as file responsibility maps and feature call chains
+
+See [ROADMAP.md](ROADMAP.md) for the full plan.
 
 ## Security Notes
 

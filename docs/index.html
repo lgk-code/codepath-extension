@@ -234,7 +234,35 @@ tools:
             <strong>3. OpenClaw 执行任务</strong>
             <span>根据 Skill 或蓝图继续学习、重构、搭建或验证。</span>
           </div>
+          <div>
+            <strong>4. 缓存与回归验证</strong>
+            <span>通过缓存列表、构建版本和人工回归清单确认结果可复现。</span>
+          </div>
         </div>
+      </section>
+
+      <section class="case-section">
+        <div class="section-heading">
+          <p class="eyebrow">Self analysis</p>
+          <h2>CodePath 自分析案例</h2>
+        </div>
+        <article class="case-card">
+          <div class="case-copy">
+            <p class="eyebrow">WXT + MCP + Cache manager</p>
+            <h3>用 CodePath 分析 CodePath 自己</h3>
+            <p>
+              这个案例用于验证插件能解释自身架构：WXT content script 注入侧边栏，background 处理设置和请求，
+              analyzer 读取 GitHub 源码并生成概览、功能路径、Skill 和缓存管理结果。
+            </p>
+            <div class="case-tags" aria-label="案例标签">
+              <span>WXT</span>
+              <span>React</span>
+              <span>MCP</span>
+              <span>Cache</span>
+            </div>
+            <a class="text-action" href="./cases/codepath.html">查看自分析案例</a>
+          </div>
+        </article>
       </section>
     </main>
 

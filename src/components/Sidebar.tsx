@@ -49,7 +49,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-12-cache-manager";
+const UI_VERSION = "dev-2026-05-12-usage-loop";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -112,7 +112,7 @@ export function Sidebar() {
       const value = await action();
       onDone(value, Date.now() - startedAt);
     } catch (err) {
-      setError(humanizeError(err));
+      setError(formatRunError(label, repo, Date.now() - startedAt, err));
     } finally {
       setLoading("");
       setLoadingStartedAt(null);
@@ -1274,4 +1274,10 @@ function humanizeError(error: unknown): string {
     return "网络请求失败。请检查仓库地址、Token 或模型 Base URL。";
   }
   return message;
+}
+
+function formatRunError(label: string, repo: RepoRef | null, elapsedMs: number, error: unknown): string {
+  const action = label.replace(/^正在/, "").replace(/\.\.\.$/, "");
+  const repoText = repo ? `${repo.owner}/${repo.repo}${repo.branch ? `@${repo.branch}` : ""}` : "未识别仓库";
+  return `${action}失败。仓库：${repoText}。已用时：${formatElapsed(elapsedMs)}。${humanizeError(error)}`;
 }

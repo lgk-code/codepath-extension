@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodePath 自分析案例 - CodePath</title>
+    <meta
+      name="description"
+      content="CodePath 分析自身 WXT 浏览器插件、MCP Server 和缓存管理架构的案例展示。"
+    />
+    <link rel="stylesheet" href="../site.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="../index.html" aria-label="返回 CodePath 首页">
+        <span class="brand-mark">CP</span>
+        <span>CodePath</span>
+      </a>
+      <nav class="nav-links" aria-label="页面导航">
+        <a href="../index.html#browser">浏览器插件</a>
+        <a href="../index.html#mcp">MCP</a>
+        <a href="../index.html#cases">案例</a>
+        <a href="../MCP_USAGE.md">MCP 教程</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="case-hero">
+        <div class="section-heading">
+          <p class="eyebrow">Self analysis</p>
+          <h1>CodePath 自分析案例</h1>
+          <p class="lead">
+            这个案例用于验证 CodePath 能否解释自身架构：从浏览器注入、侧边栏 UI、后台通讯、GitHub 源码读取，
+            到 MCP 工具注册和缓存管理。
+          </p>
+        </div>
+        <div class="case-meta">
+          <span>项目：lgk-code/codepath-extension</span>
+          <span>目标：WXT / MCP / 缓存管理</span>
+          <span>方式：浏览器插件 + MCP</span>
+        </div>
+      </section>
+
+      <section class="case-summary">
+        <div class="section-heading">
+          <p class="eyebrow">What to verify</p>
+          <h2>测试目标</h2>
+        </div>
+        <div class="feature-grid compact">
+          <article>
+            <span class="feature-icon">01</span>
+            <h3>浏览器侧架构</h3>
+            <p>确认分析能指出 content script 注入、Sidebar 渲染、background 请求处理和设置页配置的职责边界。</p>
+          </article>
+          <article>
+            <span class="feature-icon">02</span>
+            <h3>MCP 工具链路</h3>
+            <p>确认分析能解释 `scripts/codepath-mcp.ts` 中的工具注册、输入输出结构和环境变量读取方式。</p>
+          </article>
+          <article>
+            <span class="feature-icon">03</span>
+            <h3>缓存管理</h3>
+            <p>确认分析能说明 analyzer 中的持久化缓存、缓存列表、项目级删除和单项删除的关系。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="case-summary">
+        <div class="section-heading">
+          <p class="eyebrow">Expected output</p>
+          <h2>期望输出能力</h2>
+        </div>
+        <div class="flow">
+          <div>
+            <strong>项目概览</strong>
+            <span>应引用 `entrypoints/`、`src/components/Sidebar.tsx`、`src/lib/analyzer.ts` 和 `scripts/codepath-mcp.ts`。</span>
+          </div>
+          <div>
+            <strong>功能路径</strong>
+            <span>输入“缓存管理”后，应说明缓存 key、storage、设置页列表和删除请求之间的调用链。</span>
+          </div>
+          <div>
+            <strong>文件解释</strong>
+            <span>解释 `scripts/codepath-mcp.ts` 时，应围绕 MCP 工具注册、结构化返回和 OpenClaw 使用方式。</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>CodePath Extension</span>
+      <a href="../index.html">演示首页</a>
+      <a href="../MCP_USAGE.md">MCP 使用教程</a>
+      <a href="https://github.com/lgk-code/codepath-extension">CodePath 仓库</a>
+    </footer>
+  </body>
+</html>

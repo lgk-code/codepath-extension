@@ -143,10 +143,12 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
   if (request.repo) {
     try {
       const repo = await new GithubClient(settings).getRepo(request.repo.owner, request.repo.repo);
-      diagnostics.repoCheck = `GitHub 连接正常：默认分支 ${repo.default_branch}`;
+      diagnostics.repoCheck = `GitHub 连接正常：${request.repo.owner}/${request.repo.repo}，默认分支 ${repo.default_branch}。`;
     } catch (error) {
-      diagnostics.repoCheck = `GitHub 连接失败：${error instanceof Error ? error.message : String(error)}`;
+      diagnostics.repoCheck = formatGithubDiagnostic(error);
     }
+  } else {
+    diagnostics.repoCheck = "GitHub 连接未测试：当前页面未识别到仓库。";
   }
 
   if (settings.apiKey) {
@@ -155,15 +157,32 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
         { role: "system", content: "You are a connection test. Reply with OK." },
         { role: "user", content: "Reply only: OK" }
       ]);
-      diagnostics.modelCheck = "模型连接正常。";
+      diagnostics.modelCheck = `模型连接正常：${settings.model}。`;
     } catch (error) {
-      diagnostics.modelCheck = `模型连接失败：${error instanceof Error ? error.message : String(error)}`;
+      diagnostics.modelCheck = formatModelDiagnostic(error);
     }
   } else {
     diagnostics.modelCheck = "模型连接未测试：未填写 API Key。";
   }
 
   return diagnostics;
+}
+
+function formatGithubDiagnostic(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("404")) return "GitHub 连接失败：仓库不存在、仓库为私有，或 Token 没有 Contents 读取权限。";
+  if (message.includes("403") || message.toLowerCase().includes("rate limit")) return "GitHub 连接失败：API 限流或权限不足，请填写 GitHub Token 后重试。";
+  if (message.includes("401") || message.toLowerCase().includes("unauthorized")) return "GitHub 连接失败：GitHub Token 无效或已过期。";
+  return `GitHub 连接失败：${message}`;
+}
+
+function formatModelDiagnostic(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("401") || message.includes("403")) return "模型连接失败：API Key 无效、权限不足，或当前模型不可用。";
+  if (message.includes("404")) return "模型连接失败：Base URL 或模型名称不正确，请确认使用 OpenAI-compatible 的 /v1 地址。";
+  if (message.includes("Failed to fetch") || message.includes("Unable to reach")) return "模型连接失败：无法连接 Base URL，请检查网络、代理和服务地址。";
+  if (message.toLowerCase().includes("timeout")) return "模型连接失败：请求超时，请检查网络或更换更快的模型。";
+  return `模型连接失败：${message}`;
 }
 
 function maskSecret(value: string): string {
