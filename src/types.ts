@@ -88,9 +88,33 @@ export type CacheClearResult = {
   persistentKeysCleared: number;
 };
 
+export type CacheEntryKind = "tree" | "overview" | "file" | "unknown";
+
+export type CacheEntry = {
+  key: string;
+  kind: CacheEntryKind;
+  label: string;
+};
+
+export type CacheRepository = {
+  repoKey: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  count: number;
+  items: CacheEntry[];
+};
+
 export type CacheStats = {
   currentRepoPersistentKeys: number;
   allPersistentKeys: number;
+  repositories: CacheRepository[];
+};
+
+export type CacheDeleteResult = {
+  target: "entry" | "repo";
+  memoryCleared: boolean;
+  persistentKeysCleared: number;
 };
 
 export type RuntimeRequest =
@@ -99,6 +123,8 @@ export type RuntimeRequest =
   | { type: "test-settings"; repo?: RepoRef }
   | { type: "clear-cache"; scope: CacheClearScope; repo?: RepoRef }
   | { type: "cache-stats"; repo?: RepoRef }
+  | { type: "delete-cache-entry"; key: string }
+  | { type: "delete-cache-repo"; repoKey: string }
   | { type: "analyze-project"; repo: RepoRef }
   | { type: "analyze-feature"; repo: RepoRef; feature: string }
   | { type: "generate-skill-blueprint"; repo: RepoRef; feature: string; mode: BlueprintMode }

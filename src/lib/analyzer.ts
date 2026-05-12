@@ -2,6 +2,9 @@ import type {
   BlueprintMode,
   CacheClearResult,
   CacheClearScope,
+  CacheDeleteResult,
+  CacheEntry,
+  CacheRepository,
   CacheStats,
   FileExplanation,
   FeaturePath,
@@ -336,14 +339,7 @@ export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef
   if (scope === "repo" && !repo) {
     return { scope, memoryCleared: false, persistentKeysCleared: 0 };
   }
-  const prefix = repo ? `${repo.owner}/${repo.repo}@` : "";
-  clearMap(repoContextCache, prefix);
-  clearMap(snippetCache, prefix);
-  clearMap(overviewCache, prefix);
-  clearMap(featureCache, prefix);
-  clearMap(fileExplanationCache, prefix);
-  clearMap(questionCache, prefix);
-  clearMap(skillBlueprintCache, prefix);
+  clearMemoryCaches(repo ? `${repo.owner}/${repo.repo}@` : "");
   const persistentKeysCleared = await persistentClear(repo ? persistentRepoPrefix(repo) : PERSISTENT_CACHE_PREFIX);
   return { scope, memoryCleared: true, persistentKeysCleared };
 }
@@ -351,20 +347,46 @@ export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef
 export async function getAnalysisCacheStats(repo?: RepoRef): Promise<CacheStats> {
   const storage = getChromeStorage();
   if (!storage) {
-    return { currentRepoPersistentKeys: 0, allPersistentKeys: 0 };
+    return { currentRepoPersistentKeys: 0, allPersistentKeys: 0, repositories: [] };
   }
 
   try {
     const items = await storageGet(storage, null);
     const keys = Object.keys(items).filter((key) => key.startsWith(PERSISTENT_CACHE_PREFIX));
     const repoPrefix = repo ? persistentRepoPrefix(repo) : "";
+    const repositories = groupPersistentCacheKeys(keys);
     return {
       currentRepoPersistentKeys: repoPrefix ? keys.filter((key) => key.startsWith(repoPrefix)).length : 0,
-      allPersistentKeys: keys.length
+      allPersistentKeys: keys.length,
+      repositories
     };
   } catch {
-    return { currentRepoPersistentKeys: 0, allPersistentKeys: 0 };
+    return { currentRepoPersistentKeys: 0, allPersistentKeys: 0, repositories: [] };
   }
+}
+
+export async function deletePersistentCacheEntry(key: string): Promise<CacheDeleteResult> {
+  const storage = getChromeStorage();
+  if (!storage || !key.startsWith(PERSISTENT_CACHE_PREFIX)) {
+    return { target: "entry", memoryCleared: false, persistentKeysCleared: 0 };
+  }
+
+  const entry = parsePersistentCacheKey(key);
+  if (entry) clearMemoryCaches(`${entry.owner}/${entry.repo}@${entry.branch}`);
+  const existing = await storageGet(storage, key);
+  await storageRemove(storage, [key]);
+  return { target: "entry", memoryCleared: Boolean(entry), persistentKeysCleared: Object.prototype.hasOwnProperty.call(existing, key) ? 1 : 0 };
+}
+
+export async function deletePersistentCacheRepo(repoKey: string): Promise<CacheDeleteResult> {
+  const storage = getChromeStorage();
+  if (!storage || !repoKey) {
+    return { target: "repo", memoryCleared: false, persistentKeysCleared: 0 };
+  }
+
+  clearMemoryCaches(repoKey);
+  const persistentKeysCleared = await persistentClear(`${PERSISTENT_CACHE_PREFIX}${repoKey}:`);
+  return { target: "repo", memoryCleared: true, persistentKeysCleared };
 }
 
 function createTiming(): TimingCollector {
@@ -532,6 +554,16 @@ function persistentOverviewKey(repo: RepoRef, branch: string): string {
   return `${PERSISTENT_CACHE_PREFIX}${overviewCacheKey(repo, branch)}`;
 }
 
+function clearMemoryCaches(prefix: string) {
+  clearMap(repoContextCache, prefix);
+  clearMap(snippetCache, prefix);
+  clearMap(overviewCache, prefix);
+  clearMap(featureCache, prefix);
+  clearMap(fileExplanationCache, prefix);
+  clearMap(questionCache, prefix);
+  clearMap(skillBlueprintCache, prefix);
+}
+
 function clearMap<T>(map: Map<string, T>, prefix: string) {
   if (!prefix) {
     map.clear();
@@ -574,6 +606,66 @@ async function persistentClear(prefix: string): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+function groupPersistentCacheKeys(keys: string[]): CacheRepository[] {
+  const repositories = new Map<string, CacheRepository>();
+  for (const key of keys) {
+    const entry = parsePersistentCacheKey(key);
+    if (!entry) continue;
+    const repoKey = `${entry.owner}/${entry.repo}@${entry.branch}`;
+    const repository = repositories.get(repoKey) ?? {
+      repoKey,
+      owner: entry.owner,
+      repo: entry.repo,
+      branch: entry.branch,
+      count: 0,
+      items: []
+    };
+    repository.items.push({ key, kind: entry.kind, label: entry.label });
+    repository.count = repository.items.length;
+    repositories.set(repoKey, repository);
+  }
+
+  return [...repositories.values()]
+    .map((repository) => ({
+      ...repository,
+      items: repository.items.sort((left, right) => cacheEntryRank(left) - cacheEntryRank(right) || left.label.localeCompare(right.label))
+    }))
+    .sort((left, right) => left.repoKey.localeCompare(right.repoKey));
+}
+
+function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; branch: string } & CacheEntry) | undefined {
+  if (!key.startsWith(PERSISTENT_CACHE_PREFIX)) return undefined;
+  const rest = key.slice(PERSISTENT_CACHE_PREFIX.length);
+  const delimiterIndex = rest.indexOf(":");
+  if (delimiterIndex < 0) return undefined;
+
+  const repoBranch = rest.slice(0, delimiterIndex);
+  const suffix = rest.slice(delimiterIndex + 1);
+  const atIndex = repoBranch.lastIndexOf("@");
+  const slashIndex = repoBranch.indexOf("/");
+  if (slashIndex <= 0 || atIndex <= slashIndex + 1) return undefined;
+
+  const owner = repoBranch.slice(0, slashIndex);
+  const repo = repoBranch.slice(slashIndex + 1, atIndex);
+  const branch = repoBranch.slice(atIndex + 1);
+  const item = parseCacheItemSuffix(key, suffix);
+  return { owner, repo, branch, ...item };
+}
+
+function parseCacheItemSuffix(key: string, suffix: string): CacheEntry {
+  if (suffix === "tree") return { key, kind: "tree", label: "tree" };
+  if (suffix === "overview") return { key, kind: "overview", label: "overview" };
+  if (!suffix.includes(":")) return { key, kind: "file", label: `file: ${suffix}` };
+  return { key, kind: "unknown", label: suffix || "unknown" };
+}
+
+function cacheEntryRank(entry: CacheEntry): number {
+  if (entry.kind === "tree") return 0;
+  if (entry.kind === "overview") return 1;
+  if (entry.kind === "file") return 2;
+  return 3;
 }
 
 function getChromeStorage(): BrowserStorageArea | undefined {

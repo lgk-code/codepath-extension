@@ -47,6 +47,7 @@
 - 推荐追问默认只用本地规则生成，不应触发额外模型请求。
 - 点击推荐追问应立即发送，复制按钮应保留。
 - Skill 输出应同时支持复制 Markdown 和下载 Markdown。
-- 设置页应显示当前仓库缓存项数量、全部缓存项数量和最近一次清理结果。
+- 设置页应显示当前仓库缓存项数量、全部缓存项数量、最近一次清理结果和缓存项目列表。
+- 缓存项目列表应支持展开 `owner/repo@branch`、删除某个项目缓存、删除某个单项缓存。
 - 缓存命中结果顶部应显示“来自缓存”，并提示清空当前仓库缓存后可重新分析。
 - MCP 工具名保持不变：`analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint`。

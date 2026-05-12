@@ -5,6 +5,8 @@ import {
   analyzeProject,
   answerQuestion,
   clearAnalysisCaches,
+  deletePersistentCacheEntry,
+  deletePersistentCacheRepo,
   explainFile,
   generateSkillBlueprint,
   getAnalysisCacheStats
@@ -50,6 +52,14 @@ async function handleRequest(request: RuntimeRequest): Promise<RuntimeResponse<u
 
     if (request.type === "cache-stats") {
       return ok(await getAnalysisCacheStats(request.repo));
+    }
+
+    if (request.type === "delete-cache-entry") {
+      return ok(await deletePersistentCacheEntry(request.key));
+    }
+
+    if (request.type === "delete-cache-repo") {
+      return ok(await deletePersistentCacheRepo(request.repoKey));
     }
 
     const settings = await getSettings();

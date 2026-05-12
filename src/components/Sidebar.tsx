@@ -7,6 +7,7 @@ import type {
   FileExplanation,
   BlueprintMode,
   CacheClearResult,
+  CacheDeleteResult,
   CacheStats,
   PortMessage,
   ProjectOverview,
@@ -20,7 +21,17 @@ import type {
 } from "../types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
-import { analyzeFeature, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSkillBlueprint, getAnalysisCacheStats } from "../lib/analyzer";
+import {
+  analyzeFeature,
+  analyzeProject,
+  answerQuestion,
+  clearAnalysisCaches,
+  deletePersistentCacheEntry,
+  deletePersistentCacheRepo,
+  explainFile,
+  generateSkillBlueprint,
+  getAnalysisCacheStats
+} from "../lib/analyzer";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
@@ -38,7 +49,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-12-export-cache-refresh";
+const UI_VERSION = "dev-2026-05-12-cache-manager";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -64,6 +75,7 @@ export function Sidebar() {
   const [settingsDiagnostics, setSettingsDiagnostics] = useState<SettingsDiagnostics | null>(null);
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [lastCacheClearResult, setLastCacheClearResult] = useState<CacheClearResult | null>(null);
+  const [expandedCacheRepos, setExpandedCacheRepos] = useState<Record<string, boolean>>({});
   const [suggestionSeed, setSuggestionSeed] = useState(0);
 
   useEffect(() => {
@@ -181,6 +193,33 @@ export function Sidebar() {
       const result = await send<CacheClearResult>({ type: "clear-cache", scope, repo: scope === "repo" ? repo || undefined : undefined });
       setLastCacheClearResult(result);
       setSettingsStatus(`缓存已清空：内存缓存已重置，持久化缓存删除 ${result.persistentKeysCleared} 项。`);
+      await refreshCacheStats();
+    } catch (err) {
+      setSettingsStatus("");
+      setError(humanizeError(err));
+    }
+  }
+
+  async function deleteCacheEntry(key: string) {
+    setSettingsStatus("正在删除单条缓存...");
+    setError("");
+    try {
+      const result = await send<CacheDeleteResult>({ type: "delete-cache-entry", key });
+      setSettingsStatus(`缓存项已删除：持久化缓存删除 ${result.persistentKeysCleared} 项。`);
+      await refreshCacheStats();
+    } catch (err) {
+      setSettingsStatus("");
+      setError(humanizeError(err));
+    }
+  }
+
+  async function deleteCacheRepo(repoKey: string) {
+    setSettingsStatus(`正在删除 ${repoKey} 的缓存...`);
+    setError("");
+    try {
+      const result = await send<CacheDeleteResult>({ type: "delete-cache-repo", repoKey });
+      setSettingsStatus(`项目缓存已删除：${repoKey}，持久化缓存删除 ${result.persistentKeysCleared} 项。`);
+      setExpandedCacheRepos((items) => ({ ...items, [repoKey]: false }));
       await refreshCacheStats();
     } catch (err) {
       setSettingsStatus("");
@@ -421,6 +460,10 @@ export function Sidebar() {
             onTest={testSettings}
             onClearCache={clearCache}
             onRefreshCacheStats={refreshCacheStats}
+            onDeleteCacheEntry={deleteCacheEntry}
+            onDeleteCacheRepo={deleteCacheRepo}
+            expandedCacheRepos={expandedCacheRepos}
+            onToggleCacheRepo={(repoKey) => setExpandedCacheRepos((items) => ({ ...items, [repoKey]: !items[repoKey] }))}
             hasRepo={Boolean(repo)}
             cacheStats={cacheStats}
             lastCacheClearResult={lastCacheClearResult}
@@ -498,6 +541,10 @@ function SettingsPanel(props: {
   onTest: () => void;
   onClearCache: (scope: "repo" | "all") => void;
   onRefreshCacheStats: () => void;
+  onDeleteCacheEntry: (key: string) => void;
+  onDeleteCacheRepo: (repoKey: string) => void;
+  expandedCacheRepos: Record<string, boolean>;
+  onToggleCacheRepo: (repoKey: string) => void;
   hasRepo: boolean;
 }) {
   const [draft, setDraft] = useState(props.settings);
@@ -546,14 +593,33 @@ function SettingsPanel(props: {
         </button>
       </div>
       {props.status && <p className="cp-save-status">{props.status}</p>}
-      <CacheSummary stats={props.cacheStats} lastClearResult={props.lastCacheClearResult} hasRepo={props.hasRepo} onRefresh={props.onRefreshCacheStats} />
+      <CacheSummary
+        stats={props.cacheStats}
+        lastClearResult={props.lastCacheClearResult}
+        hasRepo={props.hasRepo}
+        expandedRepos={props.expandedCacheRepos}
+        onRefresh={props.onRefreshCacheStats}
+        onDeleteEntry={props.onDeleteCacheEntry}
+        onDeleteRepo={props.onDeleteCacheRepo}
+        onToggleRepo={props.onToggleCacheRepo}
+      />
       <SettingsSummary diagnostics={props.diagnostics} draft={draft} />
       <p className="cp-muted">Qwen DashScope 默认 Base URL：{DEFAULT_SETTINGS.baseUrl}</p>
     </section>
   );
 }
 
-function CacheSummary(props: { stats: CacheStats | null; lastClearResult: CacheClearResult | null; hasRepo: boolean; onRefresh: () => void }) {
+function CacheSummary(props: {
+  stats: CacheStats | null;
+  lastClearResult: CacheClearResult | null;
+  hasRepo: boolean;
+  expandedRepos: Record<string, boolean>;
+  onRefresh: () => void;
+  onDeleteEntry: (key: string) => void;
+  onDeleteRepo: (repoKey: string) => void;
+  onToggleRepo: (repoKey: string) => void;
+}) {
+  const repositories = props.stats?.repositories ?? [];
   return (
     <div className="cp-settings-summary">
       <strong>缓存状态</strong>
@@ -575,6 +641,43 @@ function CacheSummary(props: { stats: CacheStats | null; lastClearResult: CacheC
         <button className="cp-secondary" onClick={props.onRefresh}>
           刷新缓存状态
         </button>
+      </div>
+      <div className="cp-cache-manager">
+        <strong>缓存项目列表</strong>
+        {repositories.length === 0 ? (
+          <p className="cp-muted">暂无 CodePath 持久化缓存。</p>
+        ) : (
+          repositories.map((repository) => {
+            const expanded = Boolean(props.expandedRepos[repository.repoKey]);
+            return (
+              <article className="cp-cache-repo" key={repository.repoKey}>
+                <div className="cp-cache-repo-head">
+                  <button className="cp-cache-toggle" onClick={() => props.onToggleRepo(repository.repoKey)}>
+                    {expanded ? "收起" : "展开"}
+                  </button>
+                  <span title={repository.repoKey}>{repository.repoKey}</span>
+                  <small>{repository.count} 项</small>
+                  <button className="cp-cache-danger" onClick={() => props.onDeleteRepo(repository.repoKey)}>
+                    删除项目
+                  </button>
+                </div>
+                {expanded && (
+                  <div className="cp-cache-items">
+                    {repository.items.map((item) => (
+                      <div className="cp-cache-item" key={item.key}>
+                        <span className={`cp-cache-kind ${item.kind}`}>{item.kind}</span>
+                        <span title={item.key}>{item.label}</span>
+                        <button className="cp-cache-danger" onClick={() => props.onDeleteEntry(item.key)}>
+                          删除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+            );
+          })
+        )}
       </div>
     </div>
   );
@@ -967,6 +1070,14 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 
     if (request.type === "cache-stats") {
       return localOk((await getAnalysisCacheStats(request.repo)) as T);
+    }
+
+    if (request.type === "delete-cache-entry") {
+      return localOk((await deletePersistentCacheEntry(request.key)) as T);
+    }
+
+    if (request.type === "delete-cache-repo") {
+      return localOk((await deletePersistentCacheRepo(request.repoKey)) as T);
     }
 
     if (request.type === "explain-file") {
