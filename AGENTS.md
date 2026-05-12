@@ -50,7 +50,8 @@ npm.cmd run deploy:edge
 - 改动范围要贴近当前需求，不做无关重构。
 - 优先复用 `src/lib` 中已有的本地工具函数，再考虑新增抽象。
 - 面向用户的中文文案要清楚、简洁、可操作。
-- 修改侧边栏行为时，要同步更新可见的 CodePath 构建版本，方便手动确认浏览器加载的是最新代码。
+- 任何新功能、用户可见行为变更、设置页变更、推荐追问变更、缓存/耗时显示变更，都必须同步更新可见的 CodePath 构建版本。
+- 构建版本需要同时更新 `src/components/Sidebar.tsx` 的 `UI_VERSION` 和 `entrypoints/content.tsx` 的 `CONTENT_BUILD`，两者保持一致。
 - 不要硬编码 API Key、GitHub Token、本机绝对路径或个人浏览器 profile 路径。
 
 ## 验证要求

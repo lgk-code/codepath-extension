@@ -266,14 +266,21 @@ CodePath 将源码分析结果压缩成结构化文档，供 OpenClaw 或 Hermes
 
 ## 近期优先级
 
-1. 增加 `deploy:edge` 脚本，自动构建并复制到浏览器加载目录。
-2. 给 MCP 工具增加更清晰的结构化返回，减少 OpenClaw 解析 Markdown 的成本。
-3. 拆分耗时指标，定位慢在 GitHub、源码读取、上下文构造还是模型请求。
-4. 在浏览器侧新增“借鉴 / Skill”视图，复用 `generateSkillBlueprint`。
-5. 增加“复制 OpenClaw 任务交接 Markdown”和“下载 Skill.md”能力。
-6. 设计持久化缓存和“清空缓存”入口。
-7. 优化错误提示和设置页连接诊断。
-8. 用真实 OpenClaw 项目开发任务验证 `generate_openclaw_skill` 和 `generate_project_blueprint` 的可执行性。
+1. 下载 `SKILL.md`：在“借鉴 / Skill”视图增加下载按钮，文件名按仓库、功能和模式生成。
+2. 推荐追问第二版：增加“重新生成推荐追问”按钮，可选调用模型生成更自然的 3 条问题，默认仍使用本地规则。
+3. 缓存体验优化：设置页显示缓存项数量、缓存来源说明和最近清理结果。
+4. 真实项目回归集：固定 PAGE4D、CodePath 自身、一个前端项目、一个后端项目作为 smoke test 案例。
+5. MCP 实战打磨：用 OpenClaw 调用 `generate_openclaw_skill` 和 `generate_project_blueprint`，记录可执行性问题。
+6. 网站同步更新：把动态推荐追问、Skill 下载、缓存诊断补到演示网站和 PAGE4D 案例说明。
+7. 旧桥接清理评估：确认 `public/bridge.js` 和 `sendViaBridge` 是否仍有实际 fallback 价值，再决定保留或删除。
+8. 本地项目分析预研：评估浏览器扩展、MCP、本地 CLI 三种入口哪种最适合读取本地目录。
+
+## 版本更新规则
+
+- 每次新增功能或用户可见行为变更，必须更新设置页绿色框显示的构建版本。
+- 构建版本同时维护在 `src/components/Sidebar.tsx` 的 `UI_VERSION` 和 `entrypoints/content.tsx` 的 `CONTENT_BUILD`。
+- 推荐格式：`dev-YYYY-MM-DD-功能简写`，例如 `dev-2026-05-12-contextual-suggestions`。
+- 验证时先确认绿色框版本变化，再判断功能是否加载成功。
 
 ## 设计原则
 
