@@ -64,3 +64,25 @@ npm.cmd run build
 ```
 
 推送前还要扫描仓库，确认没有真实密钥、Token 或本机路径被提交。
+
+## Git 开发管理流程
+
+- `main` 只保留稳定、可演示、已验证版本。
+- 新功能使用 `feat/*` 分支，问题修复使用 `fix/*` 分支，文档更新使用 `docs/*` 分支。
+- 用户可见功能改动必须同步更新：
+  - `src/components/Sidebar.tsx` 中的 `UI_VERSION`
+  - `entrypoints/content.tsx` 中的 `CONTENT_BUILD`
+- 每次提交前至少执行：
+  - `npm.cmd run compile`
+  - `npm.cmd run build`
+  - `npm.cmd run deploy:edge`
+  - `git diff --check`
+  - 密钥、Token、本机路径扫描
+- 浏览器侧改动验证流程：
+  - 执行 `npm.cmd run deploy:edge`
+  - 打开 `edge://extensions` 重新加载 CodePath
+  - 刷新 GitHub 页面
+  - 确认绿色构建版本变化
+- 提交前确认 `git status` 和 `git diff --stat`，确保只提交本次任务相关文件。
+- 不提交 `.output/`、本机 Edge 加载目录、浏览器 profile、API Key、GitHub Token、本机私人路径。
+- 功能稳定后再合并到 `main`，阶段性稳定版本使用 Git tag 标记。
