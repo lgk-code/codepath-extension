@@ -69,11 +69,10 @@ npm run compile
 Run the local quality gate:
 
 ```bash
-npm run compile
-npm run build
-npm run verify:mcp-tools
-npm run scan:secrets
+npm run quality
 ```
+
+`quality` runs type-checking, extension build, MCP tool-name verification, and tracked-file secret/private-path scanning. Run the individual scripts when you need to isolate a failing step.
 
 The Chrome/Edge MV3 build output is generated at:
 
@@ -124,14 +123,23 @@ The static demo website lives in `docs/index.html` and is ready for GitHub Pages
 
 ## Quality Gate and CI
 
-CodePath uses two gates:
+CodePath uses three gates:
 
-- Local gate: compile, build, MCP tool-name smoke test, secret/private-path scan, and browser reload checks for visible changes.
-- GitHub Actions CI: runs on `push` to `main` and pull requests. It installs dependencies, type-checks, builds the extension, verifies the four MCP tool names, and scans tracked files for common secrets and Windows user paths.
+- Local gate: `npm run quality` runs compile, build, MCP tool-name smoke test, and secret/private-path scan.
+- GitHub Actions CI: runs on `push` to `main` and pull requests. It installs dependencies, type-checks, builds the extension, verifies the four MCP tool names, scans tracked files, and uploads a Chrome/Edge MV3 artifact.
+- Manual browser gate: visible extension changes still require `npm run deploy:edge`, reloading CodePath in `edge://extensions`, refreshing GitHub, and checking the green build version.
 
 CI does not run `deploy:edge` and does not use model API keys or GitHub tokens, so browser behavior and real model/GitHub integration still require manual checks.
 
 GitHub Actions is GitHub's automation system for checks, builds, and packaging after push or pull request events. Codex can use GitHub Actions tooling to inspect failed jobs and logs, but it does not replace local Edge reload testing.
+
+To try a CI-built extension package:
+
+1. Open the repository Actions page and select the latest successful CI run.
+2. Download the `codepath-chrome-mv3-<commit>` artifact.
+3. Unzip it, then load the unzipped directory in Chrome or Edge with developer mode enabled.
+
+The CI artifact is a convenience package for manual verification. It is not a signed browser-store release.
 
 ## MCP / OpenClaw
 

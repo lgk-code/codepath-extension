@@ -7,14 +7,24 @@
 每次提交或推送前至少执行：
 
 ```powershell
-npm.cmd run compile
-npm.cmd run build
-npm.cmd run verify:mcp-tools
-npm.cmd run scan:secrets
+npm.cmd run quality
 git diff --check
 ```
 
-GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行等价的基础 CI：安装依赖、类型检查、构建、MCP 工具名检查、密钥和本机私人路径扫描。
+`quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。需要定位问题时，可以拆开执行 `compile`、`build`、`verify:mcp-tools`、`scan:secrets`。
+
+## 自动 CI 检查
+
+GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行基础 CI：
+
+- 安装依赖。
+- 类型检查。
+- 构建 Chrome/Edge MV3 扩展。
+- 检查 MCP 4 个工具名。
+- 扫描常见密钥、Token 和本机私人路径。
+- 打包并上传 `codepath-chrome-mv3-<commit>` artifact。
+
+CI artifact 用于人工下载验证，不是正式发布包。下载后应解压 artifact 内的 zip，并在 Chrome/Edge 开发人员模式中加载解压后的目录。
 
 ## 人工浏览器检查
 
@@ -31,6 +41,12 @@ npm.cmd run deploy:edge
 - 设置页保存并测试后，确认流式输出模式能显示为实时流式、疑似缓冲、不支持流式或连接失败未测试之一。
 
 CI 通过不代表浏览器扩展已经重新加载，也不代表真实模型 API、GitHub Token 权限、流式输出和 UI 手感已经验证。
+
+## 三层门禁判定
+
+- 自动 CI 门禁：保证代码能在 GitHub runner 上安装、类型检查、构建、基础扫描，并产出可下载 artifact。
+- 本地质量门禁：保证当前工作区通过 `npm.cmd run quality` 和 `git diff --check`。
+- 人工浏览器门禁：保证 Edge 实际加载的是新构建，真实 GitHub 页面、真实模型配置和真实 UI 交互没有回退。
 
 ## 案例 1：PAGE4D
 

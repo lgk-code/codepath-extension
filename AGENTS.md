@@ -13,6 +13,7 @@ CodePath 是一个基于 WXT、React 和 TypeScript 的浏览器扩展，用来�
 - 启动 CodePath MCP Server：`npm.cmd run mcp`
 - 检查 MCP 工具名：`npm.cmd run verify:mcp-tools`
 - 扫描密钥和本机私人路径：`npm.cmd run scan:secrets`
+- 本地统一质量门禁：`npm.cmd run quality`
 - 构建产物目录：`.output/chrome-mv3`
 
 MCP Server 使用环境变量读取配置：
@@ -61,13 +62,10 @@ npm.cmd run deploy:edge
 发布或推送前至少执行：
 
 ```bash
-npm.cmd run compile
-npm.cmd run build
-npm.cmd run verify:mcp-tools
-npm.cmd run scan:secrets
+npm.cmd run quality
 ```
 
-推送前还要扫描仓库，确认没有真实密钥、Token 或本机路径被提交。
+`quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。必要时仍可拆开执行 `compile`、`build`、`verify:mcp-tools`、`scan:secrets` 方便定位问题。
 
 ## 质量门禁与 CI/CD
 
@@ -78,10 +76,7 @@ CodePath 采用“两层门禁”：
 
 本地提交前至少执行：
 
-- `npm.cmd run compile`
-- `npm.cmd run build`
-- `npm.cmd run verify:mcp-tools`
-- `npm.cmd run scan:secrets`
+- `npm.cmd run quality`
 - `git diff --check`
 
 涉及浏览器侧、设置页、推荐追问、缓存、耗时、流式输出或其他用户可见行为时，还必须执行：
@@ -98,8 +93,10 @@ GitHub Actions 当前只做 CI，不做自动发布。CI 会在 `main` 的 push 
 - `npm run build`
 - `npm run verify:mcp-tools`
 - `npm run scan:secrets`
+- 打包 `.output/chrome-mv3` 为 `codepath-chrome-mv3-<commit>.zip`
+- 上传 Chrome/Edge 扩展 artifact，保留 14 天，供 PR 和 main 推送后人工下载验证
 
-CI 不运行 `deploy:edge`，因为它依赖本机 Windows 的 Edge 未打包扩展目录。CI 也不使用模型 API Key 或 GitHub Token，因此不能替代真实模型分析、私有仓库权限测试和浏览器 UI 手测。
+CI 不运行 `deploy:edge`，因为它依赖本机 Windows 的 Edge 未打包扩展目录。CI 也不使用模型 API Key 或 GitHub Token，因此不能替代真实模型分析、私有仓库权限测试和浏览器 UI 手测。CI artifact 是可下载试用包，不等同于正式 release。
 
 Codex / GitHub Actions 工具用于查看 GitHub 上的 workflow 状态、失败日志、job 步骤和重跑失败任务。它适合在 CI 失败后定位问题，但不能替代本地 Edge 扩展重载和真实项目手测。
 
@@ -111,10 +108,7 @@ Codex / GitHub Actions 工具用于查看 GitHub 上的 workflow 状态、失败
   - `src/components/Sidebar.tsx` 中的 `UI_VERSION`
   - `entrypoints/content.tsx` 中的 `CONTENT_BUILD`
 - 每次提交前至少执行：
-  - `npm.cmd run compile`
-  - `npm.cmd run build`
-  - `npm.cmd run verify:mcp-tools`
-  - `npm.cmd run scan:secrets`
+  - `npm.cmd run quality`
   - `git diff --check`
 - 浏览器侧改动验证流程：
   - 执行 `npm.cmd run deploy:edge`

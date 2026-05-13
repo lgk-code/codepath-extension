@@ -40,3 +40,16 @@ jobs:
 
       - name: Scan for secrets and private paths
         run: npm run scan:secrets
+
+      - name: Package Chrome/Edge extension
+        run: |
+          cd .output/chrome-mv3
+          zip -r ../../codepath-chrome-mv3-${{ github.sha }}.zip .
+
+      - name: Upload Chrome/Edge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codepath-chrome-mv3-${{ github.sha }}
+          path: codepath-chrome-mv3-${{ github.sha }}.zip
+          if-no-files-found: error
+          retention-days: 14

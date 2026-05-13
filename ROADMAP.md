@@ -10,7 +10,7 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 - 缓存管理：已支持 tree、overview、file 持久化缓存，设置页可查看项目缓存列表，并按项目或单项删除。
 - MCP：已提供 `analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint` 四个工具，返回结构化 JSON 文本。
 - 分析质量 v2：已补强 WXT / 浏览器插件项目画像、功能意图加权、相对 import 路径映射和 OpenClaw Skill 中文结构标题。
-- 工程流程：已支持 `deploy:edge`、GitHub Actions 基础 CI、构建版本可见规则、人工回归清单、演示网站和 PAGE4D 案例。
+- 工程流程：已支持 `deploy:edge`、本地 `quality` 质量门禁、GitHub Actions 基础 CI、构建版本可见规则、人工回归清单、演示网站和 PAGE4D 案例。
 
 ## 近期优先级
 
@@ -27,8 +27,8 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
    - 固定人工回归流程：compile、build、deploy:edge、MCP 工具名 smoke test、密钥扫描、真实项目手测。
 
 3. **质量门禁与发布流程**
-   - 第一阶段：GitHub Actions 跑 CI 基础门禁，包括安装依赖、类型检查、构建、MCP 工具名检查、密钥和本机路径扫描。
-   - 第二阶段：在 CI 中上传 Chrome/Edge 构建 artifact，方便测试和发布前取用。
+   - 第一阶段：GitHub Actions 跑 CI 基础门禁，包括安装依赖、类型检查、构建、MCP 工具名检查、密钥和本机路径扫描。（已完成）
+   - 第二阶段：在 CI 中上传 Chrome/Edge 构建 artifact，方便 PR、测试和发布前取用。（当前推进）
    - 第三阶段：通过 Git tag 触发 GitHub Release，自动生成 zip 包和发布说明；暂不自动发布到浏览器商店。
 
 4. **演示与案例完善**
@@ -54,6 +54,15 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 - 构建版本同时维护在 `src/components/Sidebar.tsx` 的 `UI_VERSION` 和 `entrypoints/content.tsx` 的 `CONTENT_BUILD`。
 - 推荐格式：`dev-YYYY-MM-DD-feature-name`，例如 `dev-2026-05-12-usage-loop`。
 - 验证时先确认绿色框版本变化，再判断功能是否加载成功。
+
+## 质量门禁与 CI/CD 规则
+
+- 本地提交前默认执行 `npm.cmd run quality` 和 `git diff --check`。
+- `quality` 包含类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。
+- 涉及浏览器可见行为时，额外执行 `npm.cmd run deploy:edge`，在 Edge 扩展页重新加载，并确认绿色构建版本变化。
+- GitHub Actions 在 `main` push 和 pull request 上运行基础 CI，并上传 Chrome/Edge MV3 artifact，供人工下载验证。
+- CI artifact 是测试包，不是正式发布包；正式 release/tag 自动化留到下一阶段。
+- CI 不使用模型 API Key 或 GitHub Token，因此不能替代真实模型、私有仓库权限、流式输出和 UI 手感验证。
 
 ## 设计原则
 
