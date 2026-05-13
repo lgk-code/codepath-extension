@@ -10,7 +10,9 @@
     "deploy:edge": "node scripts/deploy-edge.mjs",
     "build:firefox": "wxt build -b firefox",
     "compile": "tsc --noEmit",
-    "mcp": "tsx scripts/codepath-mcp.ts"
+    "mcp": "tsx scripts/codepath-mcp.ts",
+    "verify:mcp-tools": "node scripts/verify-mcp-tools.mjs",
+    "scan:secrets": "node scripts/scan-secrets.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

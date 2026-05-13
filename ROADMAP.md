@@ -10,7 +10,7 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 - 缓存管理：已支持 tree、overview、file 持久化缓存，设置页可查看项目缓存列表，并按项目或单项删除。
 - MCP：已提供 `analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint` 四个工具，返回结构化 JSON 文本。
 - 分析质量 v2：已补强 WXT / 浏览器插件项目画像、功能意图加权、相对 import 路径映射和 OpenClaw Skill 中文结构标题。
-- 工程流程：已支持 `deploy:edge`，并建立构建版本可见规则、人工回归清单、演示网站和 PAGE4D 案例。
+- 工程流程：已支持 `deploy:edge`、GitHub Actions 基础 CI、构建版本可见规则、人工回归清单、演示网站和 PAGE4D 案例。
 
 ## 近期优先级
 
@@ -26,12 +26,17 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
    - 把错误诊断拆清楚：GitHub 权限、rate limit、模型 Key、Base URL、模型名、网络失败分别给出操作建议。
    - 固定人工回归流程：compile、build、deploy:edge、MCP 工具名 smoke test、密钥扫描、真实项目手测。
 
-3. **演示与案例完善**
+3. **质量门禁与发布流程**
+   - 第一阶段：GitHub Actions 跑 CI 基础门禁，包括安装依赖、类型检查、构建、MCP 工具名检查、密钥和本机路径扫描。
+   - 第二阶段：在 CI 中上传 Chrome/Edge 构建 artifact，方便测试和发布前取用。
+   - 第三阶段：通过 Git tag 触发 GitHub Release，自动生成 zip 包和发布说明；暂不自动发布到浏览器商店。
+
+4. **演示与案例完善**
    - 首页展示浏览器插件、MCP、OpenClaw 交接、缓存管理四段真实使用流程。
    - PAGE4D 案例说明测试目标、截图含义、实际输出能力。
    - 增加 CodePath 自分析案例，展示 WXT、React、MCP、缓存管理在本项目中的调用关系。
 
-4. **Agent 使用深化**
+5. **Agent 使用深化**
    - 用 OpenClaw 实战验证 Skill 和蓝图的可执行性。
    - 支持保存多个 Skill，形成项目经验库。
    - 后续再考虑 Hermes 专用输出模板和批量学习材料导出。

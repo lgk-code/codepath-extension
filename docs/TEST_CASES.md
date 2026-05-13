@@ -1,6 +1,6 @@
 # CodePath 人工回归测试清单
 
-本文档用于每次发布前做人工 smoke test。目标是确认浏览器插件、MCP、动态推荐追问、Skill 导出、缓存管理和错误诊断没有回退。
+本文档用于每次发布前做 smoke test。目标是确认浏览器插件、MCP、动态推荐追问、Skill 导出、缓存管理和错误诊断没有回退。
 
 ## 发布前基础检查
 
@@ -9,16 +9,28 @@
 ```powershell
 npm.cmd run compile
 npm.cmd run build
+npm.cmd run verify:mcp-tools
+npm.cmd run scan:secrets
+git diff --check
+```
+
+GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行等价的基础 CI：安装依赖、类型检查、构建、MCP 工具名检查、密钥和本机私人路径扫描。
+
+## 人工浏览器检查
+
+涉及浏览器侧或用户可见行为时继续执行：
+
+```powershell
 npm.cmd run deploy:edge
 ```
 
-然后执行：
+然后手动执行：
 
 - 在 `edge://extensions` 重新加载 CodePath。
 - 刷新目标 GitHub 仓库页面，确认设置页绿色构建版本已变化。
-- smoke test MCP 工具名仍为 4 个：`analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint`。
-- 扫描仓库，确认没有 API Key、GitHub Token、本机私人路径和构建产物被提交。
 - 设置页保存并测试后，确认流式输出模式能显示为实时流式、疑似缓冲、不支持流式或连接失败未测试之一。
+
+CI 通过不代表浏览器扩展已经重新加载，也不代表真实模型 API、GitHub Token 权限、流式输出和 UI 手感已经验证。
 
 ## 案例 1：PAGE4D
 

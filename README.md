@@ -1,5 +1,7 @@
 # CodePath Extension
 
+[![CI](https://github.com/lgk-code/codepath-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/lgk-code/codepath-extension/actions/workflows/ci.yml)
+
 CodePath is a browser extension for reading GitHub source code without cloning, deploying, or running a project. It helps learners and secondary developers understand a repository's project structure, feature implementation path, and follow-up questions directly on GitHub pages.
 
 ## Current MVP
@@ -64,6 +66,15 @@ Type-check:
 npm run compile
 ```
 
+Run the local quality gate:
+
+```bash
+npm run compile
+npm run build
+npm run verify:mcp-tools
+npm run scan:secrets
+```
+
 The Chrome/Edge MV3 build output is generated at:
 
 ```text
@@ -111,6 +122,17 @@ Do not commit API keys or tokens. Use the minimum required GitHub token permissi
 
 The static demo website lives in `docs/index.html` and is ready for GitHub Pages when Pages is configured to publish from the `docs` directory. Manual demo regression cases are tracked in [docs/TEST_CASES.md](docs/TEST_CASES.md).
 
+## Quality Gate and CI
+
+CodePath uses two gates:
+
+- Local gate: compile, build, MCP tool-name smoke test, secret/private-path scan, and browser reload checks for visible changes.
+- GitHub Actions CI: runs on `push` to `main` and pull requests. It installs dependencies, type-checks, builds the extension, verifies the four MCP tool names, and scans tracked files for common secrets and Windows user paths.
+
+CI does not run `deploy:edge` and does not use model API keys or GitHub tokens, so browser behavior and real model/GitHub integration still require manual checks.
+
+GitHub Actions is GitHub's automation system for checks, builds, and packaging after push or pull request events. Codex can use GitHub Actions tooling to inspect failed jobs and logs, but it does not replace local Edge reload testing.
+
 ## MCP / OpenClaw
 
 CodePath can also run as an MCP server for OpenClaw-compatible agents. This lets an agent analyze a GitHub repository directly without opening the browser extension.
@@ -137,6 +159,7 @@ For the integration design, see [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md)
 ## Roadmap
 
 - Stabilize the real-use loop: streaming diagnostics, regression checks, docs, demo cases, and release workflow
+- Keep CI/CD lightweight: CI quality gate first, build artifact packaging next, release automation later
 - Improve project understanding with richer project-type templates, WXT/browser-extension recognition, relative import mapping, better feature-file ranking, and clearer confirmed/inferred labels
 - Continue validating OpenClaw Skill / blueprint output with real projects
 - Add local project analysis mode after GitHub analysis is stable
