@@ -1,28 +1,25 @@
-# CodePath Extension
+# CodePath 浏览器扩展
+
+[中文](README.md) | [English](README.en.md)
 
 [![CI](https://github.com/lgk-code/codepath-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/lgk-code/codepath-extension/actions/workflows/ci.yml)
 
-CodePath is a browser extension for reading GitHub source code without cloning, deploying, or running a project. It helps learners and secondary developers understand a repository's project structure, feature implementation path, and follow-up questions directly on GitHub pages.
+CodePath 是一个面向 GitHub 源码阅读的浏览器扩展，也可以作为 MCP Server 提供给 OpenClaw 兼容 agent 使用。它的目标不是复制目标项目代码，而是在 GitHub 页面上快速提炼项目结构、技术栈、功能实现路径、源码依据和可复用的工程经验。
 
-## Current MVP
+## 当前能力
 
-- Injects a resizable CodePath sidebar on GitHub repository pages
-- Analyzes project overview, technology stack, directory roles, entry points, and reading route
-- Analyzes a requested feature path, such as login, upload, search, or training flow
-- Explains the current GitHub file page
-- Supports global follow-up questions from Overview, Feature, File, and History views
-- Generates contextual follow-up questions from the current analysis and source references
-- Supports refreshing local follow-up suggestions without an extra model call
-- Generates and exports Skill / blueprint Markdown from the browser sidebar
-- Shows answer timing, cache hits, cache status, cache item management, and connection diagnostics
-- Keeps follow-up answers in a conversation history view
-- Renders AI output as Markdown, including tables, lists, code, and bold text
-- Links source references back to GitHub files
-- Detects Python ML / research repositories and uses a more specific analysis template
-- Uses Qwen/OpenAI-compatible chat completions
-- Supports optional GitHub Token for higher API limits
+- 在 GitHub 仓库页面注入可调整宽度的 CodePath 侧边栏。
+- 分析项目概览：用途、技术栈、目录职责、入口文件和推荐阅读路线。
+- 分析功能路径：例如登录、上传、搜索、训练流程、MCP、缓存管理等目标功能。
+- 解释当前 GitHub 文件页面。
+- 支持概览、功能、文件和历史记录视图中的连续追问。
+- 根据当前分析结果和源码引用动态生成推荐追问，并支持本地刷新。
+- 在浏览器侧生成并导出 OpenClaw Skill、新项目蓝图或给人读的技术分析 Markdown。
+- 显示回答耗时、缓存命中、缓存状态、缓存单项管理和连接诊断。
+- 支持 Markdown 渲染、源码路径链接、流式输出探测和普通返回回退。
+- 提供 MCP Server，方便 OpenClaw 直接调用项目分析能力。
 
-## Tech Stack
+## 技术栈
 
 - WXT
 - React
@@ -30,151 +27,130 @@ CodePath is a browser extension for reading GitHub source code without cloning, 
 - Manifest V3
 - React Markdown
 - GitHub REST API
-- Qwen/OpenAI-compatible API
+- Qwen / OpenAI-compatible Chat Completions API
 
-## Development
+## 快速开始
 
-Install dependencies:
+安装依赖：
 
 ```bash
 npm install
 ```
 
-Run development mode:
-
-```bash
-npm run dev
-```
-
-Build the extension:
-
-```bash
-npm run build
-```
-
-Build and copy the Edge unpacked extension to the local test directory:
+构建并同步到本机 Edge 未打包扩展目录：
 
 ```bash
 npm run deploy:edge
 ```
 
-Then reload CodePath in `edge://extensions` and refresh the GitHub page.
+然后打开 `edge://extensions`，开启开发人员模式，重新加载 CodePath，刷新 GitHub 仓库页面。
 
-Type-check:
+在 CodePath 设置页中配置：
+
+- API Key：Qwen 或 OpenAI-compatible 模型密钥。
+- Base URL：默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
+- Model：默认 `qwen-plus`。
+- GitHub Token：可选，用于提高 GitHub API 限额和访问私有仓库。
+
+点击“保存并测试”后，CodePath 会检查模型连接，并探测当前接口是否支持流式输出。支持时浏览器侧会自动增量展示，不支持时回退到普通一次性返回。
+
+## 常用开发命令
 
 ```bash
+npm run dev
 npm run compile
-```
-
-Run the local quality gate:
-
-```bash
+npm run build
+npm run deploy:edge
 npm run quality
 ```
 
-`quality` runs type-checking, extension build, MCP tool-name verification, and tracked-file secret/private-path scanning. Run the individual scripts when you need to isolate a failing step.
+`quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。需要定位问题时，可以拆开执行：
 
-The Chrome/Edge MV3 build output is generated at:
+```bash
+npm run compile
+npm run build
+npm run verify:mcp-tools
+npm run scan:secrets
+```
+
+Chrome / Edge MV3 构建产物位于：
 
 ```text
 .output/chrome-mv3
 ```
 
-Load this directory as an unpacked extension in Chrome or Edge.
-
-## Quick Start
-
-1. Build and deploy the unpacked Edge extension:
-
-```bash
-npm run deploy:edge
-```
-
-2. Open `edge://extensions`, enable developer mode, reload CodePath, then refresh a GitHub repository page.
-3. Open the CodePath sidebar Settings tab and configure API Key, Base URL, model, and optional GitHub Token.
-4. Click Save and Test in Settings. CodePath checks the model connection and whether the current API supports streaming output.
-5. Run Project Overview on a repository page, then try Feature Path, File Explanation, follow-up questions, and Skill / blueprint export.
-6. If you use OpenClaw-compatible tools, start the MCP server with `npm run mcp` and configure the same model environment variables.
-
-## Configuration
-
-Open the CodePath Settings tab in the sidebar and configure:
-
-- API Key: your Qwen or OpenAI-compatible API key
-- Base URL: default is `https://dashscope.aliyuncs.com/compatible-mode/v1`
-- Model: default is `qwen-plus`
-- GitHub Token: optional, used to avoid anonymous GitHub API rate limits
-- Streaming output: detected automatically after Save and Test. CodePath distinguishes realtime streaming, buffered streaming, unsupported streaming, and one-shot fallback.
-
-Do not commit API keys or tokens. Use the minimum required GitHub token permissions.
-
-## Troubleshooting
-
-- Browser did not update: confirm the Settings tab shows the latest green build version, then reload CodePath in `edge://extensions` and refresh the GitHub page.
-- GitHub 404 or private repository: add a GitHub Token with Contents read permission.
-- GitHub rate limit: add a GitHub Token and retry.
-- Model 401/403: check API Key, model access, and provider account status.
-- Model 404: check that Base URL is an OpenAI-compatible `/v1` endpoint and the model name is correct.
-- Slow answers: check the timing line in each result to see whether time is spent on GitHub, file reads, context construction, or the model request.
-
-## Demo Website
-
-The static demo website lives in `docs/index.html` and is ready for GitHub Pages when Pages is configured to publish from the `docs` directory. Manual demo regression cases are tracked in [docs/TEST_CASES.md](docs/TEST_CASES.md).
-
-## Quality Gate and CI
-
-CodePath uses three gates:
-
-- Local gate: `npm run quality` runs compile, build, MCP tool-name smoke test, and secret/private-path scan.
-- GitHub Actions CI: runs on `push` to `main` and pull requests. It installs dependencies, type-checks, builds the extension, verifies the four MCP tool names, scans tracked files, and uploads a Chrome/Edge MV3 artifact.
-- Manual browser gate: visible extension changes still require `npm run deploy:edge`, reloading CodePath in `edge://extensions`, refreshing GitHub, and checking the green build version.
-
-CI does not run `deploy:edge` and does not use model API keys or GitHub tokens, so browser behavior and real model/GitHub integration still require manual checks.
-
-GitHub Actions is GitHub's automation system for checks, builds, and packaging after push or pull request events. Codex can use GitHub Actions tooling to inspect failed jobs and logs, but it does not replace local Edge reload testing.
-
-To try a CI-built extension package:
-
-1. Open the repository Actions page and select the latest successful CI run.
-2. Download the `codepath-chrome-mv3-<commit>` artifact.
-3. Unzip it, then load the unzipped directory in Chrome or Edge with developer mode enabled.
-
-The CI artifact is a convenience package for manual verification. It is not a signed browser-store release.
-
 ## MCP / OpenClaw
 
-CodePath can also run as an MCP server for OpenClaw-compatible agents. This lets an agent analyze a GitHub repository directly without opening the browser extension.
+CodePath 可以作为 MCP Server 运行，让 OpenClaw 兼容 agent 不打开浏览器也能分析 GitHub 仓库。
 
-Start the MCP server:
+启动 MCP Server：
 
 ```bash
 npm run mcp
 ```
 
-Available tools:
+可用工具：
 
 - `analyze_github_project`
 - `analyze_github_feature`
 - `generate_openclaw_skill`
 - `generate_project_blueprint`
 
-MCP responses include structured JSON fields such as `repo`, `feature`, `summary`, `sources`, `timing`, `confirmedFacts`, `inferredNotes`, and `nextActions`.
+MCP 返回结构化 JSON 文本，包含 `repo`、`feature`、`summary`、`sources`、`timing`、`confirmedFacts`、`inferredNotes`、`nextActions` 等字段。
 
-See [CodePath MCP 使用教程](docs/MCP_USAGE.md) for setup, environment variables, OpenClaw configuration, tool examples, and troubleshooting.
+更多配置见 [CodePath MCP 使用教程](docs/MCP_USAGE.md)，集成设计见 [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md)。
 
-For the integration design, see [OpenClaw 集成方案](OPENCLAW_INTEGRATION.md).
+## 演示网站
 
-## Roadmap
+静态演示网站位于 [docs/index.html](docs/index.html)，适合通过 GitHub Pages 发布。当前包含：
 
-- Stabilize the real-use loop: streaming diagnostics, regression checks, docs, demo cases, and release workflow
-- Keep CI/CD lightweight: CI quality gate first, build artifact packaging next, release automation later
-- Improve project understanding with richer project-type templates, WXT/browser-extension recognition, relative import mapping, better feature-file ranking, and clearer confirmed/inferred labels
-- Continue validating OpenClaw Skill / blueprint output with real projects
-- Add local project analysis mode after GitHub analysis is stable
-- Build structured knowledge views such as file responsibility maps and feature call chains
+- 浏览器插件使用流程。
+- MCP / OpenClaw 调用说明。
+- PAGE4D 真实分析案例。
+- CodePath 自分析案例。
 
-See [ROADMAP.md](ROADMAP.md) for the full plan.
+人工回归清单见 [docs/TEST_CASES.md](docs/TEST_CASES.md)。
 
-## Security Notes
+## 质量门禁与 CI
 
-CodePath stores user-provided API keys and tokens in browser-local storage for the active extension environment. These values are not stored in the repository. Revoke test tokens after local development sessions.
+CodePath 使用三层门禁：
+
+- 本地质量门禁：`npm run quality`。
+- GitHub Actions CI：在 `main` push 和 pull request 上自动安装依赖、类型检查、构建扩展、检查 MCP 工具名、扫描密钥和本机私人路径，并上传 Chrome/Edge MV3 artifact。
+- 人工浏览器门禁：涉及用户可见扩展行为时，必须执行 `npm run deploy:edge`，在 `edge://extensions` 重新加载扩展，刷新 GitHub 页面，并确认设置页绿色构建版本变化。
+
+CI 不运行 `deploy:edge`，也不使用模型 API Key 或 GitHub Token，因此不能替代真实模型分析、私有仓库权限测试、流式输出体验和 UI 手测。
+
+下载 CI 构建包试用：
+
+1. 打开仓库的 Actions 页面，选择最新成功的 CI run。
+2. 下载 `codepath-chrome-mv3-<commit>` artifact。
+3. 解压 artifact，再解压其中的扩展 zip。
+4. 在 Chrome / Edge 开发人员模式中加载解压后的目录。
+
+CI artifact 是便于人工验证的测试包，不是浏览器商店签名发布包。
+
+## 常见问题
+
+- 浏览器里没有变化：确认设置页绿色构建版本是否变化，然后在 `edge://extensions` 重新加载 CodePath 并刷新 GitHub 页面。
+- GitHub 404 或私有仓库无法访问：配置具备 Contents read 权限的 GitHub Token。
+- GitHub rate limit：配置 GitHub Token 后重试。
+- 模型 401/403：检查 API Key、模型访问权限和服务商账号状态。
+- 模型 404：检查 Base URL 是否是 OpenAI-compatible `/v1` 地址，模型名是否正确。
+- 回答慢：查看结果中的阶段耗时，区分 GitHub 请求、文件读取、上下文构造和模型请求耗时。
+- 流式看起来像一次性返回：设置页会显示实时流式、疑似缓冲、不支持流式或失败回退；部分代理会缓冲 SSE。
+
+## 后续路线
+
+- 完善真实使用闭环：流式诊断、错误提示、人工回归和演示案例。
+- 保持 CI/CD 轻量：基础门禁已完成，artifact 打包已接入，后续再做 tag release 自动化。
+- 深化项目理解：项目类型模板、相对 import 映射、候选文件排序、源码确认/谨慎推断标注。
+- 持续验证 OpenClaw Skill / 蓝图在真实项目中的可执行性。
+- 在 GitHub 分析稳定后，再增加本地项目分析模式。
+- 建立文件职责图、功能调用链和项目经验库。
+
+完整计划见 [ROADMAP.md](ROADMAP.md)。
+
+## 安全说明
+
+CodePath 会把用户配置的 API Key 和 Token 存在当前浏览器扩展环境的本地存储中，不会写入仓库。开发、提交和 issue/PR 交流中不要粘贴真实密钥；临时测试 Token 使用后建议及时撤销。

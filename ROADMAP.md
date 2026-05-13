@@ -11,6 +11,7 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 - MCP：已提供 `analyze_github_project`、`analyze_github_feature`、`generate_openclaw_skill`、`generate_project_blueprint` 四个工具，返回结构化 JSON 文本。
 - 分析质量 v2：已补强 WXT / 浏览器插件项目画像、功能意图加权、相对 import 路径映射和 OpenClaw Skill 中文结构标题。
 - 工程流程：已支持 `deploy:edge`、本地 `quality` 质量门禁、GitHub Actions 基础 CI、构建版本可见规则、人工回归清单、演示网站和 PAGE4D 案例。
+- 文档展示：仓库默认 README 已切换为中文，英文版保留为 `README.en.md`，演示站点默认中文展示。
 
 ## 近期优先级
 
@@ -36,7 +37,12 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
    - PAGE4D 案例说明测试目标、截图含义、实际输出能力。
    - 增加 CodePath 自分析案例，展示 WXT、React、MCP、缓存管理在本项目中的调用关系。
 
-5. **Agent 使用深化**
+5. **文档国际化与展示完善**
+   - 中文 README 作为 GitHub 默认展示，英文 README 作为开源补充入口继续维护。
+   - 后续补充 README 截图、安装动图、CI artifact 下载示意和 Edge 加载流程图。
+   - 演示站点继续中文优先，后续如有海外用户再考虑英文站点或语言切换。
+
+6. **Agent 使用深化**
    - 用 OpenClaw 实战验证 Skill 和蓝图的可执行性。
    - 支持保存多个 Skill，形成项目经验库。
    - 后续再考虑 Hermes 专用输出模板和批量学习材料导出。
@@ -47,6 +53,8 @@ CodePath 的方向不是只做 GitHub 源码解释器，而是逐步成为“项
 - 知识图谱视图：生成文件职责图、功能调用链、入口文件地图、二次开发风险清单。
 - 更强缓存策略：增加缓存大小估算、来源说明、重新分析入口和缓存命中对比。
 - 多模型适配：为不同 OpenAI-compatible 模型提供推荐上下文长度和 prompt 策略。
+- 发布自动化：通过 Git tag 生成 GitHub Release、zip 包和发布说明；浏览器商店发布仍保持人工审核。
+- 案例沉淀：补全 CodePath 自分析截图、OpenClaw 调用记录和可复用 Skill 示例。
 
 ## 版本更新规则
 

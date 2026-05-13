@@ -48,6 +48,15 @@ CI 通过不代表浏览器扩展已经重新加载，也不代表真实模型 A
 - 本地质量门禁：保证当前工作区通过 `npm.cmd run quality` 和 `git diff --check`。
 - 人工浏览器门禁：保证 Edge 实际加载的是新构建，真实 GitHub 页面、真实模型配置和真实 UI 交互没有回退。
 
+## 文档展示检查
+
+- GitHub 仓库首页默认展示中文 `README.md`。
+- `README.en.md` 存在，且顶部能链接回中文 README。
+- 中文 README 顶部能链接到英文 README。
+- README 中的 MCP 使用教程、OpenClaw 集成方案、演示网站、测试清单链接可读且可打开。
+- README 的 CI artifact 下载说明清楚，能指导用户从 Actions 下载并加载未打包扩展。
+- 演示站点页脚应提供中文 README 和英文 README 入口。
+
 ## 案例 1：PAGE4D
 
 - 仓库：`lgk-code/PAGE4D`
