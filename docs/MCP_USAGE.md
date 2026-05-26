@@ -274,7 +274,7 @@ npm.cmd run mcp
 
 OpenClaw 配置里也要设置正确的 `cwd`。
 
-### `请先在 Settings 中填写 Qwen API Key`
+### `请先在 Settings 中填写模型 API Key`
 
 原因：MCP Server 没有读取到模型 API Key。
 

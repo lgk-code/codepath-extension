@@ -13,7 +13,7 @@ git diff --check
 
 `quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。需要定位问题时，可以拆开执行 `compile`、`build`、`verify:mcp-tools`、`scan:secrets`。
 
-## 自动 CI 检查
+## 自动 CI 与 Release 检查
 
 GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行基础 CI：
 
@@ -22,9 +22,9 @@ GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行基础 CI�
 - 构建 Chrome/Edge MV3 扩展。
 - 检查 MCP 4 个工具名。
 - 扫描常见密钥、Token 和本机私人路径。
-- 打包并上传 `codepath-chrome-mv3-<commit>` artifact。
+- 打包并上传 `codepath-chrome-mv3-<commit>` artifact，供开发验证。
 
-CI artifact 用于人工下载验证，不是正式发布包。下载后应解压 artifact 内的 zip，并在 Chrome/Edge 开发人员模式中加载解压后的目录。
+CI artifact 用于开发验证，不是正式发布包。面向用户的正式下载包由 `v*` tag 触发 Release workflow 生成，资产名固定为 `CodePath.zip`。
 
 ## 人工浏览器检查
 
@@ -47,14 +47,15 @@ CI 通过不代表浏览器扩展已经重新加载，也不代表真实模型 A
 - 自动 CI 门禁：保证代码能在 GitHub runner 上安装、类型检查、构建、基础扫描，并产出可下载 artifact。
 - 本地质量门禁：保证当前工作区通过 `npm.cmd run quality` 和 `git diff --check`。
 - 人工浏览器门禁：保证 Edge 实际加载的是新构建，真实 GitHub 页面、真实模型配置和真实 UI 交互没有回退。
+- Release 门禁：推送 `v*` tag 后应产出 GitHub Release 资产 `CodePath.zip`，README 下载链接应能直接下载该文件。
 
 ## 文档展示检查
 
 - GitHub 仓库首页默认展示中文 `README.md`。
 - `README.en.md` 存在，且顶部能链接回中文 README。
 - 中文 README 顶部能链接到英文 README。
-- README 中的 MCP 使用教程、OpenClaw 集成方案、演示网站、测试清单链接可读且可打开。
-- README 的 CI artifact 下载说明清楚，能指导用户从 Actions 下载并加载未打包扩展。
+- README 面向普通用户，不应出现本地构建、CI artifact 或测试门禁说明。
+- README 的 `CodePath.zip` 下载链接应指向 `releases/latest/download/CodePath.zip`。
 - 演示站点页脚应提供中文 README 和英文 README 入口。
 
 ## 案例 1：PAGE4D

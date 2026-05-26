@@ -7,13 +7,13 @@ CodePath 是一个基于 WXT、React 和 TypeScript 的浏览器扩展，用来�
 ## 开发命令
 
 - 安装依赖：`npm install`
-- Windows 下类型检查：`npm.cmd run compile`
-- 构建 Chrome/Edge MV3 扩展：`npm.cmd run build`
-- 构建并同步到 Edge 本地加载目录：`npm.cmd run deploy:edge`
-- 启动 CodePath MCP Server：`npm.cmd run mcp`
-- 检查 MCP 工具名：`npm.cmd run verify:mcp-tools`
-- 扫描密钥和本机私人路径：`npm.cmd run scan:secrets`
-- 本地统一质量门禁：`npm.cmd run quality`
+- 类型检查：`npm run compile`
+- 构建 Chrome/Edge MV3 扩展：`npm run build`
+- 构建并同步到 Edge 本地加载目录：`npm run deploy:edge`
+- 启动 CodePath MCP Server：`npm run mcp`
+- 检查 MCP 工具名：`npm run verify:mcp-tools`
+- 扫描密钥和本机私人路径：`npm run scan:secrets`
+- 本地统一质量门禁：`npm run quality`
 - 构建产物目录：`.output/chrome-mv3`
 
 MCP Server 使用环境变量读取配置：
@@ -27,17 +27,17 @@ MCP Server 使用环境变量读取配置：
 
 源码修改后，按下面流程验证浏览器里的实际效果：
 
-1. 执行 `npm.cmd run build`。
+1. 执行 `npm run build`。
 2. 将 `.output/chrome-mv3` 里的内容复制到浏览器当前加载的未打包扩展目录。
 3. 打开 `edge://extensions`，重新加载 CodePath 扩展。
 4. 刷新正在测试的 GitHub 页面。
 
-当前常用 Edge 的未打包扩展加载目录是 `C:\CodePathExtension\chrome-mv3`。如果浏览器里显示的构建版本没有变化，优先检查是否只更新了 `.output/chrome-mv3`，但没有同步到这个实际加载目录。
+当前常用 Edge 的未打包扩展加载目录是 `C:\CodePathExtension\chrome-mv3`。在 WSL 中执行 `npm run deploy:edge` 时会同步到对应的 `/mnt/c/CodePathExtension/chrome-mv3`。如果浏览器里显示的构建版本没有变化，优先检查是否只更新了 `.output/chrome-mv3`，但没有同步到这个实际加载目录。
 
 推荐手动同步流程：
 
 ```powershell
-npm.cmd run deploy:edge
+npm run deploy:edge
 ```
 
 然后在 `edge://extensions` 里重新加载 CodePath 扩展，并刷新 GitHub 页面。
@@ -62,7 +62,7 @@ npm.cmd run deploy:edge
 发布或推送前至少执行：
 
 ```bash
-npm.cmd run quality
+npm run quality
 ```
 
 `quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。必要时仍可拆开执行 `compile`、`build`、`verify:mcp-tools`、`scan:secrets` 方便定位问题。
@@ -76,17 +76,17 @@ CodePath 采用“两层门禁”：
 
 本地提交前至少执行：
 
-- `npm.cmd run quality`
+- `npm run quality`
 - `git diff --check`
 
 涉及浏览器侧、设置页、推荐追问、缓存、耗时、流式输出或其他用户可见行为时，还必须执行：
 
-- `npm.cmd run deploy:edge`
+- `npm run deploy:edge`
 - 在 `edge://extensions` 重新加载 CodePath
 - 刷新 GitHub 页面
 - 确认设置页绿色构建版本变化
 
-GitHub Actions 当前只做 CI，不做自动发布。CI 会在 `main` 的 push 和 pull request 上执行：
+GitHub Actions 分为 CI 和 Release 两条流水线。CI 会在 `main` 的 push 和 pull request 上执行：
 
 - `npm ci`
 - `npm run compile`
@@ -96,7 +96,9 @@ GitHub Actions 当前只做 CI，不做自动发布。CI 会在 `main` 的 push 
 - 打包 `.output/chrome-mv3` 为 `codepath-chrome-mv3-<commit>.zip`
 - 上传 Chrome/Edge 扩展 artifact，保留 14 天，供 PR 和 main 推送后人工下载验证
 
-CI 不运行 `deploy:edge`，因为它依赖本机 Windows 的 Edge 未打包扩展目录。CI 也不使用模型 API Key 或 GitHub Token，因此不能替代真实模型分析、私有仓库权限测试和浏览器 UI 手测。CI artifact 是可下载试用包，不等同于正式 release。
+Release 会在推送 `v*` tag 时执行质量门禁、运行 `npx wxt zip -b chrome`，并把 WXT 生成的 zip 复制为用户下载资产 `CodePath.zip` 上传到 GitHub Release。README 的用户下载链接必须指向这个固定资产名。
+
+CI 不运行 `deploy:edge`，因为它依赖本机 Windows 的 Edge 未打包扩展目录。CI 也不使用模型 API Key 或 GitHub Token，因此不能替代真实模型分析、私有仓库权限测试和浏览器 UI 手测。CI artifact 是开发验证包；正式用户下载包来自 GitHub Release 的 `CodePath.zip`。
 
 Codex / GitHub Actions 工具用于查看 GitHub 上的 workflow 状态、失败日志、job 步骤和重跑失败任务。它适合在 CI 失败后定位问题，但不能替代本地 Edge 扩展重载和真实项目手测。
 
@@ -108,13 +110,13 @@ Codex / GitHub Actions 工具用于查看 GitHub 上的 workflow 状态、失败
   - `src/components/Sidebar.tsx` 中的 `UI_VERSION`
   - `entrypoints/content.tsx` 中的 `CONTENT_BUILD`
 - 每次提交前至少执行：
-  - `npm.cmd run quality`
+  - `npm run quality`
   - `git diff --check`
 - 浏览器侧改动验证流程：
-  - 执行 `npm.cmd run deploy:edge`
+  - 执行 `npm run deploy:edge`
   - 打开 `edge://extensions` 重新加载 CodePath
   - 刷新 GitHub 页面
   - 确认绿色构建版本变化
 - 提交前确认 `git status` 和 `git diff --stat`，确保只提交本次任务相关文件。
 - 不提交 `.output/`、本机 Edge 加载目录、浏览器 profile、API Key、GitHub Token、本机私人路径。
-- 功能稳定后再合并到 `main`，阶段性稳定版本使用 Git tag 标记。
+- 功能稳定后再合并到 `main`；需要发布给用户下载时推送 `v*` tag，让 Release workflow 生成 `CodePath.zip`。

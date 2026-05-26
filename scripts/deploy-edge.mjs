@@ -5,14 +5,18 @@ import path from "node:path";
 
 const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, ".output", "chrome-mv3");
-const targetDir = process.env.CODEPATH_EDGE_EXTENSION_DIR || "C:\\CodePathExtension\\chrome-mv3";
+const defaultTargetDir =
+  process.platform === "win32"
+    ? "C:\\CodePathExtension\\chrome-mv3"
+    : "/mnt/c/CodePathExtension/chrome-mv3";
+const targetDir = process.env.CODEPATH_EDGE_EXTENSION_DIR || defaultTargetDir;
 const resolvedTargetDir = path.resolve(targetDir);
 
 if (path.parse(resolvedTargetDir).root === resolvedTargetDir || !resolvedTargetDir.toLowerCase().endsWith(`${path.sep}chrome-mv3`)) {
   throw new Error(`Refusing to deploy to unsafe extension directory: ${resolvedTargetDir}`);
 }
 
-await run("npm.cmd", ["run", "build"]);
+await run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"]);
 
 if (!existsSync(outputDir)) {
   throw new Error(`Build output not found: ${outputDir}`);
