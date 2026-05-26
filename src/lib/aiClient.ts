@@ -1,4 +1,4 @@
-import type { Settings, StreamingMode } from "../types";
+import type { ModelOption, Settings, StreamingMode } from "../types";
 
 type ChatMessage = {
   role: "system" | "user";
@@ -27,6 +27,12 @@ type StreamResult = {
   deltaCount: number;
 };
 
+type ModelsResponse = {
+  data?: Array<{
+    id?: unknown;
+  }>;
+};
+
 class StreamingUnsupportedError extends Error {
   constructor(message: string) {
     super(message);
@@ -39,7 +45,7 @@ export async function chat(settings: Settings, messages: ChatMessage[]): Promise
     throw new Error("请先在 Settings 中填写模型 API Key。");
   }
 
-  const endpoint = `${settings.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const endpoint = `${normalizeBaseUrl(settings.baseUrl)}/chat/completions`;
   let response: Response;
   try {
     response = await fetch(endpoint, {
@@ -66,6 +72,47 @@ export async function chat(settings: Settings, messages: ChatMessage[]): Promise
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("模型没有返回内容。");
   return content;
+}
+
+export function normalizeBaseUrl(input: string): string {
+  const trimmed = input.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return trimmed.replace(/\/(?:chat\/completions|models)$/i, "");
+}
+
+export async function listModels(settings: Pick<Settings, "apiKey" | "baseUrl">): Promise<ModelOption[]> {
+  if (!settings.apiKey) {
+    throw new Error("请先填写模型 API Key。");
+  }
+
+  const baseUrl = normalizeBaseUrl(settings.baseUrl);
+  if (!baseUrl) {
+    throw new Error("请先填写模型 Base URL。");
+  }
+
+  const endpoint = `${baseUrl}/models`;
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${settings.apiKey}`,
+        "Content-Type": "application/json"
+      }
+    });
+  } catch (error) {
+    throw new Error(`Unable to reach model list URL ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`模型列表接口 ${response.status}: ${await response.text()}`);
+  }
+
+  const data = (await response.json()) as ModelsResponse;
+  return (data.data ?? [])
+    .map((item) => (typeof item.id === "string" ? item.id.trim() : ""))
+    .filter(Boolean)
+    .map((id) => ({ id }));
 }
 
 export async function chatAuto(
@@ -129,7 +176,7 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
     throw new Error("请先在 Settings 中填写模型 API Key。");
   }
 
-  const endpoint = `${settings.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const endpoint = `${normalizeBaseUrl(settings.baseUrl)}/chat/completions`;
   let response: Response;
   try {
     response = await fetch(endpoint, {

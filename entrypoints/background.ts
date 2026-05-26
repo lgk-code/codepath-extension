@@ -1,4 +1,4 @@
-import type { PortMessage, RuntimeRequest, RuntimeResponse, Settings, SettingsDiagnostics } from "../src/types";
+import type { ModelListResult, PortMessage, RuntimeRequest, RuntimeResponse, Settings, SettingsDiagnostics } from "../src/types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../src/lib/defaults";
 import {
   analyzeFeature,
@@ -11,7 +11,7 @@ import {
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../src/lib/analyzer";
-import { chat, probeStreamingSupport } from "../src/lib/aiClient";
+import { chat, listModels, normalizeBaseUrl, probeStreamingSupport } from "../src/lib/aiClient";
 import { GithubClient } from "../src/lib/githubClient";
 
 type StreamHandlers = {
@@ -50,8 +50,13 @@ async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHand
     }
 
     if (request.type === "save-settings") {
-      await storageSet({ [SETTINGS_KEY]: request.settings });
-      return ok(request.settings);
+      const settings = normalizeSettings(request.settings);
+      await storageSet({ [SETTINGS_KEY]: settings });
+      return ok(settings);
+    }
+
+    if (request.type === "list-models") {
+      return ok(await getModelList(request.settings));
     }
 
     if (request.type === "test-settings") {
@@ -106,7 +111,29 @@ async function getSettings(): Promise<Settings> {
   const stored = await storageGet(SETTINGS_KEY);
   const value = stored[SETTINGS_KEY];
   const patch = isSettingsPatch(value);
-  return { ...DEFAULT_SETTINGS, ...patch };
+  return normalizeSettings({ ...DEFAULT_SETTINGS, ...patch });
+}
+
+async function getModelList(settings: Settings): Promise<ModelListResult> {
+  const normalized = normalizeSettings(settings);
+  const models = await listModels(normalized);
+  const selectedModel = normalized.model && models.some((model) => model.id === normalized.model) ? normalized.model : models[0]?.id ?? "";
+  return {
+    baseUrl: normalized.baseUrl,
+    models,
+    selectedModel,
+    message: models.length > 0 ? `已获取 ${models.length} 个模型。` : "模型列表为空，请手动填写模型名称。"
+  };
+}
+
+function normalizeSettings(settings: Settings): Settings {
+  return {
+    ...settings,
+    apiKey: settings.apiKey.trim(),
+    baseUrl: normalizeBaseUrl(settings.baseUrl),
+    model: settings.model.trim(),
+    githubToken: settings.githubToken?.trim() ?? ""
+  };
 }
 
 function storageGet(key: string): Promise<Record<string, unknown>> {

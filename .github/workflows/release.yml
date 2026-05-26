@@ -1,0 +1,58 @@
+name: Release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-extension:
+    name: Release Chrome/Edge extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Quality gate
+        run: npm run quality
+
+      - name: Zip Chrome/Edge extension
+        run: npx wxt zip -b chrome
+
+      - name: Prepare stable release asset
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const outputDir = ".output";
+          const asset = fs
+            .readdirSync(outputDir)
+            .find((name) => /^codepath-.+-chrome\.zip$/.test(name));
+          if (!asset) {
+            throw new Error("No Chrome extension zip found in .output");
+          }
+          fs.copyFileSync(path.join(outputDir, asset), "CodePath.zip");
+          NODE
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CodePath.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

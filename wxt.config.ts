@@ -3,7 +3,7 @@ import { defineConfig } from "wxt";
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
   manifest: {
-    name: "CodePath Dev",
+    name: "CodePath",
     description: "GitHub source-code guide for project ideas, feature paths, and implementation reading routes.",
     permissions: ["storage"],
     host_permissions: [

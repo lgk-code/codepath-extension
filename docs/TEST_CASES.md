@@ -105,6 +105,8 @@ CI 通过不代表浏览器扩展已经重新加载，也不代表真实模型 A
 至少手动确认以下场景的提示能指导用户下一步操作：
 
 - 未填写模型 API Key：提示模型连接未测试。
+- 粘贴完整 `/chat/completions` 或 `/models` 地址：保存后 Base URL 应归一化为 OpenAI-compatible 基础地址。
+- 填写 API Key 和 Base URL 后点击“获取模型”：可用模型列表自动填充并默认选中一个模型；接口不支持 `/models` 时提示可手动填写模型名。
 - 错误模型 API Key：提示 Key 或模型权限问题。
 - 错误 Base URL 或模型名：提示检查 OpenAI-compatible `/v1` 地址和模型名称。
 - 不支持流式或接口缓冲：提示将使用普通一次性返回，或提示接口/代理可能缓冲 SSE。

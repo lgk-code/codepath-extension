@@ -9,6 +9,8 @@ import type {
   CacheClearResult,
   CacheDeleteResult,
   CacheStats,
+  ModelListResult,
+  ModelOption,
   PortMessage,
   ProjectOverview,
   RepoRef,
@@ -32,6 +34,7 @@ import {
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../lib/analyzer";
+import { listModels, normalizeBaseUrl } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
@@ -61,7 +64,7 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-13-analysis-quality-v2";
+const UI_VERSION = "dev-2026-05-26-api-config-v1";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
@@ -183,10 +186,11 @@ export function Sidebar() {
 
   async function saveSettings(next: Settings) {
     setSettings(next);
-      setSettingsStatus("正在保存设置...");
+    setSettingsStatus("正在保存设置...");
     setError("");
     try {
-      const saved = await send<Settings>({ type: "save-settings", settings: next });
+      const prepared = await prepareSettingsForSave(next);
+      const saved = await send<Settings>({ type: "save-settings", settings: prepared });
       const verified = await send<Settings>({ type: "get-settings" });
       setSettings({ ...saved, ...verified });
       const diagnostics = await send<SettingsDiagnostics>({ type: "test-settings", repo: repo || undefined });
@@ -206,7 +210,7 @@ export function Sidebar() {
       const diagnostics = await send<SettingsDiagnostics>({ type: "test-settings", repo: repo || undefined });
       setSettingsDiagnostics(diagnostics);
       setSettings((current) => ({ ...current, supportsStreaming: diagnostics.supportsStreaming, streamingMode: diagnostics.streamingMode }));
-      setSettingsStatus(diagnostics.hasApiKey ? `已保存 API Key: ${diagnostics.apiKeyPreview}` : "未读取到已保存的 Qwen API Key。");
+      setSettingsStatus(diagnostics.hasApiKey ? `已保存 API Key: ${diagnostics.apiKeyPreview}` : "未读取到已保存的模型 API Key。");
     } catch (err) {
       setSettingsStatus("");
       setError(humanizeError(err));
@@ -219,6 +223,23 @@ export function Sidebar() {
       setCacheStats(stats);
     } catch (err) {
       setError(humanizeError(err));
+    }
+  }
+
+  async function prepareSettingsForSave(next: Settings): Promise<Settings> {
+    const prepared = normalizeSettingsDraft(next);
+    if (prepared.model) return prepared;
+
+    setSettingsStatus("正在获取可用模型...");
+    try {
+      const result = await send<ModelListResult>({ type: "list-models", settings: prepared });
+      const model = result.selectedModel || result.models[0]?.id || "";
+      if (!model) {
+        throw new Error("模型列表为空，请手动填写模型名称。");
+      }
+      return { ...prepared, baseUrl: result.baseUrl, model };
+    } catch (error) {
+      throw new Error(`未能自动获取模型列表，请手动填写模型名称后再保存。${humanizeError(error)}`);
     }
   }
 
@@ -618,8 +639,41 @@ function SettingsPanel(props: {
   hasRepo: boolean;
 }) {
   const [draft, setDraft] = useState(props.settings);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [modelListStatus, setModelListStatus] = useState("");
+  const [fetchingModels, setFetchingModels] = useState(false);
 
-  useEffect(() => setDraft(props.settings), [props.settings]);
+  useEffect(() => {
+    setDraft(props.settings);
+    setModelOptions(props.settings.model ? [{ id: props.settings.model }] : []);
+    setModelListStatus("");
+  }, [props.settings]);
+
+  async function fetchAvailableModels() {
+    const normalized = normalizeSettingsDraft(draft);
+    if (!normalized.apiKey || !normalized.baseUrl) {
+      setModelListStatus("请先填写 API Key 和 Base URL。");
+      return;
+    }
+
+    setFetchingModels(true);
+    setModelListStatus("正在获取模型列表...");
+    try {
+      const result = await send<ModelListResult>({ type: "list-models", settings: normalized });
+      setModelOptions(result.models);
+      setDraft({ ...normalized, baseUrl: result.baseUrl, model: result.selectedModel || normalized.model });
+      setModelListStatus(result.message || `已获取 ${result.models.length} 个模型。`);
+    } catch (error) {
+      setModelOptions([]);
+      setDraft(normalized);
+      setModelListStatus(`模型列表获取失败：${humanizeError(error)}。可以手动填写模型名称后保存。`);
+    } finally {
+      setFetchingModels(false);
+    }
+  }
+
+  const selectedOptions =
+    draft.model && !modelOptions.some((model) => model.id === draft.model) ? [{ id: draft.model }, ...modelOptions] : modelOptions;
 
   return (
     <section className="cp-section">
@@ -640,15 +694,31 @@ function SettingsPanel(props: {
         Base URL
         <input className="cp-input" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} />
       </label>
+      <button className="cp-secondary" disabled={fetchingModels} onClick={fetchAvailableModels}>
+        {fetchingModels ? "正在获取模型..." : "获取模型"}
+      </button>
+      {modelListStatus && <p className="cp-muted">{modelListStatus}</p>}
+      {selectedOptions.length > 0 && (
+        <label className="cp-label">
+          可用模型
+          <select className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })}>
+            {selectedOptions.map((model) => (
+              <option value={model.id} key={model.id}>
+                {model.id}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className="cp-label">
-        模型名称
+        模型名称（可手动填写）
         <input className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} />
       </label>
       <label className="cp-label">
         GitHub Token（可选）
         <input className="cp-input" type="password" value={draft.githubToken ?? ""} onChange={(event) => setDraft({ ...draft, githubToken: event.target.value })} />
       </label>
-      <button className="cp-primary" onClick={() => props.onChange(draft)}>
+      <button className="cp-primary" onClick={() => props.onChange(normalizeSettingsDraft(draft))}>
         保存并校验设置
       </button>
       <button className="cp-secondary" onClick={props.onTest}>
@@ -1130,7 +1200,7 @@ async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text:
   });
   if (messageResponse) return messageResponse;
 
-  if (request.type !== "get-settings" && request.type !== "save-settings") {
+  if (request.type !== "get-settings" && request.type !== "save-settings" && request.type !== "list-models") {
     return fail<T>(backgroundUnavailableMessage(messageError.message || portError.message || "No background response."));
   }
 
@@ -1143,8 +1213,9 @@ async function sendSettingsViaStorage<T>(request: RuntimeRequest): Promise<Runti
   }
 
   if (request.type === "save-settings") {
-    await setExtensionSettings(request.settings);
-    return localOk(request.settings as T);
+    const settings = normalizeSettingsDraft(request.settings);
+    await setExtensionSettings(settings);
+    return localOk(settings as T);
   }
 
   return { ok: false, error: "Not a settings request." };
@@ -1157,8 +1228,21 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
     }
 
     if (request.type === "save-settings") {
-      writeLocalSettings(request.settings);
-      return localOk(request.settings as T);
+      const settings = normalizeSettingsDraft(request.settings);
+      writeLocalSettings(settings);
+      return localOk(settings as T);
+    }
+
+    if (request.type === "list-models") {
+      const settings = normalizeSettingsDraft(request.settings);
+      const models = await listModels(settings);
+      const selectedModel = settings.model && models.some((model) => model.id === settings.model) ? settings.model : models[0]?.id ?? "";
+      return localOk({
+        baseUrl: settings.baseUrl,
+        models,
+        selectedModel,
+        message: models.length > 0 ? `已获取 ${models.length} 个模型。` : "模型列表为空，请手动填写模型名称。"
+      } as T);
     }
 
     const settings = readLocalSettings();
@@ -1205,7 +1289,7 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 }
 
 function readLocalSettings(): Settings {
-  return {
+  return normalizeSettingsDraft({
     ...DEFAULT_SETTINGS,
     apiKey: window.localStorage.getItem("codepath.apiKey") || "",
     baseUrl: window.localStorage.getItem("codepath.baseUrl") || DEFAULT_SETTINGS.baseUrl,
@@ -1213,16 +1297,17 @@ function readLocalSettings(): Settings {
     githubToken: window.localStorage.getItem("codepath.githubToken") || "",
     supportsStreaming: window.localStorage.getItem("codepath.supportsStreaming") === "true",
     streamingMode: readLocalStreamingMode()
-  };
+  });
 }
 
 function writeLocalSettings(settings: Settings) {
-  window.localStorage.setItem("codepath.apiKey", settings.apiKey || "");
-  window.localStorage.setItem("codepath.baseUrl", settings.baseUrl || DEFAULT_SETTINGS.baseUrl);
-  window.localStorage.setItem("codepath.model", settings.model || DEFAULT_SETTINGS.model);
-  window.localStorage.setItem("codepath.githubToken", settings.githubToken || "");
-  window.localStorage.setItem("codepath.supportsStreaming", settings.supportsStreaming ? "true" : "false");
-  window.localStorage.setItem("codepath.streamingMode", settings.streamingMode || "untested");
+  const normalized = normalizeSettingsDraft(settings);
+  window.localStorage.setItem("codepath.apiKey", normalized.apiKey || "");
+  window.localStorage.setItem("codepath.baseUrl", normalized.baseUrl || DEFAULT_SETTINGS.baseUrl);
+  window.localStorage.setItem("codepath.model", normalized.model || DEFAULT_SETTINGS.model);
+  window.localStorage.setItem("codepath.githubToken", normalized.githubToken || "");
+  window.localStorage.setItem("codepath.supportsStreaming", normalized.supportsStreaming ? "true" : "false");
+  window.localStorage.setItem("codepath.streamingMode", normalized.streamingMode || "untested");
 }
 
 function readLocalStreamingMode(): Settings["streamingMode"] {
@@ -1247,7 +1332,7 @@ function getExtensionSettings(): Promise<Settings> {
 
       const value = items[SETTINGS_KEY];
       const patch = value && typeof value === "object" ? (value as Partial<Settings>) : {};
-      resolve({ ...DEFAULT_SETTINGS, ...patch });
+      resolve(normalizeSettingsDraft({ ...DEFAULT_SETTINGS, ...patch }));
     });
   });
 }
@@ -1259,7 +1344,7 @@ function setExtensionSettings(settings: Settings): Promise<void> {
       return;
     }
 
-    chrome.storage.local.set({ [SETTINGS_KEY]: settings }, () => {
+    chrome.storage.local.set({ [SETTINGS_KEY]: normalizeSettingsDraft(settings) }, () => {
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message));
@@ -1268,6 +1353,16 @@ function setExtensionSettings(settings: Settings): Promise<void> {
       resolve();
     });
   });
+}
+
+function normalizeSettingsDraft(settings: Settings): Settings {
+  return {
+    ...settings,
+    apiKey: settings.apiKey.trim(),
+    baseUrl: normalizeBaseUrl(settings.baseUrl),
+    model: settings.model.trim(),
+    githubToken: settings.githubToken?.trim() ?? ""
+  };
 }
 
 function localOk<T>(data: T): RuntimeResponse<T> {
@@ -1395,6 +1490,9 @@ function humanizeError(error: unknown): string {
   }
   if (message.includes("Unable to reach model base URL")) {
     return "无法连接模型 Base URL。请检查网络、Base URL 和本机代理设置。";
+  }
+  if (message.includes("Unable to reach model list URL")) {
+    return "无法连接模型列表地址。请检查网络、Base URL 和本机代理设置。";
   }
   if (message.includes("Failed to fetch")) {
     return "网络请求失败。请检查仓库地址、Token 或模型 Base URL。";

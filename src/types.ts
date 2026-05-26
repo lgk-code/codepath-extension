@@ -11,6 +11,17 @@ export type Settings = {
   streamingMode?: StreamingMode;
 };
 
+export type ModelOption = {
+  id: string;
+};
+
+export type ModelListResult = {
+  baseUrl: string;
+  models: ModelOption[];
+  selectedModel: string;
+  message?: string;
+};
+
 export type RepoRef = {
   owner: string;
   repo: string;
@@ -128,6 +139,7 @@ export type CacheDeleteResult = {
 export type RuntimeRequest =
   | { type: "get-settings" }
   | { type: "save-settings"; settings: Settings }
+  | { type: "list-models"; settings: Settings }
   | { type: "test-settings"; repo?: RepoRef }
   | { type: "clear-cache"; scope: CacheClearScope; repo?: RepoRef }
   | { type: "cache-stats"; repo?: RepoRef }
