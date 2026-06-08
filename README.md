@@ -21,8 +21,8 @@ CodePath 是一个面向 GitHub 源码阅读的浏览器插件。安装后，它
 
 首次配置：
 
-- 打开 CodePath 设置页，填写 Qwen 或 OpenAI-compatible 模型的 API Key。
-- Base URL 默认是 `https://dashscope.aliyuncs.com/compatible-mode/v1`，也可以直接粘贴完整 `/chat/completions` 或 `/models` 地址，保存时会自动归一化。
+- 打开 CodePath 设置页，选择 OpenAI 兼容接口或 Anthropic 兼容接口，并填写对应模型 API Key。
+- Base URL 需要按服务商显式填写，例如 OpenAI 兼容接口常见为 `https://api.openai.com/v1`，Anthropic 兼容接口常见为 `https://api.anthropic.com/v1`。也可以直接粘贴完整 `/chat/completions`、`/messages` 或 `/models` 地址，保存时会自动归一化。
 - 点击“获取模型”自动拉取模型列表；如果接口不支持 `/models`，仍可手动填写模型名。
 - 点击“保存并校验设置”，CodePath 会检查模型连接并探测当前接口是否支持流式输出。
 - GitHub Token：可选，用于提高 GitHub API 限额和访问私有仓库。
@@ -49,7 +49,7 @@ Release 包不内置 API Key 或 GitHub Token。你的密钥只保存在当前�
 - GitHub 404 或私有仓库无法访问：配置具备 Contents read 权限的 GitHub Token。
 - GitHub rate limit：配置 GitHub Token 后重试。
 - 模型 401/403：检查 API Key、模型访问权限和服务商账号状态。
-- 模型 404：检查 Base URL 是否是 OpenAI-compatible `/v1` 地址，或直接粘贴完整 `/chat/completions` 地址让 CodePath 自动归一化，并确认模型名正确。
+- 模型 404：检查服务商类型、Base URL 和模型名是否匹配；OpenAI 兼容接口使用 `/chat/completions`，Anthropic 兼容接口使用 `/messages`。
 - 回答慢：查看结果中的阶段耗时，区分 GitHub 请求、文件读取、上下文构造和模型请求耗时。
 - 流式看起来像一次性返回：设置页会显示实时流式、疑似缓冲、不支持流式或失败回退；部分代理会缓冲 SSE。
 

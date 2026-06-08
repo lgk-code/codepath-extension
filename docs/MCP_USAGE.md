@@ -13,7 +13,7 @@ CodePath 可以作为 MCP Server 运行，把 GitHub 源码分析能力提供给
 
 - Node.js 18 或更高版本。
 - 已执行 `npm install`。
-- 一个 Qwen 或 OpenAI-compatible 模型 API Key。
+- 一个 OpenAI 兼容接口或 Anthropic 兼容接口的模型 API Key。
 - 私有仓库需要额外准备 GitHub Token。
 
 ## 安装依赖
@@ -31,9 +31,12 @@ PowerShell 示例：
 
 ```powershell
 $env:CODEPATH_API_KEY="your-model-api-key"
-$env:CODEPATH_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-$env:CODEPATH_MODEL="qwen-plus"
+$env:CODEPATH_PROVIDER="openai"
+$env:CODEPATH_BASE_URL="https://your-openai-compatible-endpoint/v1"
+$env:CODEPATH_MODEL="your-model"
 ```
+
+如果使用 Anthropic 兼容接口，把 `CODEPATH_PROVIDER` 改为 `anthropic`，并把 `CODEPATH_BASE_URL` 填为对应 `/v1` 基础地址，例如 `https://api.anthropic.com/v1`。
 
 如果要分析私有 GitHub 仓库，再加：
 
@@ -50,10 +53,13 @@ $env:OPENAI_MODEL="your-model"
 $env:GITHUB_TOKEN="your-github-token"
 ```
 
+`OPENAI_*` 兼容变量只表示 OpenAI 兼容接口；Anthropic 兼容接口请使用 `CODEPATH_PROVIDER="anthropic"` 搭配 `CODEPATH_API_KEY`、`CODEPATH_BASE_URL` 和 `CODEPATH_MODEL`。
+
 优先级为：
 
-1. `CODEPATH_API_KEY`
-2. `OPENAI_API_KEY`
+1. `CODEPATH_PROVIDER`（未设置时默认为 `openai`）
+2. `CODEPATH_API_KEY` / `CODEPATH_BASE_URL` / `CODEPATH_MODEL`
+3. `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`
 
 GitHub Token 优先级为：
 
@@ -88,8 +94,9 @@ CodePath MCP server running on stdio
     "cwd": "C:\\path\\to\\codepath-extension",
     "env": {
       "CODEPATH_API_KEY": "your-model-api-key",
-      "CODEPATH_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "CODEPATH_MODEL": "qwen-plus",
+      "CODEPATH_PROVIDER": "openai",
+      "CODEPATH_BASE_URL": "https://your-openai-compatible-endpoint/v1",
+      "CODEPATH_MODEL": "your-model",
       "CODEPATH_GITHUB_TOKEN": "optional-github-token"
     }
   }

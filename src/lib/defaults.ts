@@ -1,10 +1,10 @@
 import type { Settings } from "../types";
 
 export const DEFAULT_SETTINGS: Settings = {
-  provider: "qwen",
+  provider: "openai",
   apiKey: "",
-  baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  model: "qwen-plus",
+  baseUrl: "",
+  model: "",
   githubToken: "",
   streamingMode: "untested"
 };

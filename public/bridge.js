@@ -18,10 +18,10 @@ window.addEventListener("codepath:page-request", async (event) => {
       send({
         ok: true,
         data: {
-          provider: "qwen",
+          provider: normalizeProvider(localStorage.getItem("codepath.provider")),
           apiKey: localStorage.getItem("codepath.apiKey") || "",
-          baseUrl: localStorage.getItem("codepath.baseUrl") || "https://dashscope.aliyuncs.com/compatible-mode/v1",
-          model: localStorage.getItem("codepath.model") || "qwen-plus",
+          baseUrl: localStorage.getItem("codepath.baseUrl") || "",
+          model: localStorage.getItem("codepath.model") || "",
           githubToken: localStorage.getItem("codepath.githubToken") || ""
         }
       });
@@ -30,11 +30,12 @@ window.addEventListener("codepath:page-request", async (event) => {
 
     if (detail.request.type === "save-settings") {
       const settings = detail.request.settings;
+      localStorage.setItem("codepath.provider", normalizeProvider(settings.provider));
       localStorage.setItem("codepath.apiKey", settings.apiKey || "");
-      localStorage.setItem("codepath.baseUrl", settings.baseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1");
-      localStorage.setItem("codepath.model", settings.model || "qwen-plus");
+      localStorage.setItem("codepath.baseUrl", settings.baseUrl || "");
+      localStorage.setItem("codepath.model", settings.model || "");
       localStorage.setItem("codepath.githubToken", settings.githubToken || "");
-      send({ ok: true, data: settings });
+      send({ ok: true, data: { ...settings, provider: normalizeProvider(settings.provider) } });
       return;
     }
 
@@ -43,3 +44,7 @@ window.addEventListener("codepath:page-request", async (event) => {
     send({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+function normalizeProvider(value) {
+  return value === "anthropic" ? "anthropic" : "openai";
+}

@@ -11,7 +11,7 @@ import {
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../src/lib/analyzer";
-import { chat, listModels, normalizeBaseUrl, probeStreamingSupport } from "../src/lib/aiClient";
+import { chat, listModels, normalizeBaseUrl, normalizeProvider, probeStreamingSupport } from "../src/lib/aiClient";
 import { GithubClient } from "../src/lib/githubClient";
 
 type StreamHandlers = {
@@ -129,6 +129,7 @@ async function getModelList(settings: Settings): Promise<ModelListResult> {
 function normalizeSettings(settings: Settings): Settings {
   return {
     ...settings,
+    provider: normalizeProvider(settings.provider),
     apiKey: settings.apiKey.trim(),
     baseUrl: normalizeBaseUrl(settings.baseUrl),
     model: settings.model.trim(),
@@ -233,7 +234,7 @@ function formatGithubDiagnostic(error: unknown): string {
 function formatModelDiagnostic(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes("401") || message.includes("403")) return "模型连接失败：API Key 无效、权限不足，或当前模型不可用。";
-  if (message.includes("404")) return "模型连接失败：Base URL 或模型名称不正确，请确认使用 OpenAI-compatible 的 /v1 地址。";
+  if (message.includes("404")) return "模型连接失败：Base URL、模型名称或服务商类型不匹配，请确认 OpenAI 兼容接口使用 /chat/completions，Anthropic 兼容接口使用 /messages。";
   if (message.includes("Failed to fetch") || message.includes("Unable to reach")) return "模型连接失败：无法连接 Base URL，请检查网络、代理和服务地址。";
   if (message.toLowerCase().includes("timeout")) return "模型连接失败：请求超时，请检查网络或更换更快的模型。";
   return `模型连接失败：${message}`;

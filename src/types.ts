@@ -1,4 +1,4 @@
-export type Provider = "qwen" | "custom";
+export type Provider = "openai" | "anthropic";
 export type StreamingMode = "realtime" | "buffered" | "unsupported" | "untested";
 
 export type Settings = {

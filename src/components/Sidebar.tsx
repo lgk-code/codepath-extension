@@ -34,7 +34,7 @@ import {
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../lib/analyzer";
-import { listModels, normalizeBaseUrl } from "../lib/aiClient";
+import { listModels, normalizeBaseUrl, normalizeProvider } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
@@ -64,11 +64,12 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-05-26-api-config-v1";
+const UI_VERSION = "dev-2026-06-08-provider-anthropic-collapse-v1";
+const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
   const [repo, setRepo] = useState<RepoRef | null>(() => parseGithubUrl(location.href));
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => readSidebarCollapsed());
   const [width, setWidth] = useState(() => readPanelWidth());
   const [tab, setTab] = useState<Tab>("overview");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -335,9 +336,14 @@ export function Sidebar() {
     setSuggestionSeed((value) => value + 1);
   }
 
+  function updateCollapsed(next: boolean) {
+    setCollapsed(next);
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "true" : "false");
+  }
+
   if (collapsed) {
     return (
-      <button className="cp-fab" onClick={() => setCollapsed(false)} title="Open CodePath">
+      <button className="cp-fab" onClick={() => updateCollapsed(false)} title="Open CodePath">
         <ChevronRight size={18} />
         CodePath
       </button>
@@ -352,7 +358,7 @@ export function Sidebar() {
           <strong>CodePath</strong>
           <span>{title}</span>
         </div>
-        <button className="cp-icon-btn" onClick={() => setCollapsed(true)} title="Collapse">
+        <button className="cp-icon-btn" onClick={() => updateCollapsed(true)} title="Collapse">
           <X size={16} />
         </button>
       </header>
@@ -591,6 +597,10 @@ function ResizeHandle(props: { width: number; onChange: (width: number) => void 
   return <div className="cp-resize-handle" onPointerDown={startResize} title="Drag to resize" />;
 }
 
+function readSidebarCollapsed(): boolean {
+  return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+}
+
 function TabButton(props: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
     <button className={props.active ? "cp-tab active" : "cp-tab"} onClick={props.onClick} title={props.label}>
@@ -642,6 +652,9 @@ function SettingsPanel(props: {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelListStatus, setModelListStatus] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
+  const provider = normalizeProvider(draft.provider);
+  const baseUrlPlaceholder = provider === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1";
+  const modelPlaceholder = provider === "anthropic" ? "claude-sonnet-4-5" : "gpt-4.1-mini";
 
   useEffect(() => {
     setDraft(props.settings);
@@ -681,9 +694,9 @@ function SettingsPanel(props: {
       <h3 className="cp-section-title">模型与访问设置</h3>
       <label className="cp-label">
         模型服务商
-        <select className="cp-input" value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value as Settings["provider"] })}>
-          <option value="qwen">Qwen</option>
-          <option value="custom">自定义 OpenAI 兼容接口</option>
+        <select className="cp-input" value={provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value as Settings["provider"] })}>
+          <option value="openai">OpenAI 兼容接口</option>
+          <option value="anthropic">Anthropic 兼容接口</option>
         </select>
       </label>
       <label className="cp-label">
@@ -692,7 +705,7 @@ function SettingsPanel(props: {
       </label>
       <label className="cp-label">
         Base URL
-        <input className="cp-input" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} />
+        <input className="cp-input" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder={baseUrlPlaceholder} />
       </label>
       <button className="cp-secondary" disabled={fetchingModels} onClick={fetchAvailableModels}>
         {fetchingModels ? "正在获取模型..." : "获取模型"}
@@ -712,7 +725,7 @@ function SettingsPanel(props: {
       )}
       <label className="cp-label">
         模型名称（可手动填写）
-        <input className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} />
+        <input className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder={modelPlaceholder} />
       </label>
       <label className="cp-label">
         GitHub Token（可选）
@@ -744,7 +757,6 @@ function SettingsPanel(props: {
         onToggleRepo={props.onToggleCacheRepo}
       />
       <SettingsSummary diagnostics={props.diagnostics} draft={draft} />
-      <p className="cp-muted">Qwen DashScope 默认 Base URL：{DEFAULT_SETTINGS.baseUrl}</p>
     </section>
   );
 }
@@ -831,7 +843,7 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
       <dl>
         <div>
           <dt>服务商</dt>
-          <dd>{diagnostics?.provider || props.draft.provider}</dd>
+          <dd>{providerLabel(diagnostics?.provider || props.draft.provider)}</dd>
         </div>
         <div>
           <dt>API Key</dt>
@@ -870,6 +882,10 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
       </dl>
     </div>
   );
+}
+
+function providerLabel(provider: Settings["provider"]): string {
+  return normalizeProvider(provider) === "anthropic" ? "Anthropic 兼容接口" : "OpenAI 兼容接口";
 }
 
 function streamingModeLabel(mode: Settings["streamingMode"], supported?: boolean): string {
@@ -1291,6 +1307,7 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 function readLocalSettings(): Settings {
   return normalizeSettingsDraft({
     ...DEFAULT_SETTINGS,
+    provider: normalizeProvider(window.localStorage.getItem("codepath.provider")),
     apiKey: window.localStorage.getItem("codepath.apiKey") || "",
     baseUrl: window.localStorage.getItem("codepath.baseUrl") || DEFAULT_SETTINGS.baseUrl,
     model: window.localStorage.getItem("codepath.model") || DEFAULT_SETTINGS.model,
@@ -1302,6 +1319,7 @@ function readLocalSettings(): Settings {
 
 function writeLocalSettings(settings: Settings) {
   const normalized = normalizeSettingsDraft(settings);
+  window.localStorage.setItem("codepath.provider", normalized.provider);
   window.localStorage.setItem("codepath.apiKey", normalized.apiKey || "");
   window.localStorage.setItem("codepath.baseUrl", normalized.baseUrl || DEFAULT_SETTINGS.baseUrl);
   window.localStorage.setItem("codepath.model", normalized.model || DEFAULT_SETTINGS.model);
@@ -1358,6 +1376,7 @@ function setExtensionSettings(settings: Settings): Promise<void> {
 function normalizeSettingsDraft(settings: Settings): Settings {
   return {
     ...settings,
+    provider: normalizeProvider(settings.provider),
     apiKey: settings.apiKey.trim(),
     baseUrl: normalizeBaseUrl(settings.baseUrl),
     model: settings.model.trim(),
@@ -1483,7 +1502,7 @@ function humanizeError(error: unknown): string {
     return "模型 API Key、Base URL 或模型权限被拒绝。请在设置里检查模型配置。";
   }
   if (message.includes("模型接口 404")) {
-    return "模型接口返回 404。请检查 Base URL 是否为 OpenAI-compatible 的 /v1 地址，以及模型名称是否正确。";
+    return "模型接口返回 404。请检查服务商类型、Base URL 和模型名称是否匹配；OpenAI 兼容接口使用 /chat/completions，Anthropic 兼容接口使用 /messages。";
   }
   if (message.includes("401") || message.includes("Unauthorized")) {
     return "API Key 或 GitHub Token 被拒绝。请检查设置后再试。";
