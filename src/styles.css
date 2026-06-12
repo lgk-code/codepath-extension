@@ -336,6 +336,12 @@
   color: #57606a;
 }
 
+.cp-suggestion-status {
+  grid-column: 1 / -1;
+  color: #57606a;
+  font-size: 12px;
+}
+
 .cp-suggestion-row {
   min-width: 0;
   display: grid;

@@ -12,6 +12,8 @@ import type {
   RepoRef,
   Settings,
   SkillBlueprint,
+  SuggestedQuestionsResult,
+  SuggestionAnalysisKind,
   TimingBreakdown,
   TreeFile
 } from "../types";
@@ -63,6 +65,13 @@ type AnalysisRunOptions = {
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
   onModelFallback?: (reason: string) => void;
+};
+
+type SuggestedQuestionsInput = {
+  kind: SuggestionAnalysisKind;
+  label?: string;
+  summary: string;
+  sources: string[];
 };
 
 type BrowserStorageArea = {
@@ -360,6 +369,52 @@ ${formatSnippets(snippets)}`
   const result = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
   questionCache.set(cacheKey, result);
   return withTiming(result, timing);
+}
+
+export async function generateSuggestedQuestions(
+  repo: RepoRef,
+  settings: Settings,
+  input: SuggestedQuestionsInput
+): Promise<SuggestedQuestionsResult> {
+  const timing = createTiming();
+  const content = await runModel(timing, settings, [
+    {
+      role: "system",
+      content: `You are CodePath's follow-up question generator.
+Write concise Chinese questions for learners and secondary developers.
+Only use the provided analysis summary and source paths.
+Do not invent files, features, frameworks, or project facts.
+Return only a JSON array of exactly 3 strings.`
+    },
+    {
+      role: "user",
+      content: `Generate 3 recommended follow-up questions after this CodePath analysis.
+
+Repository: ${repo.owner}/${repo.repo}
+Branch: ${repo.branch || "default"}
+Analysis kind: ${suggestionKindLabel(input.kind)}
+Analysis label: ${input.label?.trim() || "none"}
+
+Source paths that may be referenced:
+${input.sources.slice(0, 40).map((source) => `- ${source}`).join("\n") || "- none"}
+
+Analysis summary:
+${truncate(input.summary, 10000)}
+
+Requirements:
+- Each question must be grounded in the analysis summary.
+- Prefer questions that help the user understand code paths, responsibilities, modification risks, or next reading steps.
+- If mentioning a file path, it must appear in the source paths list above.
+- Do not ask generic questions that could apply to any project.
+- Return only JSON, for example: ["问题一？","问题二？","问题三？"]`
+    }
+  ], {});
+
+  const questions = parseSuggestedQuestions(content);
+  if (questions.length === 0) {
+    throw new Error("未能生成推荐追问：模型没有返回可用问题。");
+  }
+  return withTiming({ questions }, timing);
 }
 
 export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef): Promise<CacheClearResult> {
@@ -1110,6 +1165,72 @@ function normalizePath(path: string): string {
 
 function formatSnippets(snippets: FileSnippet[]): string {
   return snippets.map((item) => `\n--- ${item.path} ---\n${item.content}`).join("\n");
+}
+
+function suggestionKindLabel(kind: SuggestionAnalysisKind): string {
+  if (kind === "overview") return "项目概览";
+  if (kind === "feature") return "功能路径";
+  if (kind === "file") return "当前文件";
+  return "借鉴 / Skill";
+}
+
+function parseSuggestedQuestions(content: string): string[] {
+  return uniqueSuggestionQuestions([...parseSuggestionJson(content), ...parseSuggestionLines(content)]).slice(0, 3);
+}
+
+function parseSuggestionJson(content: string): string[] {
+  const cleaned = stripMarkdownFence(content);
+  const candidates = [cleaned, extractJsonArray(cleaned)].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((value) => cleanSuggestionQuestion(value));
+      if (parsed && typeof parsed === "object" && Array.isArray((parsed as { questions?: unknown }).questions)) {
+        return (parsed as { questions: unknown[] }).questions.map((value) => cleanSuggestionQuestion(value));
+      }
+    } catch {
+      // Fall back to numbered or bulleted text parsing.
+    }
+  }
+
+  return [];
+}
+
+function parseSuggestionLines(content: string): string[] {
+  return stripMarkdownFence(content)
+    .split(/\r?\n/)
+    .map((line) => cleanSuggestionQuestion(line.replace(/^\s*(?:[-*•]\s+|\d+[.)、]\s*)/, "")));
+}
+
+function cleanSuggestionQuestion(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/[，,]\s*$/g, "？")
+    .trim();
+}
+
+function stripMarkdownFence(value: string): string {
+  return value.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+}
+
+function extractJsonArray(value: string): string | undefined {
+  const start = value.indexOf("[");
+  const end = value.lastIndexOf("]");
+  if (start < 0 || end <= start) return undefined;
+  return value.slice(start, end + 1);
+}
+
+function uniqueSuggestionQuestions(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const question = value.trim();
+    if (question.length < 4 || !/[?？]$/.test(question) || seen.has(question)) return false;
+    seen.add(question);
+    return true;
+  });
 }
 
 function systemPrompt(profile: ProjectProfile) {

@@ -7,12 +7,12 @@ const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, ".output", "chrome-mv3");
 const defaultTargetDir =
   process.platform === "win32"
-    ? "C:\\CodePathExtension\\chrome-mv3"
-    : "/mnt/c/CodePathExtension/chrome-mv3";
+    ? "D:\\edge下载\\CodePath"
+    : "/mnt/d/edge下载/CodePath";
 const targetDir = process.env.CODEPATH_EDGE_EXTENSION_DIR || defaultTargetDir;
 const resolvedTargetDir = path.resolve(targetDir);
 
-if (path.parse(resolvedTargetDir).root === resolvedTargetDir || !resolvedTargetDir.toLowerCase().endsWith(`${path.sep}chrome-mv3`)) {
+if (!isSafeExtensionDir(resolvedTargetDir)) {
   throw new Error(`Refusing to deploy to unsafe extension directory: ${resolvedTargetDir}`);
 }
 
@@ -42,4 +42,25 @@ function run(command, args) {
       else reject(new Error(`${command} ${args.join(" ")} failed with exit code ${code}`));
     });
   });
+}
+
+function isSafeExtensionDir(dir) {
+  const parsed = path.parse(dir);
+  if (parsed.root === dir) return false;
+
+  const normalized = path.normalize(dir);
+  const normalizedProjectRoot = path.normalize(projectRoot);
+  if (normalized === normalizedProjectRoot || normalized.startsWith(`${normalizedProjectRoot}${path.sep}`)) return false;
+
+  const parts = normalized
+    .slice(parsed.root.length)
+    .split(path.sep)
+    .filter(Boolean);
+  if (parts.length < 2) return false;
+
+  const basename = path.basename(normalized).toLowerCase();
+  if (!["codepath", "chrome-mv3"].includes(basename)) return false;
+
+  const dangerous = new Set(["users", "windows", "program files", "program files (x86)", "system32", "home", "mnt"]);
+  return !dangerous.has(basename);
 }

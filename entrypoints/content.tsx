@@ -4,7 +4,7 @@ import { parseGithubUrl } from "../src/lib/githubUrl";
 import { Sidebar } from "../src/components/Sidebar";
 import "../src/styles.css";
 
-const CONTENT_BUILD = "dev-2026-06-08-provider-anthropic-collapse-v1";
+const CONTENT_BUILD = "dev-2026-06-13-deepseek-auto-interface-v1";
 const ROOT_ID = "codepath-dev-root";
 const LEGACY_ROOT_ID = "codepath-root";
 

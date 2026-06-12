@@ -82,6 +82,13 @@ export type FileExplanation = {
   timing?: TimingBreakdown;
 };
 
+export type SuggestionAnalysisKind = "overview" | "feature" | "file" | "skill";
+
+export type SuggestedQuestionsResult = {
+  questions: string[];
+  timing?: TimingBreakdown;
+};
+
 export type SettingsDiagnostics = {
   provider: Provider;
   apiKeyPreview: string;
@@ -149,6 +156,7 @@ export type RuntimeRequest =
   | { type: "analyze-feature"; repo: RepoRef; feature: string }
   | { type: "generate-skill-blueprint"; repo: RepoRef; feature: string; mode: BlueprintMode }
   | { type: "explain-file"; repo: RepoRef }
+  | { type: "generate-suggestions"; repo: RepoRef; kind: SuggestionAnalysisKind; label?: string; summary: string; sources: string[] }
   | { type: "answer-question"; repo: RepoRef; question: string; context?: string };
 
 export type RuntimeResponse<T> = {

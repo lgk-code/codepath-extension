@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 import { analyzeFeature, analyzeProject, generateSkillBlueprint } from "../src/lib/analyzer";
-import { normalizeProvider } from "../src/lib/aiClient";
+import { inferProviderFromBaseUrl, normalizeBaseUrl } from "../src/lib/aiClient";
 import { DEFAULT_SETTINGS } from "../src/lib/defaults";
 import { parseGithubUrl } from "../src/lib/githubUrl";
 import type { BlueprintMode, RepoRef, Settings, SourceRef, TimingBreakdown } from "../src/types";
@@ -119,14 +119,13 @@ function parseRepoUrl(url: string): RepoRef {
 }
 
 function settingsFromEnv(overrides: { githubToken?: string } = {}): Settings {
-  const provider = normalizeProvider(process.env.CODEPATH_PROVIDER || DEFAULT_SETTINGS.provider);
   const apiKey = process.env.CODEPATH_API_KEY || process.env.OPENAI_API_KEY || "";
-  const baseUrl = process.env.CODEPATH_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_SETTINGS.baseUrl;
-  const model = process.env.CODEPATH_MODEL || process.env.OPENAI_MODEL || DEFAULT_SETTINGS.model;
+  const baseUrl = normalizeBaseUrl(process.env.CODEPATH_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_SETTINGS.baseUrl);
+  const model = (process.env.CODEPATH_MODEL || process.env.OPENAI_MODEL || DEFAULT_SETTINGS.model).trim() || DEFAULT_SETTINGS.model;
   const githubToken = overrides.githubToken || process.env.CODEPATH_GITHUB_TOKEN || process.env.GITHUB_TOKEN || DEFAULT_SETTINGS.githubToken;
   return {
     ...DEFAULT_SETTINGS,
-    provider,
+    provider: inferProviderFromBaseUrl(baseUrl),
     apiKey,
     baseUrl,
     model,

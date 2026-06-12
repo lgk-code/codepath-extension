@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { chat, chatAuto, listModels, normalizeBaseUrl, normalizeProvider } from "./aiClient";
+import { chat, chatAuto, inferProviderFromBaseUrl, listModels, normalizeBaseUrl, normalizeProvider } from "./aiClient";
 
 const originalFetch = globalThis.fetch;
 
@@ -22,6 +22,14 @@ test("normalizeProvider migrates legacy provider values to openai", () => {
   assert.equal(normalizeProvider("qwen"), "openai");
   assert.equal(normalizeProvider("custom"), "openai");
   assert.equal(normalizeProvider("unexpected"), "openai");
+});
+
+test("inferProviderFromBaseUrl selects the API format from the endpoint", () => {
+  assert.equal(inferProviderFromBaseUrl("https://api.deepseek.com"), "openai");
+  assert.equal(inferProviderFromBaseUrl("https://api.deepseek.com/anthropic"), "anthropic");
+  assert.equal(inferProviderFromBaseUrl("https://api.deepseek.com/anthropic/messages"), "anthropic");
+  assert.equal(inferProviderFromBaseUrl("https://api.anthropic.com/v1"), "anthropic");
+  assert.equal(inferProviderFromBaseUrl("https://example.com/v1/chat/completions"), "openai");
 });
 
 test("listModels calls the normalized models endpoint and returns valid model ids", async () => {

@@ -32,7 +32,7 @@ MCP Server 使用环境变量读取配置：
 3. 打开 `edge://extensions`，重新加载 CodePath 扩展。
 4. 刷新正在测试的 GitHub 页面。
 
-当前常用 Edge 的未打包扩展加载目录是 `C:\CodePathExtension\chrome-mv3`。在 WSL 中执行 `npm run deploy:edge` 时会同步到对应的 `/mnt/c/CodePathExtension/chrome-mv3`。如果浏览器里显示的构建版本没有变化，优先检查是否只更新了 `.output/chrome-mv3`，但没有同步到这个实际加载目录。
+当前常用 Edge 的未打包扩展加载目录是 `D:\edge下载\CodePath`。在 WSL 中执行 `npm run deploy:edge` 时会同步到对应的 `/mnt/d/edge下载/CodePath`。如果浏览器里显示的构建版本没有变化，优先检查是否只更新了 `.output/chrome-mv3`，但没有同步到这个实际加载目录。
 
 推荐手动同步流程：
 
@@ -42,9 +42,9 @@ npm run deploy:edge
 
 然后在 `edge://extensions` 里重新加载 CodePath 扩展，并刷新 GitHub 页面。
 
-如果之前把扩展从 Edge 中移除了，需要在 `edge://extensions` 开启开发人员模式，点击“加载解压缩”，选择 `C:\CodePathExtension\chrome-mv3`。不要选择项目根目录，也不要选择 `.output` 的上级目录。
+如果之前把扩展从 Edge 中移除了，需要在 `edge://extensions` 开启开发人员模式，点击“加载解压缩”，选择 `D:\edge下载\CodePath`。不要选择项目根目录，也不要选择 `.output` 的上级目录。
 
-如果通过命令行 `--load-extension` 加载没有生效，通常是因为 Edge 已经在运行，现有进程会吞掉新的加载参数。这种情况下要么手动加载解压缩扩展，要么先关闭所有 Edge 进程，再用 `--load-extension=C:\CodePathExtension\chrome-mv3` 启动。
+如果通过命令行 `--load-extension` 加载没有生效，通常是因为 Edge 已经在运行，现有进程会吞掉新的加载参数。这种情况下要么手动加载解压缩扩展，要么先关闭所有 Edge 进程，再用 `--load-extension=D:\edge下载\CodePath` 启动。
 
 不要提交构建产物、浏览器 profile、本机扩展安装目录、API Key 或 GitHub Token。
 

@@ -8,10 +8,11 @@ import {
   deletePersistentCacheEntry,
   deletePersistentCacheRepo,
   explainFile,
+  generateSuggestedQuestions,
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../src/lib/analyzer";
-import { chat, listModels, normalizeBaseUrl, normalizeProvider, probeStreamingSupport } from "../src/lib/aiClient";
+import { chat, inferProviderFromBaseUrl, listModels, normalizeBaseUrl, probeStreamingSupport } from "../src/lib/aiClient";
 import { GithubClient } from "../src/lib/githubClient";
 
 type StreamHandlers = {
@@ -97,6 +98,10 @@ async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHand
       return ok(await explainFile(request.repo, settings, streamHandlers));
     }
 
+    if (request.type === "generate-suggestions") {
+      return ok(await generateSuggestedQuestions(request.repo, settings, request));
+    }
+
     if (request.type === "answer-question") {
       return ok(await answerQuestion(request.repo, settings, request.question, request.context, streamHandlers));
     }
@@ -127,12 +132,13 @@ async function getModelList(settings: Settings): Promise<ModelListResult> {
 }
 
 function normalizeSettings(settings: Settings): Settings {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl || DEFAULT_SETTINGS.baseUrl);
   return {
     ...settings,
-    provider: normalizeProvider(settings.provider),
+    provider: inferProviderFromBaseUrl(baseUrl),
     apiKey: settings.apiKey.trim(),
-    baseUrl: normalizeBaseUrl(settings.baseUrl),
-    model: settings.model.trim(),
+    baseUrl,
+    model: settings.model.trim() || DEFAULT_SETTINGS.model,
     githubToken: settings.githubToken?.trim() ?? ""
   };
 }
@@ -234,7 +240,7 @@ function formatGithubDiagnostic(error: unknown): string {
 function formatModelDiagnostic(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes("401") || message.includes("403")) return "模型连接失败：API Key 无效、权限不足，或当前模型不可用。";
-  if (message.includes("404")) return "模型连接失败：Base URL、模型名称或服务商类型不匹配，请确认 OpenAI 兼容接口使用 /chat/completions，Anthropic 兼容接口使用 /messages。";
+  if (message.includes("404")) return "模型连接失败：Base URL、模型名称或接口格式不匹配，请确认 OpenAI 格式使用 /chat/completions，Anthropic 格式使用 /messages。";
   if (message.includes("Failed to fetch") || message.includes("Unable to reach")) return "模型连接失败：无法连接 Base URL，请检查网络、代理和服务地址。";
   if (message.toLowerCase().includes("timeout")) return "模型连接失败：请求超时，请检查网络或更换更快的模型。";
   return `模型连接失败：${message}`;

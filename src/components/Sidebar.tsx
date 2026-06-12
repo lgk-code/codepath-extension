@@ -19,6 +19,8 @@ import type {
   Settings,
   SettingsDiagnostics,
   SkillBlueprint,
+  SuggestedQuestionsResult,
+  SuggestionAnalysisKind,
   TimingBreakdown
 } from "../types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
@@ -31,10 +33,11 @@ import {
   deletePersistentCacheEntry,
   deletePersistentCacheRepo,
   explainFile,
+  generateSuggestedQuestions,
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../lib/analyzer";
-import { listModels, normalizeBaseUrl, normalizeProvider } from "../lib/aiClient";
+import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
@@ -47,6 +50,7 @@ type ChatTurn = {
 };
 
 type StreamTarget = "overview" | "feature" | "file" | "skill" | "ask";
+type SuggestionTarget = Exclude<StreamTarget, "ask">;
 
 type ActiveStream = {
   target: StreamTarget;
@@ -58,13 +62,27 @@ type ActiveStream = {
   fallbackReason?: string;
 };
 
+type AnalysisSuggestionRequest = {
+  kind: SuggestionAnalysisKind;
+  label?: string;
+  summary: string;
+  sources: string[];
+};
+
+type SuggestionPanelState = {
+  questions: string[];
+  loading: boolean;
+  status: string;
+  request?: AnalysisSuggestionRequest;
+};
+
 const DEFAULT_QUESTIONS = [
   "我第一次看这个项目，应该先读哪些文件？",
   "用大白话按步骤解释这个项目的主流程。",
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-06-08-provider-anthropic-collapse-v1";
+const UI_VERSION = "dev-2026-06-13-deepseek-auto-interface-v1";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -93,7 +111,7 @@ export function Sidebar() {
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [lastCacheClearResult, setLastCacheClearResult] = useState<CacheClearResult | null>(null);
   const [expandedCacheRepos, setExpandedCacheRepos] = useState<Record<string, boolean>>({});
-  const [suggestionSeed, setSuggestionSeed] = useState(0);
+  const [analysisSuggestions, setAnalysisSuggestions] = useState<Record<SuggestionTarget, SuggestionPanelState>>(createSuggestionStates);
   const contentRef = useRef<HTMLElement | null>(null);
   const autoScrollRef = useRef(true);
 
@@ -267,6 +285,56 @@ export function Sidebar() {
     );
   }
 
+  function requestAnalysisSuggestions(target: SuggestionTarget, request: AnalysisSuggestionRequest) {
+    if (!repo) return;
+
+    const fallback = fallbackSuggestionQuestions(request);
+    setAnalysisSuggestions((current) => ({
+      ...current,
+      [target]: {
+        questions: fallback,
+        loading: true,
+        status: "正在生成推荐追问...",
+        request
+      }
+    }));
+
+    send<SuggestedQuestionsResult>({
+      type: "generate-suggestions",
+      repo,
+      ...request
+    })
+      .then((result) => {
+        const questions = normalizeSuggestionQuestions(result.questions);
+        setAnalysisSuggestions((current) => {
+          if (current[target].request !== request) return current;
+          return {
+            ...current,
+            [target]: {
+              questions: questions.length > 0 ? questions : fallback,
+              loading: false,
+              status: questions.length > 0 ? "" : "推荐追问生成失败，已显示保守兜底。",
+              request
+            }
+          };
+        });
+      })
+      .catch(() => {
+        setAnalysisSuggestions((current) => {
+          if (current[target].request !== request) return current;
+          return {
+            ...current,
+            [target]: {
+              questions: fallback,
+              loading: false,
+              status: "推荐追问生成失败，已显示保守兜底。",
+              request
+            }
+          };
+        });
+      });
+  }
+
   async function clearCache(scope: "repo" | "all") {
     setSettingsStatus(scope === "repo" ? "正在清空当前仓库缓存..." : "正在清空全部缓存...");
     setError("");
@@ -332,10 +400,6 @@ export function Sidebar() {
     setCopyStatus(`已下载 ${filename}`);
   }
 
-  function refreshSuggestions() {
-    setSuggestionSeed((value) => value + 1);
-  }
-
   function updateCollapsed(next: boolean) {
     setCollapsed(next);
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "true" : "false");
@@ -382,7 +446,18 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || !!loading}
-              onClick={() => repo && run("overview", "正在分析项目...", (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo }, onDelta, (reason) => markStreamFallback("overview", reason)), setOverview)}
+              onClick={() =>
+                repo &&
+                run(
+                  "overview",
+                  "正在分析项目...",
+                  (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo }, onDelta, (reason) => markStreamFallback("overview", reason)),
+                  (result) => {
+                    setOverview(result);
+                    requestAnalysisSuggestions("overview", overviewSuggestionRequest(result));
+                  }
+                )
+              }
             >
               <BookOpen size={16} />
               分析项目
@@ -392,11 +467,12 @@ export function Sidebar() {
               <>
                 <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
                 <SuggestionList
-                  suggestions={overviewSuggestions(overview, repo, suggestionSeed)}
-                  loading={!!loading}
+                  suggestions={analysisSuggestions.overview.questions}
+                  loading={!!loading || analysisSuggestions.overview.loading}
+                  status={analysisSuggestions.overview.status}
                   onAsk={ask}
                   onDraft={setQuestion}
-                  onRefresh={refreshSuggestions}
+                  onRefresh={() => requestAnalysisSuggestions("overview", overviewSuggestionRequest(overview))}
                 />
               </>
             )}
@@ -410,7 +486,18 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || !feature.trim() || !!loading}
-              onClick={() => repo && run("feature", "正在分析功能路径...", (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta, (reason) => markStreamFallback("feature", reason)), setFeaturePath)}
+              onClick={() =>
+                repo &&
+                run(
+                  "feature",
+                  "正在分析功能路径...",
+                  (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta, (reason) => markStreamFallback("feature", reason)),
+                  (result) => {
+                    setFeaturePath(result);
+                    requestAnalysisSuggestions("feature", featureSuggestionRequest(result));
+                  }
+                )
+              }
             >
               <Route size={16} />
               分析功能路径
@@ -420,11 +507,12 @@ export function Sidebar() {
               <>
                 <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
                 <SuggestionList
-                  suggestions={featureSuggestions(featurePath, repo, suggestionSeed)}
-                  loading={!!loading}
+                  suggestions={analysisSuggestions.feature.questions}
+                  loading={!!loading || analysisSuggestions.feature.loading}
+                  status={analysisSuggestions.feature.status}
                   onAsk={ask}
                   onDraft={setQuestion}
-                  onRefresh={refreshSuggestions}
+                  onRefresh={() => requestAnalysisSuggestions("feature", featureSuggestionRequest(featurePath))}
                 />
               </>
             )}
@@ -438,7 +526,18 @@ export function Sidebar() {
             <button
               className="cp-primary"
               disabled={!repo || repo.pageType !== "file" || !!loading}
-              onClick={() => repo && run("file", "正在解释当前文件...", (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta, (reason) => markStreamFallback("file", reason)), setFileExplanation)}
+              onClick={() =>
+                repo &&
+                run(
+                  "file",
+                  "正在解释当前文件...",
+                  (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta, (reason) => markStreamFallback("file", reason)),
+                  (result) => {
+                    setFileExplanation(result);
+                    requestAnalysisSuggestions("file", fileSuggestionRequest(result));
+                  }
+                )
+              }
             >
               <FileCode2 size={16} />
               解释当前文件
@@ -448,11 +547,12 @@ export function Sidebar() {
               <>
                 <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
                 <SuggestionList
-                  suggestions={fileSuggestions(fileExplanation, repo, suggestionSeed)}
-                  loading={!!loading}
+                  suggestions={analysisSuggestions.file.questions}
+                  loading={!!loading || analysisSuggestions.file.loading}
+                  status={analysisSuggestions.file.status}
                   onAsk={ask}
                   onDraft={setQuestion}
-                  onRefresh={refreshSuggestions}
+                  onRefresh={() => requestAnalysisSuggestions("file", fileSuggestionRequest(fileExplanation))}
                 />
               </>
             )}
@@ -485,7 +585,10 @@ export function Sidebar() {
                   "skill",
                   "正在生成借鉴材料...",
                   (onDelta) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta, (reason) => markStreamFallback("skill", reason)),
-                  setSkillBlueprint
+                  (result) => {
+                    setSkillBlueprint(result);
+                    requestAnalysisSuggestions("skill", skillSuggestionRequest(result));
+                  }
                 )
               }
             >
@@ -512,11 +615,12 @@ export function Sidebar() {
                   timing={skillBlueprint.timing}
                 />
                 <SuggestionList
-                  suggestions={skillSuggestions(skillBlueprint, repo, suggestionSeed)}
-                  loading={!!loading}
+                  suggestions={analysisSuggestions.skill.questions}
+                  loading={!!loading || analysisSuggestions.skill.loading}
+                  status={analysisSuggestions.skill.status}
                   onAsk={ask}
                   onDraft={setQuestion}
-                  onRefresh={refreshSuggestions}
+                  onRefresh={() => requestAnalysisSuggestions("skill", skillSuggestionRequest(skillBlueprint))}
                 />
               </>
             )}
@@ -652,9 +756,9 @@ function SettingsPanel(props: {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelListStatus, setModelListStatus] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
-  const provider = normalizeProvider(draft.provider);
-  const baseUrlPlaceholder = provider === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1";
-  const modelPlaceholder = provider === "anthropic" ? "claude-sonnet-4-5" : "gpt-4.1-mini";
+  const provider = inferProviderFromBaseUrl(draft.baseUrl || DEFAULT_SETTINGS.baseUrl);
+  const baseUrlPlaceholder = provider === "anthropic" ? "https://api.deepseek.com/anthropic" : DEFAULT_SETTINGS.baseUrl;
+  const modelPlaceholder = DEFAULT_SETTINGS.model;
 
   useEffect(() => {
     setDraft(props.settings);
@@ -692,13 +796,7 @@ function SettingsPanel(props: {
     <section className="cp-section">
       <div className="cp-version-banner">CodePath 构建版本：{UI_VERSION}</div>
       <h3 className="cp-section-title">模型与访问设置</h3>
-      <label className="cp-label">
-        模型服务商
-        <select className="cp-input" value={provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value as Settings["provider"] })}>
-          <option value="openai">OpenAI 兼容接口</option>
-          <option value="anthropic">Anthropic 兼容接口</option>
-        </select>
-      </label>
+      <p className="cp-muted">接口格式会按 Base URL 自动识别：DeepSeek/OpenAI 兼容地址走 OpenAI 格式，Anthropic 地址走 Anthropic 格式。</p>
       <label className="cp-label">
         模型 API Key
         <input className="cp-input" type="password" value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} placeholder="sk-..." />
@@ -842,8 +940,8 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
       <strong>当前可见配置</strong>
       <dl>
         <div>
-          <dt>服务商</dt>
-          <dd>{providerLabel(diagnostics?.provider || props.draft.provider)}</dd>
+          <dt>接口格式</dt>
+          <dd>{providerLabel(diagnostics?.provider || inferProviderFromBaseUrl(props.draft.baseUrl || DEFAULT_SETTINGS.baseUrl))}</dd>
         </div>
         <div>
           <dt>API Key</dt>
@@ -885,7 +983,7 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
 }
 
 function providerLabel(provider: Settings["provider"]): string {
-  return normalizeProvider(provider) === "anthropic" ? "Anthropic 兼容接口" : "OpenAI 兼容接口";
+  return provider === "anthropic" ? "Anthropic 格式" : "OpenAI 格式";
 }
 
 function streamingModeLabel(mode: Settings["streamingMode"], supported?: boolean): string {
@@ -899,6 +997,7 @@ function streamingModeLabel(mode: Settings["streamingMode"], supported?: boolean
 function SuggestionList(props: {
   suggestions: string[];
   loading: boolean;
+  status?: string;
   onAsk: (question: string) => void;
   onDraft: (question: string) => void;
   onRefresh?: () => void;
@@ -916,12 +1015,13 @@ function SuggestionList(props: {
       <div className="cp-suggestions-header">
         <strong>基于当前分析的推荐追问</strong>
         {props.onRefresh && (
-          <button className="cp-mini-btn" disabled={props.loading} onClick={props.onRefresh} title="重新排列本地推荐追问">
+          <button className="cp-mini-btn" disabled={props.loading} onClick={props.onRefresh} title="重新调用模型生成推荐追问">
             <RefreshCw size={13} />
-            刷新推荐追问
+            {props.loading ? "生成中..." : "刷新推荐追问"}
           </button>
         )}
       </div>
+      {props.status && <div className="cp-suggestion-status">{props.status}</div>}
       {props.suggestions.map((suggestion) => (
         <div key={suggestion} className="cp-suggestion-row">
           <button
@@ -1009,128 +1109,98 @@ function TimingMeta(props: { timing: TimingBreakdown }) {
   return <div className="cp-chat-meta">{parts.join(" · ")}</div>;
 }
 
-function overviewSuggestions(overview: ProjectOverview, repo: RepoRef | null, seed = 0): string[] {
-  return buildContextualSuggestions({
-    repo,
-    seed,
-    summary: overview.summary,
-    sources: overview.sources.map((source) => source.path),
-    fallback: [
-      "按步骤解释这个项目的主执行流程。",
-      "如果我要二次开发，应该先读哪些文件？",
-      "这个项目的配置、入口和核心模块分别在哪里？"
-    ]
-  });
+function createSuggestionStates(): Record<SuggestionTarget, SuggestionPanelState> {
+  return {
+    overview: emptySuggestionState(),
+    feature: emptySuggestionState(),
+    file: emptySuggestionState(),
+    skill: emptySuggestionState()
+  };
 }
 
-function featureSuggestions(featurePath: FeaturePath, repo: RepoRef | null, seed = 0): string[] {
-  return buildContextualSuggestions({
-    repo,
-    seed,
+function emptySuggestionState(): SuggestionPanelState {
+  return { questions: [], loading: false, status: "" };
+}
+
+function overviewSuggestionRequest(overview: ProjectOverview): AnalysisSuggestionRequest {
+  return {
+    kind: "overview",
+    summary: overview.summary,
+    sources: overview.sources.map((source) => source.path)
+  };
+}
+
+function featureSuggestionRequest(featurePath: FeaturePath): AnalysisSuggestionRequest {
+  return {
+    kind: "feature",
     label: featurePath.feature,
     summary: featurePath.summary,
-    sources: featurePath.sources.map((source) => source.path),
-    fallback: [
-      `按文件顺序解释「${featurePath.feature}」的实现流程。`,
-      `如果我要修改「${featurePath.feature}」，应该改哪些文件？`,
-      `修改「${featurePath.feature}」时有哪些风险？`
-    ]
-  });
+    sources: featurePath.sources.map((source) => source.path)
+  };
 }
 
-function fileSuggestions(fileExplanation: FileExplanation, repo: RepoRef | null, seed = 0): string[] {
-  return buildContextualSuggestions({
-    repo,
-    seed,
+function fileSuggestionRequest(fileExplanation: FileExplanation): AnalysisSuggestionRequest {
+  return {
+    kind: "file",
     label: fileExplanation.path,
     summary: fileExplanation.summary,
-    sources: [fileExplanation.path, ...fileExplanation.sources.map((source) => source.path)],
-    fallback: [
-      `用大白话解释 ${fileExplanation.path} 的核心逻辑。`,
-      `${fileExplanation.path} 依赖谁？又被哪些模块依赖？`,
-      `修改 ${fileExplanation.path} 前需要注意什么？`
-    ]
-  });
+    sources: uniqueTextValues([fileExplanation.path, ...fileExplanation.sources.map((source) => source.path)])
+  };
 }
 
-function skillSuggestions(skillBlueprint: SkillBlueprint, repo: RepoRef | null, seed = 0): string[] {
-  return buildContextualSuggestions({
-    repo,
-    seed,
+function skillSuggestionRequest(skillBlueprint: SkillBlueprint): AnalysisSuggestionRequest {
+  return {
+    kind: "skill",
     label: skillBlueprint.feature,
     summary: skillBlueprint.summary,
-    sources: skillBlueprint.sources.map((source) => source.path),
-    fallback: [
-      `把「${skillBlueprint.feature}」拆成 OpenClaw 可执行的开发步骤。`,
-      `基于「${skillBlueprint.feature}」生成新项目最小可运行版本计划。`,
-      `这个 Skill 里哪些内容可以复用，哪些不能照搬？`
-    ]
-  });
+    sources: skillBlueprint.sources.map((source) => source.path)
+  };
 }
 
-function buildContextualSuggestions(input: {
-  repo: RepoRef | null;
-  label?: string;
-  seed?: number;
-  summary: string;
-  sources: string[];
-  fallback: string[];
-}): string[] {
-  const text = `${input.repo ? `${input.repo.owner}/${input.repo.repo} ${input.repo.path ?? ""}` : ""}\n${input.label ?? ""}\n${input.summary}\n${input.sources.join("\n")}`;
-  const lower = text.toLowerCase();
-  const suggestions: string[] = [];
-  const sourceFocus = pickSourceFocus(input.sources);
-  const label = input.label?.trim();
-
-  if (hasAny(lower, ["training/", "train.py", "trainer", "datasets", "dataloader", "torch", "pytorch", "eval/"])) {
-    suggestions.push("训练入口、数据加载、配置文件和评估流程分别在哪里？");
-    suggestions.push("按训练流程顺序说明这些源码文件如何协作。");
+function fallbackSuggestionQuestions(request: AnalysisSuggestionRequest): string[] {
+  const label = request.label?.trim();
+  if (request.kind === "feature" && label) {
+    return [
+      `围绕「${label}」的实现路径，哪些文件最值得先读？`,
+      `如果要修改「${label}」，最小修改路径和主要风险是什么？`,
+      `这次分析里哪些结论是源码确认，哪些还需要继续验证？`
+    ];
   }
 
-  if (hasAny(lower, ["scripts/codepath-mcp.ts", "mcp", "stdio", "registertool", "server"])) {
-    suggestions.push("MCP 工具是在哪里注册的，输入输出结构是什么？");
-    suggestions.push("OpenClaw 调用这个 MCP 时完整链路怎么走？");
+  if (request.kind === "file" && label) {
+    return [
+      `${label} 在这次分析里的核心职责是什么？`,
+      `${label} 依赖哪些模块，修改时最容易影响哪里？`,
+      `围绕 ${label} 还应该继续读哪些相关文件？`
+    ];
   }
 
-  if (hasAny(lower, ["src/components", "react", "tsx", "content.tsx", "background.ts", "wxt", "manifest"])) {
-    suggestions.push("浏览器侧边栏、content script 和 background 之间如何通信？");
-    suggestions.push("如果我要改 UI 或新增按钮，应该优先看哪些文件？");
+  if (request.kind === "skill") {
+    return [
+      "这份材料里哪些设计可以复用，哪些需要谨慎改造？",
+      "如果把这份材料交给 agent 执行，第一步应该确认什么？",
+      "这次分析里最需要补充验证的源码路径是什么？"
+    ];
   }
 
-  if (hasAny(lower, ["route", "routes", "pages/", "router", "api/", "store", "state"])) {
-    suggestions.push("页面路由、状态管理和 API 调用链路分别在哪里？");
-  }
-
-  if (hasAny(lower, ["readme", "package.json", "requirements.txt", "pyproject.toml", "environment.yml", "config", ".yaml", ".yml"])) {
-    suggestions.push("技术栈和启动配置分别能从哪些文件确认？");
-    suggestions.push("哪些配置是二次开发前必须先读懂的？");
-  }
-
-  if (sourceFocus) {
-    suggestions.push(`围绕 ${sourceFocus} 解释它在当前功能里的职责和修改风险。`);
-  }
-
-  if (label) {
-    suggestions.push(`如果要二次开发「${label}」，最小修改路径是什么？`);
-    suggestions.push(`把「${label}」整理成可交给 OpenClaw 的执行步骤。`);
-  }
-
-  return rotateSuggestions(uniqueSuggestions([...suggestions, ...input.fallback]), input.seed ?? 0).slice(0, 3);
+  return [
+    "这次分析里最值得优先阅读的文件是哪几个？",
+    "这些文件之间的职责边界和调用关系是什么？",
+    "如果我要二次开发，最小修改路径和主要风险是什么？"
+  ];
 }
 
-function hasAny(value: string, needles: string[]): boolean {
-  return needles.some((needle) => value.includes(needle));
+function normalizeSuggestionQuestions(values: string[]): string[] {
+  return uniqueTextValues(values.map((value) => ensureQuestionMark(value.trim())).filter((value) => value.length >= 4)).slice(0, 3);
 }
 
-function pickSourceFocus(sources: string[]): string {
-  return (
-    sources.find((source) => /(^|\/)(train|training|trainer|launch|main|server|background|content|codepath-mcp)\b/i.test(source)) ||
-    sources.find((source) => /\.(tsx?|jsx?|py|ya?ml|json|md)$/i.test(source)) ||
-    ""
-  );
+function ensureQuestionMark(value: string): string {
+  if (!value) return "";
+  if (/[?？]$/.test(value)) return value;
+  return `${value.replace(/[。.!！,，;；:：]+$/g, "")}？`;
 }
 
-function uniqueSuggestions(values: string[]): string[] {
+function uniqueTextValues(values: string[]): string[] {
   const seen = new Set<string>();
   return values.filter((value) => {
     const normalized = value.trim();
@@ -1138,12 +1208,6 @@ function uniqueSuggestions(values: string[]): string[] {
     seen.add(normalized);
     return true;
   });
-}
-
-function rotateSuggestions(values: string[], seed: number): string[] {
-  if (values.length <= 3 || seed <= 0) return values;
-  const offset = seed % values.length;
-  return [...values.slice(offset), ...values.slice(0, offset)];
 }
 
 function buildMarkdownFilename(repo: RepoRef | null, blueprint: SkillBlueprint): string {
@@ -1294,6 +1358,10 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
       return localOk((await explainFile(request.repo, settings)) as T);
     }
 
+    if (request.type === "generate-suggestions") {
+      return localOk((await generateSuggestedQuestions(request.repo, settings, request)) as T);
+    }
+
     if (request.type === "answer-question") {
       return localOk((await answerQuestion(request.repo, settings, request.question, request.context)) as T);
     }
@@ -1307,7 +1375,7 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 function readLocalSettings(): Settings {
   return normalizeSettingsDraft({
     ...DEFAULT_SETTINGS,
-    provider: normalizeProvider(window.localStorage.getItem("codepath.provider")),
+    provider: DEFAULT_SETTINGS.provider,
     apiKey: window.localStorage.getItem("codepath.apiKey") || "",
     baseUrl: window.localStorage.getItem("codepath.baseUrl") || DEFAULT_SETTINGS.baseUrl,
     model: window.localStorage.getItem("codepath.model") || DEFAULT_SETTINGS.model,
@@ -1374,12 +1442,13 @@ function setExtensionSettings(settings: Settings): Promise<void> {
 }
 
 function normalizeSettingsDraft(settings: Settings): Settings {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl || DEFAULT_SETTINGS.baseUrl);
   return {
     ...settings,
-    provider: normalizeProvider(settings.provider),
+    provider: inferProviderFromBaseUrl(baseUrl),
     apiKey: settings.apiKey.trim(),
-    baseUrl: normalizeBaseUrl(settings.baseUrl),
-    model: settings.model.trim(),
+    baseUrl,
+    model: settings.model.trim() || DEFAULT_SETTINGS.model,
     githubToken: settings.githubToken?.trim() ?? ""
   };
 }
@@ -1502,7 +1571,7 @@ function humanizeError(error: unknown): string {
     return "模型 API Key、Base URL 或模型权限被拒绝。请在设置里检查模型配置。";
   }
   if (message.includes("模型接口 404")) {
-    return "模型接口返回 404。请检查服务商类型、Base URL 和模型名称是否匹配；OpenAI 兼容接口使用 /chat/completions，Anthropic 兼容接口使用 /messages。";
+    return "模型接口返回 404。请检查 Base URL、接口格式和模型名称是否匹配；OpenAI 格式使用 /chat/completions，Anthropic 格式使用 /messages。";
   }
   if (message.includes("401") || message.includes("Unauthorized")) {
     return "API Key 或 GitHub Token 被拒绝。请检查设置后再试。";

@@ -51,12 +51,29 @@ class StreamingUnsupportedError extends Error {
 }
 
 export async function chat(settings: Settings, messages: ChatMessage[]): Promise<string> {
-  const provider = normalizeProvider(settings.provider);
+  const provider = inferProviderFromBaseUrl(settings.baseUrl);
   return provider === "anthropic" ? chatAnthropic(settings, messages) : chatOpenAi(settings, messages);
 }
 
 export function normalizeProvider(value: unknown): Settings["provider"] {
   return value === "anthropic" ? "anthropic" : "openai";
+}
+
+export function inferProviderFromBaseUrl(input: string): Settings["provider"] {
+  const baseUrl = normalizeBaseUrl(input);
+  if (!baseUrl) return "openai";
+
+  try {
+    const url = new URL(baseUrl);
+    const hostname = url.hostname.toLowerCase();
+    const pathParts = url.pathname.toLowerCase().split("/").filter(Boolean);
+    if (hostname === "api.anthropic.com" || pathParts.includes("anthropic")) return "anthropic";
+  } catch {
+    const pathLike = baseUrl.toLowerCase().split(/[?#]/)[0] ?? "";
+    if (pathLike.includes("/anthropic")) return "anthropic";
+  }
+
+  return "openai";
 }
 
 async function chatOpenAi(settings: Settings, messages: ChatMessage[]): Promise<string> {
@@ -143,7 +160,7 @@ export async function listModels(settings: Pick<Settings, "provider" | "apiKey" 
   try {
     response = await fetch(endpoint, {
       method: "GET",
-      headers: normalizeProvider(settings.provider) === "anthropic" ? anthropicHeaders(settings.apiKey) : openAiHeaders(settings.apiKey)
+      headers: inferProviderFromBaseUrl(baseUrl) === "anthropic" ? anthropicHeaders(settings.apiKey) : openAiHeaders(settings.apiKey)
     });
   } catch (error) {
     throw new Error(`Unable to reach model list URL ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
@@ -217,7 +234,7 @@ async function chatStream(settings: Settings, messages: ChatMessage[], onDelta: 
 }
 
 async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], onDelta: (text: string) => void): Promise<StreamResult> {
-  const provider = normalizeProvider(settings.provider);
+  const provider = inferProviderFromBaseUrl(settings.baseUrl);
   if (!settings.apiKey) {
     throw new Error("请先在 Settings 中填写模型 API Key。");
   }
