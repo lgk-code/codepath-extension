@@ -21,8 +21,9 @@ Install:
 
 First-time configuration:
 
-- Open the CodePath Settings tab, choose OpenAI-compatible or Anthropic-compatible, and paste the matching model API key.
-- Fill Base URL explicitly for your provider, for example `https://api.openai.com/v1` for OpenAI-compatible services or `https://api.anthropic.com/v1` for Anthropic-compatible services. You can also paste a full `/chat/completions`, `/messages`, or `/models` URL; CodePath normalizes it before saving.
+- Open the CodePath Settings tab and paste your model API key. First launch defaults to DeepSeek: Base URL `https://api.deepseek.com` and model `deepseek-v4-flash`.
+- CodePath detects the API format from the Base URL automatically: DeepSeek/OpenAI-compatible URLs use the OpenAI format, while `api.anthropic.com` or paths containing `/anthropic` use the Anthropic format.
+- You can also paste a full `/chat/completions`, `/messages`, or `/models` URL; CodePath normalizes it before saving.
 - Click “获取模型” to fetch available models automatically. If `/models` is unavailable, type the model name manually.
 - Click Save and Test. CodePath checks the model connection and whether the current API supports streaming output.
 - GitHub Token: optional, used for higher GitHub API limits and private repositories.
@@ -49,7 +50,7 @@ The demo site lives in [docs/index.html](docs/index.html) and includes the brows
 - GitHub 404 or private repository: add a GitHub Token with Contents read permission.
 - GitHub rate limit: add a GitHub Token and retry.
 - Model 401/403: check API Key, model access, and provider account status.
-- Model 404: check that the provider type, Base URL, and model name match; OpenAI-compatible services use `/chat/completions`, while Anthropic-compatible services use `/messages`.
+- Model 404: check that the Base URL, API format, and model name match; OpenAI format uses `/chat/completions`, while Anthropic format uses `/messages`.
 - Slow answers: check the timing line in each result.
 - Streaming looks like a one-shot response: some providers or proxies buffer SSE; CodePath will show realtime, buffered, unsupported, or fallback mode in diagnostics.
 

@@ -84,7 +84,7 @@ export type FileExplanation = {
   timing?: TimingBreakdown;
 };
 
-export type SuggestionAnalysisKind = "overview" | "feature" | "file" | "skill";
+export type SuggestionAnalysisKind = "overview" | "feature" | "file" | "skill" | "answer";
 
 export type SuggestedQuestionsResult = {
   questions: string[];

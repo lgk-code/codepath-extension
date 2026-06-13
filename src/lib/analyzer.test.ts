@@ -188,6 +188,69 @@ test("generateSuggestedQuestions parses numbered list responses", async () => {
   ]);
 });
 
+test("generateSuggestedQuestions trims numbered, long, and multi-sentence responses to 3 short questions", async () => {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify([
+                "1. 下一步应该先看哪个入口？第二句不应该保留，因为界面只需要一句话。",
+                "2. 修改缓存逻辑的主要风险是什么？这句也应该被去掉。",
+                "3. 哪个文件负责发送模型请求？后面还有很长的解释文本，用来模拟模型没有遵守短问题要求时的输出。",
+                "4. 这个多余问题不应该出现？"
+              ])
+            }
+          }
+        ]
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    )) as typeof fetch;
+
+  const result = await generateSuggestedQuestions(repo, settings, {
+    kind: "overview",
+    summary: "分析指出 entrypoints/background.ts 发送模型请求，缓存逻辑集中在 src/lib/analyzer.ts。",
+    sources: ["entrypoints/background.ts", "src/lib/analyzer.ts"]
+  });
+
+  assert.deepEqual(result.questions, [
+    "下一步应该先看哪个入口？",
+    "修改缓存逻辑的主要风险是什么？",
+    "哪个文件负责发送模型请求？"
+  ]);
+});
+
+test("generateSuggestedQuestions marks answer follow-up requests in the model prompt", async () => {
+  let body: ChatRequestBody | undefined;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body)) as ChatRequestBody;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify(["还要看哪个调用链？", "这个改动风险在哪？", "下一步怎么验证？"])
+            }
+          }
+        ]
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }) as typeof fetch;
+
+  await generateSuggestedQuestions(repo, settings, {
+    kind: "answer",
+    label: "用户问题：缓存怎么更新？",
+    summary: "本次回答说明缓存命中来自 src/lib/analyzer.ts，刷新按钮会重新调用模型。",
+    sources: ["src/lib/analyzer.ts", "src/components/Sidebar.tsx"]
+  });
+
+  const messages = JSON.stringify(body?.messages ?? []);
+  assert.match(messages, /追问回答/);
+  assert.match(messages, /用户问题：缓存怎么更新/);
+});
+
 test("generateSuggestedQuestions rejects empty or invalid model responses", async () => {
   globalThis.fetch = (async () =>
     new Response(

@@ -92,6 +92,7 @@ const skillBlueprintCache = new Map<string, SkillBlueprint>();
 const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
 const FULL_SOURCE_TOTAL_LIMIT = 120_000;
 const FULL_SOURCE_SINGLE_FILE_LIMIT = 40_000;
+const MAX_SUGGESTION_QUESTION_LENGTH = 72;
 
 const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
   kind: "generic",
@@ -388,14 +389,15 @@ export async function generateSuggestedQuestions(
     {
       role: "system",
       content: `Generate CodePath follow-up questions.
-Write concise Chinese questions for learners and secondary developers.
+Write exactly 3 short Chinese questions for learners and secondary developers.
+Each question must be one sentence and concise.
 Only use the provided analysis summary and source paths.
 Do not invent files, features, frameworks, or project facts.
 Return only a JSON array of exactly 3 strings.`
     },
     {
       role: "user",
-      content: `Generate 3 recommended follow-up questions after this CodePath analysis.
+      content: `Generate 3 short recommended follow-up questions after this CodePath analysis or answer.
 
 Repository: ${repo.owner}/${repo.repo}
 Branch: ${repo.branch || "default"}
@@ -410,6 +412,7 @@ ${truncate(input.summary, 10000)}
 
 Requirements:
 - Each question must be grounded in the analysis summary.
+- Each question must be short and contain only one sentence.
 - Prefer questions that help the user understand code paths, responsibilities, modification risks, or next reading steps.
 - If mentioning a file path, it must appear in the source paths list above.
 - Do not ask generic questions that could apply to any project.
@@ -1220,6 +1223,7 @@ function suggestionKindLabel(kind: SuggestionAnalysisKind): string {
   if (kind === "overview") return "项目概览";
   if (kind === "feature") return "功能路径";
   if (kind === "file") return "当前文件";
+  if (kind === "answer") return "追问回答";
   return "借鉴 / Skill";
 }
 
@@ -1254,11 +1258,24 @@ function parseSuggestionLines(content: string): string[] {
 
 function cleanSuggestionQuestion(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value
+  const cleaned = value
     .trim()
+    .replace(/^\s*(?:[-*•]\s+|\d+[.)、]\s*)/, "")
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/[，,]\s*$/g, "？")
     .trim();
+  return trimToShortQuestion(cleaned);
+}
+
+function trimToShortQuestion(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const questionEnd = normalized.search(/[?？]/);
+  const firstSentence =
+    questionEnd >= 0 ? normalized.slice(0, questionEnd + 1) : normalized.split(/[。.!！；;]/)[0]?.trim() ?? normalized;
+  if (firstSentence.length <= MAX_SUGGESTION_QUESTION_LENGTH) return firstSentence;
+
+  const shortened = firstSentence.slice(0, MAX_SUGGESTION_QUESTION_LENGTH).replace(/[，,、:：;；\s]+$/g, "");
+  return /[?？]$/.test(shortened) ? shortened : `${shortened}？`;
 }
 
 function stripMarkdownFence(value: string): string {
@@ -1276,7 +1293,7 @@ function uniqueSuggestionQuestions(values: string[]): string[] {
   const seen = new Set<string>();
   return values.filter((value) => {
     const question = value.trim();
-    if (question.length < 4 || !/[?？]$/.test(question) || seen.has(question)) return false;
+    if (question.length < 4 || question.length > MAX_SUGGESTION_QUESTION_LENGTH || !/[?？]$/.test(question) || seen.has(question)) return false;
     seen.add(question);
     return true;
   });

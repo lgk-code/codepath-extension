@@ -84,12 +84,6 @@ type SuggestionPanelState = {
   request?: AnalysisSuggestionRequest;
 };
 
-const DEFAULT_QUESTIONS = [
-  "我第一次看这个项目，应该先读哪些文件？",
-  "用大白话按步骤解释这个项目的主流程。",
-  "如果我要二次开发，最重要的文件有哪些？"
-];
-
 const PROJECT_ANALYSIS_MODE_HELP: Record<ProjectAnalysisMode, string> = {
   focused: "读取仓库文件树，并挑选重要源码片段进行分析。速度快，适合大多数项目，但不是全仓库源码全文分析。",
   "full-source": "读取所有可用的文本源码、配置和文档后再分析；仓库过大时会直接提示，不截断、不分批。"
@@ -100,7 +94,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-06-13-mode-tooltips-v1";
+const UI_VERSION = "dev-2026-06-13-continuous-short-followups-v1";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -337,6 +331,7 @@ export function Sidebar() {
       (answer, elapsedMs) => {
         setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
         setQuestion("");
+        requestAnalysisSuggestions("overview", answerSuggestionRequest(trimmed, answer));
       },
       { question: trimmed }
     );
@@ -351,7 +346,7 @@ export function Sidebar() {
       [target]: {
         questions: fallback,
         loading: true,
-        status: "正在生成推荐追问...",
+        status: "正在生成继续追问...",
         request
       }
     }));
@@ -362,15 +357,15 @@ export function Sidebar() {
       ...request
     })
       .then((result) => {
-        const questions = normalizeSuggestionQuestions(result.questions);
+        const questions = normalizeSuggestionQuestions(result.questions, fallback);
         setAnalysisSuggestions((current) => {
           if (current[target].request !== request) return current;
           return {
             ...current,
             [target]: {
-              questions: questions.length > 0 ? questions : fallback,
+              questions,
               loading: false,
-              status: questions.length > 0 ? "" : "推荐追问生成失败，已显示保守兜底。",
+              status: "",
               request
             }
           };
@@ -384,7 +379,7 @@ export function Sidebar() {
             [target]: {
               questions: fallback,
               loading: false,
-              status: "推荐追问生成失败，已显示保守兜底。",
+              status: "继续追问生成失败，已显示保守兜底。",
               request
             }
           };
@@ -558,14 +553,11 @@ export function Sidebar() {
                 />
               </>
             )}
-            {(overview || answers.length > 0 || activeStream?.target === "ask") && (
+            {(answers.length > 0 || activeStream?.target === "ask") && (
               <OverviewConversation
                 repo={repo}
                 answers={answers}
                 activeStream={activeStream}
-                loading={!!loading}
-                onAsk={ask}
-                onDraft={setQuestion}
               />
             )}
           </section>
@@ -807,33 +799,26 @@ function OverviewConversation(props: {
   repo: RepoRef | null;
   answers: ChatTurn[];
   activeStream: ActiveStream | null;
-  loading: boolean;
-  onAsk: (question: string) => void;
-  onDraft: (question: string) => void;
 }) {
   const activeAskStream = props.activeStream?.target === "ask" ? props.activeStream : null;
   return (
     <div className="cp-overview-conversation">
-      <h3 className="cp-section-title">继续追问</h3>
-      {props.answers.length === 0 && !activeAskStream ? (
-        <SuggestionList suggestions={DEFAULT_QUESTIONS} loading={props.loading} onAsk={props.onAsk} onDraft={props.onDraft} />
-      ) : (
-        <div className="cp-chat-list">
-          {props.answers.map((item, index) => (
-            <article className="cp-chat-item" key={`${item.question}-${index}`}>
-              <strong>问：{item.question}</strong>
-              {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
-              <MarkdownBlock repo={props.repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
-            </article>
-          ))}
-          {activeAskStream && (
-            <article className="cp-chat-item cp-chat-item-streaming">
-              <strong>问：{activeAskStream.question || "正在回答的问题"}</strong>
-              <StreamPreview repo={props.repo} stream={activeAskStream} />
-            </article>
-          )}
-        </div>
-      )}
+      <h3 className="cp-section-title">问答记录</h3>
+      <div className="cp-chat-list">
+        {props.answers.map((item, index) => (
+          <article className="cp-chat-item" key={`${item.question}-${index}`}>
+            <strong>问：{item.question}</strong>
+            {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
+            <MarkdownBlock repo={props.repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
+          </article>
+        ))}
+        {activeAskStream && (
+          <article className="cp-chat-item cp-chat-item-streaming">
+            <strong>问：{activeAskStream.question || "正在回答的问题"}</strong>
+            <StreamPreview repo={props.repo} stream={activeAskStream} />
+          </article>
+        )}
+      </div>
     </div>
   );
 }
@@ -1115,33 +1100,37 @@ function SuggestionList(props: {
   return (
     <div className="cp-suggestions">
       <div className="cp-suggestions-header">
-        <strong>基于当前分析的推荐追问</strong>
+        <strong>继续追问</strong>
         {props.onRefresh && (
-          <button className="cp-mini-btn" disabled={props.loading} onClick={props.onRefresh} title="重新调用模型生成推荐追问">
+          <button className="cp-mini-btn" disabled={props.loading} onClick={props.onRefresh} title="重新调用模型生成继续追问">
             <RefreshCw size={13} />
-            {props.loading ? "生成中..." : "刷新推荐追问"}
+            {props.loading ? "生成中..." : "刷新继续追问"}
           </button>
         )}
       </div>
       {props.status && <div className="cp-suggestion-status">{props.status}</div>}
-      {props.suggestions.map((suggestion) => (
-        <div key={suggestion} className="cp-suggestion-row">
-          <button
-            className="cp-suggestion"
-            disabled={props.loading}
-            onClick={() => {
-              props.onDraft(suggestion);
-              props.onAsk(suggestion);
-            }}
-            title="点击后直接发送这个问题"
-          >
-            {suggestion}
-          </button>
-          <button className="cp-copy-btn" onClick={() => copySuggestion(suggestion)} title="复制这个问题">
-            <Clipboard size={14} />
-          </button>
-        </div>
-      ))}
+      <ol className="cp-suggestion-list">
+        {props.suggestions.slice(0, 3).map((suggestion, index) => (
+          <li key={`${suggestion}-${index}`} className="cp-suggestion-item">
+            <div className="cp-suggestion-row">
+              <button
+                className="cp-suggestion"
+                disabled={props.loading}
+                onClick={() => {
+                  props.onDraft(suggestion);
+                  props.onAsk(suggestion);
+                }}
+                title="点击后直接发送这个问题"
+              >
+                {suggestion}
+              </button>
+              <button className="cp-copy-btn" onClick={() => copySuggestion(suggestion)} title="复制这个问题">
+                <Clipboard size={14} />
+              </button>
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -1246,6 +1235,15 @@ function overviewSuggestionRequest(overview: ProjectOverview): AnalysisSuggestio
   };
 }
 
+function answerSuggestionRequest(question: string, answer: ProjectOverview): AnalysisSuggestionRequest {
+  return {
+    kind: "answer",
+    label: question,
+    summary: `用户问题：${question}\n\n本次回答：\n${answer.summary}`,
+    sources: answer.sources.map((source) => source.path)
+  };
+}
+
 function featureSuggestionRequest(featurePath: FeaturePath): AnalysisSuggestionRequest {
   return {
     kind: "feature",
@@ -1276,44 +1274,69 @@ function skillSuggestionRequest(skillBlueprint: SkillBlueprint): AnalysisSuggest
 function fallbackSuggestionQuestions(request: AnalysisSuggestionRequest): string[] {
   const label = request.label?.trim();
   if (request.kind === "feature" && label) {
+    const shortLabel = shortSuggestionLabel(label);
     return [
-      `围绕「${label}」的实现路径，哪些文件最值得先读？`,
-      `如果要修改「${label}」，最小修改路径和主要风险是什么？`,
-      `这次分析里哪些结论是源码确认，哪些还需要继续验证？`
+      `「${shortLabel}」入口在哪？`,
+      "先读哪些相关文件？",
+      "修改风险是什么？"
     ];
   }
 
   if (request.kind === "file" && label) {
     return [
-      `${label} 在这次分析里的核心职责是什么？`,
-      `${label} 依赖哪些模块，修改时最容易影响哪里？`,
-      `围绕 ${label} 还应该继续读哪些相关文件？`
+      "这个文件负责什么？",
+      "它依赖哪些模块？",
+      "修改它风险在哪？"
     ];
   }
 
   if (request.kind === "skill") {
     return [
-      "这份材料里哪些设计可以复用，哪些需要谨慎改造？",
-      "如果把这份材料交给 agent 执行，第一步应该确认什么？",
-      "这次分析里最需要补充验证的源码路径是什么？"
+      "哪些设计可复用？",
+      "哪里需要谨慎改？",
+      "下一步验证什么？"
+    ];
+  }
+
+  if (request.kind === "answer") {
+    return [
+      "还要读哪些文件？",
+      "这个结论怎么验证？",
+      "修改风险在哪里？"
     ];
   }
 
   return [
-    "这次分析里最值得优先阅读的文件是哪几个？",
-    "这些文件之间的职责边界和调用关系是什么？",
-    "如果我要二次开发，最小修改路径和主要风险是什么？"
+    "先读哪些入口？",
+    "主流程怎么串？",
+    "二次开发改哪里？"
   ];
 }
 
-function normalizeSuggestionQuestions(values: string[]): string[] {
-  return uniqueTextValues(values.map((value) => ensureQuestionMark(value.trim())).filter((value) => value.length >= 4)).slice(0, 3);
+function normalizeSuggestionQuestions(values: string[], fallback: string[]): string[] {
+  const normalized = values.map((value) => ensureQuestionMark(trimSuggestionText(value))).filter((value) => value.length >= 4);
+  return uniqueTextValues([...normalized, ...fallback]).slice(0, 3);
 }
 
 function ensureQuestionMark(value: string): string {
   if (!value) return "";
   if (/[?？]$/.test(value)) return value;
   return `${value.replace(/[。.!！,，;；:：]+$/g, "")}？`;
+}
+
+function trimSuggestionText(value: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/^\s*(?:[-*•]\s+|\d+[.)、]\s*)/, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+  const questionEnd = cleaned.search(/[?？]/);
+  if (questionEnd >= 0) return cleaned.slice(0, questionEnd + 1);
+  return cleaned.split(/[。.!！；;]/)[0]?.trim() ?? cleaned;
+}
+
+function shortSuggestionLabel(value: string): string {
+  return value.length <= 12 ? value : `${value.slice(0, 12)}...`;
 }
 
 function uniqueTextValues(values: string[]): string[] {
