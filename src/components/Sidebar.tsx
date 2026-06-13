@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, ChevronRight, Clipboard, Download, FileCode2, KeyRound, Layers3, Map, MessageSquare, RefreshCw, Route, Send, X } from "lucide-react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { BookOpen, ChevronRight, Clipboard, Download, FileCode2, KeyRound, Layers3, Map, RefreshCw, Route, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -12,6 +12,7 @@ import type {
   ModelListResult,
   ModelOption,
   PortMessage,
+  ProjectAnalysisMode,
   ProjectOverview,
   RepoRef,
   RuntimeRequest,
@@ -40,7 +41,14 @@ import {
 import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
-type Tab = "overview" | "feature" | "file" | "skill" | "ask" | "settings";
+type Tab = "overview" | "feature" | "file" | "skill" | "settings";
+
+type TabScrollPosition = {
+  scrollTop: number;
+  bottomOffset: number;
+  nearBottom: boolean;
+  hasValue: boolean;
+};
 
 type ChatTurn = {
   question: string;
@@ -82,7 +90,17 @@ const DEFAULT_QUESTIONS = [
   "如果我要二次开发，最重要的文件有哪些？"
 ];
 
-const UI_VERSION = "dev-2026-06-13-deepseek-auto-interface-v1";
+const PROJECT_ANALYSIS_MODE_HELP: Record<ProjectAnalysisMode, string> = {
+  focused: "读取仓库文件树，并挑选重要源码片段进行分析。速度快，适合大多数项目，但不是全仓库源码全文分析。",
+  "full-source": "读取所有可用的文本源码、配置和文档后再分析；仓库过大时会直接提示，不截断、不分批。"
+};
+
+const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
+  focused: "当前模式会使用文件树和重要源码片段，速度更快；不是全仓库源码全文分析。",
+  "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
+};
+
+const UI_VERSION = "dev-2026-06-13-mode-tooltips-v1";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -96,6 +114,7 @@ export function Sidebar() {
   const [activeStream, setActiveStream] = useState<ActiveStream | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState("");
+  const [projectAnalysisMode, setProjectAnalysisMode] = useState<ProjectAnalysisMode>("focused");
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
   const [feature, setFeature] = useState("");
   const [featurePath, setFeaturePath] = useState<FeaturePath | null>(null);
@@ -114,13 +133,15 @@ export function Sidebar() {
   const [analysisSuggestions, setAnalysisSuggestions] = useState<Record<SuggestionTarget, SuggestionPanelState>>(createSuggestionStates);
   const contentRef = useRef<HTMLElement | null>(null);
   const autoScrollRef = useRef(true);
+  const tabRef = useRef<Tab>("overview");
+  const tabScrollPositionsRef = useRef<Record<Tab, TabScrollPosition>>(createTabScrollPositions());
 
   useEffect(() => {
     send<Settings>({ type: "get-settings" }).then(setSettings).catch((err) => setError(err.message));
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<RepoRef>).detail;
       setRepo(detail);
-      if (detail.pageType === "file") setTab("file");
+      if (detail.pageType === "file") switchTab("file");
     };
     window.addEventListener("codepath:url-change", listener);
     return () => window.removeEventListener("codepath:url-change", listener);
@@ -143,6 +164,12 @@ export function Sidebar() {
     if (!element) return;
     element.scrollTo({ top: element.scrollHeight });
   }, [activeStream?.text]);
+
+  useLayoutEffect(() => {
+    tabRef.current = tab;
+    const frame = window.requestAnimationFrame(() => restoreScrollPosition(tab));
+    return () => window.cancelAnimationFrame(frame);
+  }, [tab]);
 
   const title = useMemo(() => (repo ? `${repo.owner}/${repo.repo}` : "No GitHub repository detected"), [repo]);
 
@@ -193,6 +220,36 @@ export function Sidebar() {
 
   function handleContentScroll() {
     autoScrollRef.current = isContentNearBottom();
+    saveCurrentScrollPosition();
+  }
+
+  function switchTab(next: Tab) {
+    if (next === tabRef.current) return;
+    saveCurrentScrollPosition();
+    tabRef.current = next;
+    setTab(next);
+  }
+
+  function saveCurrentScrollPosition(tabName = tabRef.current) {
+    const element = contentRef.current;
+    if (!element) return;
+    const bottomOffset = Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight);
+    tabScrollPositionsRef.current[tabName] = {
+      scrollTop: element.scrollTop,
+      bottomOffset,
+      nearBottom: bottomOffset < 96,
+      hasValue: true
+    };
+  }
+
+  function restoreScrollPosition(tabName: Tab) {
+    const element = contentRef.current;
+    const position = tabScrollPositionsRef.current[tabName];
+    if (!element || !position.hasValue) return;
+    const top = position.nearBottom
+      ? Math.max(0, element.scrollHeight - element.clientHeight - position.bottomOffset)
+      : position.scrollTop;
+    element.scrollTo({ top });
   }
 
   function markStreamFallback(target: StreamTarget, reason: string) {
@@ -266,7 +323,7 @@ export function Sidebar() {
     const trimmed = text.trim();
     if (!repo || !trimmed || loading) return;
 
-    setTab("ask");
+    if (tabRef.current !== "overview") switchTab("overview");
     run(
       "ask",
       "正在回答问题...",
@@ -428,12 +485,11 @@ export function Sidebar() {
       </header>
 
       <nav className="cp-tabs">
-        <TabButton active={tab === "overview"} icon={<Map size={15} />} onClick={() => setTab("overview")} label="项目概览" />
-        <TabButton active={tab === "feature"} icon={<Route size={15} />} onClick={() => setTab("feature")} label="功能路径" />
-        <TabButton active={tab === "file"} icon={<FileCode2 size={15} />} onClick={() => setTab("file")} label="当前文件" />
-        <TabButton active={tab === "skill"} icon={<Layers3 size={15} />} onClick={() => setTab("skill")} label="借鉴 / Skill" />
-        <TabButton active={tab === "ask"} icon={<MessageSquare size={15} />} onClick={() => setTab("ask")} label="问答记录" />
-        <TabButton active={tab === "settings"} icon={<KeyRound size={15} />} onClick={() => setTab("settings")} label="设置" />
+        <TabButton active={tab === "overview"} icon={<Map size={15} />} onClick={() => switchTab("overview")} label="项目概览" />
+        <TabButton active={tab === "feature"} icon={<Route size={15} />} onClick={() => switchTab("feature")} label="功能路径" />
+        <TabButton active={tab === "file"} icon={<FileCode2 size={15} />} onClick={() => switchTab("file")} label="当前文件" />
+        <TabButton active={tab === "skill"} icon={<Layers3 size={15} />} onClick={() => switchTab("skill")} label="借鉴 / Skill" />
+        <TabButton active={tab === "settings"} icon={<KeyRound size={15} />} onClick={() => switchTab("settings")} label="设置" />
       </nav>
 
       {error && <div className="cp-alert">{error}</div>}
@@ -443,6 +499,27 @@ export function Sidebar() {
         {tab === "overview" && (
           <section className="cp-section">
             <p>分析项目用途、技术栈、目录职责、入口文件和推荐阅读路线。</p>
+            <div className="cp-mode-group" role="group" aria-label="分析模式">
+              <button
+                type="button"
+                className={projectAnalysisMode === "focused" ? "cp-mode active" : "cp-mode"}
+                title={PROJECT_ANALYSIS_MODE_HELP.focused}
+                aria-label={`根据当前分析情况：${PROJECT_ANALYSIS_MODE_HELP.focused}`}
+                onClick={() => setProjectAnalysisMode("focused")}
+              >
+                根据当前分析情况
+              </button>
+              <button
+                type="button"
+                className={projectAnalysisMode === "full-source" ? "cp-mode active" : "cp-mode"}
+                title={PROJECT_ANALYSIS_MODE_HELP["full-source"]}
+                aria-label={`全部源码分析：${PROJECT_ANALYSIS_MODE_HELP["full-source"]}`}
+                onClick={() => setProjectAnalysisMode("full-source")}
+              >
+                全部源码分析
+              </button>
+            </div>
+            <p className="cp-muted">{PROJECT_ANALYSIS_MODE_HINT[projectAnalysisMode]}</p>
             <button
               className="cp-primary"
               disabled={!repo || !!loading}
@@ -450,8 +527,13 @@ export function Sidebar() {
                 repo &&
                 run(
                   "overview",
-                  "正在分析项目...",
-                  (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo }, onDelta, (reason) => markStreamFallback("overview", reason)),
+                  projectAnalysisMode === "full-source" ? "正在进行全部源码分析..." : "正在分析项目...",
+                  (onDelta) =>
+                    send<ProjectOverview>(
+                      { type: "analyze-project", repo, mode: projectAnalysisMode },
+                      onDelta,
+                      (reason) => markStreamFallback("overview", reason)
+                    ),
                   (result) => {
                     setOverview(result);
                     requestAnalysisSuggestions("overview", overviewSuggestionRequest(result));
@@ -460,7 +542,7 @@ export function Sidebar() {
               }
             >
               <BookOpen size={16} />
-              分析项目
+              分析代码
             </button>
             {activeStream?.target === "overview" && <StreamPreview repo={repo} stream={activeStream} />}
             {overview && (
@@ -475,6 +557,16 @@ export function Sidebar() {
                   onRefresh={() => requestAnalysisSuggestions("overview", overviewSuggestionRequest(overview))}
                 />
               </>
+            )}
+            {(overview || answers.length > 0 || activeStream?.target === "ask") && (
+              <OverviewConversation
+                repo={repo}
+                answers={answers}
+                activeStream={activeStream}
+                loading={!!loading}
+                onAsk={ask}
+                onDraft={setQuestion}
+              />
             )}
           </section>
         )}
@@ -627,31 +719,6 @@ export function Sidebar() {
           </section>
         )}
 
-        {tab === "ask" && (
-          <section className="cp-section">
-            <p>这里是后续追问记录。你可以在底部输入问题，也可以点击推荐问题直接发送。</p>
-            {answers.length === 0 && activeStream?.target !== "ask" ? (
-              <SuggestionList suggestions={DEFAULT_QUESTIONS} loading={!!loading} onAsk={ask} onDraft={setQuestion} />
-            ) : (
-              <div className="cp-chat-list">
-                {answers.map((item, index) => (
-                  <article className="cp-chat-item" key={`${item.question}-${index}`}>
-                    <strong>问：{item.question}</strong>
-                    {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
-                    <MarkdownBlock repo={repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
-                  </article>
-                ))}
-                {activeStream?.target === "ask" && (
-                  <article className="cp-chat-item cp-chat-item-streaming">
-                    <strong>问：{activeStream.question || "正在回答的问题"}</strong>
-                    <StreamPreview repo={repo} stream={activeStream} />
-                  </article>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
         {tab === "settings" && (
           <SettingsPanel
             settings={settings}
@@ -672,7 +739,7 @@ export function Sidebar() {
         )}
       </main>
 
-      {tab !== "settings" && <GlobalAskInput question={question} loading={!!loading} disabled={!repo} onChange={setQuestion} onAsk={() => ask()} />}
+      {tab === "overview" && overview && <GlobalAskInput question={question} loading={!!loading} disabled={!repo} onChange={setQuestion} onAsk={() => ask()} />}
     </aside>
   );
 }
@@ -733,6 +800,41 @@ function GlobalAskInput(props: { question: string; loading: boolean; disabled: b
         <Send size={16} />
       </button>
     </footer>
+  );
+}
+
+function OverviewConversation(props: {
+  repo: RepoRef | null;
+  answers: ChatTurn[];
+  activeStream: ActiveStream | null;
+  loading: boolean;
+  onAsk: (question: string) => void;
+  onDraft: (question: string) => void;
+}) {
+  const activeAskStream = props.activeStream?.target === "ask" ? props.activeStream : null;
+  return (
+    <div className="cp-overview-conversation">
+      <h3 className="cp-section-title">继续追问</h3>
+      {props.answers.length === 0 && !activeAskStream ? (
+        <SuggestionList suggestions={DEFAULT_QUESTIONS} loading={props.loading} onAsk={props.onAsk} onDraft={props.onDraft} />
+      ) : (
+        <div className="cp-chat-list">
+          {props.answers.map((item, index) => (
+            <article className="cp-chat-item" key={`${item.question}-${index}`}>
+              <strong>问：{item.question}</strong>
+              {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
+              <MarkdownBlock repo={props.repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
+            </article>
+          ))}
+          {activeAskStream && (
+            <article className="cp-chat-item cp-chat-item-streaming">
+              <strong>问：{activeAskStream.question || "正在回答的问题"}</strong>
+              <StreamPreview repo={props.repo} stream={activeAskStream} />
+            </article>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1122,6 +1224,20 @@ function emptySuggestionState(): SuggestionPanelState {
   return { questions: [], loading: false, status: "" };
 }
 
+function createTabScrollPositions(): Record<Tab, TabScrollPosition> {
+  return {
+    overview: emptyTabScrollPosition(),
+    feature: emptyTabScrollPosition(),
+    file: emptyTabScrollPosition(),
+    skill: emptyTabScrollPosition(),
+    settings: emptyTabScrollPosition()
+  };
+}
+
+function emptyTabScrollPosition(): TabScrollPosition {
+  return { scrollTop: 0, bottomOffset: 0, nearBottom: false, hasValue: false };
+}
+
 function overviewSuggestionRequest(overview: ProjectOverview): AnalysisSuggestionRequest {
   return {
     kind: "overview",
@@ -1327,7 +1443,7 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
 
     const settings = readLocalSettings();
     if (request.type === "analyze-project") {
-      return localOk((await analyzeProject(request.repo, settings)) as T);
+      return localOk((await analyzeProject(request.repo, settings, { mode: request.mode })) as T);
     }
 
     if (request.type === "analyze-feature") {

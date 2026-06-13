@@ -58,6 +58,8 @@ export type ProjectOverview = {
   timing?: TimingBreakdown;
 };
 
+export type ProjectAnalysisMode = "focused" | "full-source";
+
 export type FeaturePath = {
   feature: string;
   summary: string;
@@ -152,7 +154,7 @@ export type RuntimeRequest =
   | { type: "cache-stats"; repo?: RepoRef }
   | { type: "delete-cache-entry"; key: string }
   | { type: "delete-cache-repo"; repoKey: string }
-  | { type: "analyze-project"; repo: RepoRef }
+  | { type: "analyze-project"; repo: RepoRef; mode?: ProjectAnalysisMode }
   | { type: "analyze-feature"; repo: RepoRef; feature: string }
   | { type: "generate-skill-blueprint"; repo: RepoRef; feature: string; mode: BlueprintMode }
   | { type: "explain-file"; repo: RepoRef }

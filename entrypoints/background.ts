@@ -83,7 +83,7 @@ async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHand
     const settings = await getSettings();
 
     if (request.type === "analyze-project") {
-      return ok(await analyzeProject(request.repo, settings, streamHandlers));
+      return ok(await analyzeProject(request.repo, settings, { ...streamHandlers, mode: request.mode }));
     }
 
     if (request.type === "analyze-feature") {

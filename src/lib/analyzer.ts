@@ -8,6 +8,7 @@ import type {
   CacheStats,
   FileExplanation,
   FeaturePath,
+  ProjectAnalysisMode,
   ProjectOverview,
   RepoRef,
   Settings,
@@ -61,6 +62,7 @@ type TimingCollector = {
 type TimingNumberKey = "githubMs" | "treeMs" | "fileMs" | "contextMs" | "modelMs" | "totalMs";
 
 type AnalysisRunOptions = {
+  mode?: ProjectAnalysisMode;
   onModelStart?: () => void;
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
@@ -88,6 +90,8 @@ const fileExplanationCache = new Map<string, FileExplanation>();
 const questionCache = new Map<string, ProjectOverview>();
 const skillBlueprintCache = new Map<string, SkillBlueprint>();
 const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
+const FULL_SOURCE_TOTAL_LIMIT = 120_000;
+const FULL_SOURCE_SINGLE_FILE_LIMIT = 40_000;
 
 const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
   kind: "generic",
@@ -97,31 +101,34 @@ const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
 };
 
 export async function analyzeProject(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
+  const mode = options.mode ?? "focused";
   const timing = createTiming();
-  const cachedOverview = findCachedOverview(repo);
+  const cachedOverview = findCachedOverview(repo, mode);
   if (cachedOverview) return withTiming(cachedOverview, timing, { cacheHit: true });
 
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing));
-  const cacheKey = overviewCacheKey(repo, context.branch);
+  const cacheKey = overviewCacheKey(repo, context.branch, mode);
   const cached = overviewCache.get(cacheKey);
   if (cached) return withTiming(cached, timing, { cacheHit: true });
 
-  const persisted = await persistentGet<ProjectOverview>(persistentOverviewKey(repo, context.branch));
+  const persisted = await persistentGet<ProjectOverview>(persistentOverviewKey(repo, context.branch, mode));
   if (persisted) {
     overviewCache.set(cacheKey, persisted);
     return withTiming(persisted, timing, { cacheHit: true });
   }
 
-  const selected = pickImportantFiles(context.usefulFiles, context.profile);
-  const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, context.profile.kind === "python-ml" ? 22000 : 16000, timing);
+  const snippets =
+    mode === "full-source"
+      ? await loadFullSourceSnippets(gh, repo, context.branch, context.usefulFiles, timing)
+      : await loadSnippetsCached(gh, repo, context.branch, pickImportantFiles(context.usefulFiles, context.profile), context.profile.kind === "python-ml" ? 22000 : 16000, timing);
   const structuralContext = buildStructuralContext(context, snippets);
 
   const content = await runModel(timing, settings, [
     systemPrompt(context.profile),
     {
       role: "user",
-      content: `${projectPrompt(context.profile)}
+      content: `${mode === "full-source" ? fullSourceProjectPrompt(context.profile, snippets) : projectPrompt(context.profile)}
 
 Repository: ${repo.owner}/${repo.repo}
 Branch: ${context.branch}
@@ -137,14 +144,14 @@ ${context.treeSummary}
 Structural context:
 ${structuralContext}
 
-Key file contents:
+${mode === "full-source" ? "Complete useful source contents" : "Key file contents"}:
 ${formatSnippets(snippets)}`
     }
   ], options);
 
   const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path })) };
   overviewCache.set(cacheKey, overview);
-  await persistentSet(persistentOverviewKey(repo, context.branch), overview);
+  await persistentSet(persistentOverviewKey(repo, context.branch, mode), overview);
   return withTiming(overview, timing);
 }
 
@@ -380,7 +387,7 @@ export async function generateSuggestedQuestions(
   const content = await runModel(timing, settings, [
     {
       role: "system",
-      content: `You are CodePath's follow-up question generator.
+      content: `Generate CodePath follow-up questions.
 Write concise Chinese questions for learners and secondary developers.
 Only use the provided analysis summary and source paths.
 Do not invent files, features, frameworks, or project facts.
@@ -594,6 +601,48 @@ async function loadSnippetsCached(
   return snippets;
 }
 
+async function loadFullSourceSnippets(
+  gh: SourceClient,
+  repo: RepoRef,
+  branch: string,
+  files: TreeFile[],
+  timing?: TimingCollector
+): Promise<FileSnippet[]> {
+  const sorted = [...files].sort((left, right) => left.path.localeCompare(right.path));
+  const oversizedFile = sorted.find((file) => (file.size ?? 0) > FULL_SOURCE_SINGLE_FILE_LIMIT);
+  if (oversizedFile) throw fullSourceSizeError(`单文件 ${oversizedFile.path} 大小超过 ${FULL_SOURCE_SINGLE_FILE_LIMIT}。`);
+
+  const estimatedTotal = sorted.reduce((sum, file) => sum + (file.size ?? 0), 0);
+  if (estimatedTotal > FULL_SOURCE_TOTAL_LIMIT) {
+    throw fullSourceSizeError(`可用源码总大小约 ${estimatedTotal}，超过 ${FULL_SOURCE_TOTAL_LIMIT}。`);
+  }
+
+  const snippets: FileSnippet[] = [];
+  let used = 0;
+  for (const file of sorted) {
+    let content: string;
+    try {
+      content = await loadFileCached(gh, repo, branch, file.path, timing);
+    } catch (error) {
+      throw new Error(`全部源码分析读取失败：${file.path}。${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (content.length > FULL_SOURCE_SINGLE_FILE_LIMIT) {
+      throw fullSourceSizeError(`单文件 ${file.path} 内容长度超过 ${FULL_SOURCE_SINGLE_FILE_LIMIT}。`);
+    }
+    if (used + content.length > FULL_SOURCE_TOTAL_LIMIT) {
+      throw fullSourceSizeError(`可用源码总长度超过 ${FULL_SOURCE_TOTAL_LIMIT}。`);
+    }
+    used += content.length;
+    snippets.push({ path: file.path, content });
+  }
+  return snippets;
+}
+
+function fullSourceSizeError(detail: string): Error {
+  return new Error(`全部源码分析超过限制：${detail}请改用“根据当前分析情况”，或使用功能路径/当前文件分析缩小范围。`);
+}
+
 async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, path: string, timing?: TimingCollector): Promise<string> {
   const key = fileCacheKey(repo, branch, path);
   const cached = snippetCache.get(key);
@@ -613,8 +662,8 @@ function repoCacheKey(repo: RepoRef, branch: string): string {
   return `${repo.owner}/${repo.repo}@${branch}`;
 }
 
-function overviewCacheKey(repo: RepoRef, branch: string): string {
-  return `${repoCacheKey(repo, branch)}:overview`;
+function overviewCacheKey(repo: RepoRef, branch: string, mode: ProjectAnalysisMode = "focused"): string {
+  return mode === "focused" ? `${repoCacheKey(repo, branch)}:overview` : `${repoCacheKey(repo, branch)}:overview:${mode}`;
 }
 
 function featureCacheKey(repo: RepoRef, branch: string, feature: string): string {
@@ -649,8 +698,8 @@ function persistentFileKey(repo: RepoRef, branch: string, path: string): string 
   return `${PERSISTENT_CACHE_PREFIX}${fileCacheKey(repo, branch, path)}`;
 }
 
-function persistentOverviewKey(repo: RepoRef, branch: string): string {
-  return `${PERSISTENT_CACHE_PREFIX}${overviewCacheKey(repo, branch)}`;
+function persistentOverviewKey(repo: RepoRef, branch: string, mode: ProjectAnalysisMode = "focused"): string {
+  return `${PERSISTENT_CACHE_PREFIX}${overviewCacheKey(repo, branch, mode)}`;
 }
 
 function clearMemoryCaches(prefix: string) {
@@ -809,12 +858,12 @@ function storageRemove(storage: BrowserStorageArea, keys: string[]): Promise<voi
   });
 }
 
-function findCachedOverview(repo: RepoRef): ProjectOverview | undefined {
-  if (repo.branch) return overviewCache.get(overviewCacheKey(repo, repo.branch));
+function findCachedOverview(repo: RepoRef, mode: ProjectAnalysisMode): ProjectOverview | undefined {
+  if (repo.branch) return overviewCache.get(overviewCacheKey(repo, repo.branch, mode));
 
   const prefix = `${repo.owner}/${repo.repo}@`;
   for (const [key, value] of overviewCache) {
-    if (key.startsWith(prefix) && key.endsWith(":overview")) return value;
+    if (key.startsWith(prefix) && key.endsWith(mode === "focused" ? ":overview" : `:overview:${mode}`)) return value;
   }
   return undefined;
 }
@@ -1236,7 +1285,7 @@ function uniqueSuggestionQuestions(values: string[]): string[] {
 function systemPrompt(profile: ProjectProfile) {
   return {
     role: "system" as const,
-    content: `You are CodePath, a GitHub source-code guide for learners and secondary developers.
+    content: `直接输出 GitHub 源码分析，不要介绍自己，不要说明 AI、模型、助手或 CodePath 身份。
 The user does not want to deploy or run the project. They want to understand source code ideas, feature paths, and modification routes.
 Answer in clear Chinese. Use plain language, but keep file paths exact.
 Only use the provided tree, structural context, and source snippets.
@@ -1327,6 +1376,18 @@ Do not invent files. Cite file paths for every important claim.`;
 
   return `Analyze this GitHub repository. Output a plain-language project guide, tech stack, directory roles, likely entry points, and recommended reading route.
 Do not invent files. Cite file paths for every important claim.`;
+}
+
+function fullSourceProjectPrompt(profile: ProjectProfile, snippets: FileSnippet[]): string {
+  return `${projectPrompt(profile)}
+
+This run is full-source analysis over every useful text source file that passed CodePath's repository filters.
+Use the complete useful source contents below as the analysis basis.
+Do not claim binary assets, ignored dependency folders, lock files, or generated build outputs were analyzed.
+Mention that this is 全部源码分析 only when it helps distinguish the evidence base.
+
+Useful source files included:
+${snippets.map((snippet) => `- ${snippet.path}`).join("\n") || "- none"}`;
 }
 
 function skillBlueprintPrompt(mode: BlueprintMode): string {

@@ -94,7 +94,7 @@
 
 .cp-tabs {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
   padding: 8px;
   border-bottom: 1px solid #d8dee4;
@@ -216,6 +216,37 @@
   gap: 8px;
 }
 
+.cp-mode-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.cp-mode {
+  min-height: 34px;
+  border: 0;
+  border-right: 1px solid #d0d7de;
+  background: #ffffff;
+  color: #24292f;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cp-mode:last-child {
+  border-right: 0;
+}
+
+.cp-mode.active {
+  background: #0969da;
+  color: #ffffff;
+}
+
 .cp-input {
   width: 100%;
   box-sizing: border-box;
@@ -285,6 +316,14 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.cp-overview-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #d8dee4;
 }
 
 .cp-chat-item {
