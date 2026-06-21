@@ -42,7 +42,9 @@ The Release package does not include any API key or GitHub token. Your secrets a
 
 ## Demo
 
-The demo site lives in [docs/index.html](docs/index.html) and includes the browser extension flow plus real project analysis examples.
+[![CodePath extension demo](docs/assets/cases/page4d-browser.png)](docs/assets/codepath-demo.mp4)
+
+Click the screenshot above to open the [CodePath extension demo video](docs/assets/codepath-demo.mp4). The demo site lives in [docs/index.html](docs/index.html) and includes the browser extension flow plus real project analysis examples.
 
 ## Troubleshooting
 

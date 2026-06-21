@@ -42,7 +42,9 @@ Release 包不内置 API Key 或 GitHub Token。你的密钥只保存在当前�
 
 ## 演示
 
-演示网站位于 [docs/index.html](docs/index.html)，包含浏览器插件使用流程和真实项目分析案例。
+[![CodePath 插件使用演示](docs/assets/cases/page4d-browser.png)](docs/assets/codepath-demo.mp4)
+
+点击上方截图打开 [CodePath 插件使用演示视频](docs/assets/codepath-demo.mp4)。演示网站位于 [docs/index.html](docs/index.html)，包含浏览器插件使用流程和真实项目分析案例。
 
 ## 常见问题
 
