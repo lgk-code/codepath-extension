@@ -15,9 +15,9 @@ type ElementNode = Parent & {
 
 const PATH_PATTERN = /(?:^|[\s([`])((?:\.\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|vue|svelte|go|rs|java|kt|cs|php|rb|md|json|toml|ya?ml|txt|sh|css|scss|html))(?:[:#]L?\d+)?/g;
 
-export function githubFileUrl(repo: RepoRef, path: string): string {
-  const branch = repo.branch || "main";
-  const cleanPath = path.replace(/^\.\//, "");
+export function githubFileUrl(repo: RepoRef, path: string, branchOverride?: string): string {
+  const branch = branchOverride || repo.branch || "main";
+  const cleanPath = normalizeRepoPath(path);
   return `https://github.com/${repo.owner}/${repo.repo}/blob/${encodeURIComponent(branch)}/${cleanPath
     .split("/")
     .map(encodeURIComponent)
@@ -28,8 +28,8 @@ export function rehypeLinkCodePaths(repo: RepoRef | null): Plugin<[], Node> {
   return () => {
     return (tree) => {
       if (!repo) return;
-      visitTextParents(tree, (parent, index, textNode) => {
-        if (isInsideIgnoredElement(parent)) return;
+      visitTextParents(tree, [], (parent, index, textNode, ancestors) => {
+        if (isInsideIgnoredElement(parent) || ancestors.some(isIgnoredElement)) return;
         const replacement = linkifyText(textNode.value, repo);
         if (!replacement) return;
         parent.children.splice(index, 1, ...replacement);
@@ -55,7 +55,11 @@ function linkifyText(value: string, repo: RepoRef): Array<Node> | null {
     if (pathStart > lastIndex) {
       nodes.push(text(value.slice(lastIndex, pathStart)));
     }
-    nodes.push(link(path, githubFileUrl(repo, path)));
+    try {
+      nodes.push(link(path, githubFileUrl(repo, path)));
+    } catch {
+      nodes.push(text(path));
+    }
     lastIndex = pathEnd;
     matched = true;
   }
@@ -65,21 +69,25 @@ function linkifyText(value: string, repo: RepoRef): Array<Node> | null {
   return nodes;
 }
 
-function visitTextParents(node: Node, callback: (parent: Parent, index: number, textNode: TextNode) => void) {
+function visitTextParents(node: Node, ancestors: Parent[], callback: (parent: Parent, index: number, textNode: TextNode, ancestors: Parent[]) => void) {
   if (!isParent(node)) return;
 
   for (let index = node.children.length - 1; index >= 0; index -= 1) {
     const child = node.children[index];
     if (!child) continue;
     if (child.type === "text") {
-      callback(node, index, child as TextNode);
+      callback(node, index, child as TextNode, ancestors);
       continue;
     }
-    visitTextParents(child, callback);
+    visitTextParents(child, [...ancestors, node], callback);
   }
 }
 
 function isInsideIgnoredElement(parent: Parent): boolean {
+  return isIgnoredElement(parent);
+}
+
+function isIgnoredElement(parent: Parent): boolean {
   if (parent.type !== "element") return false;
   const element = parent as ElementNode;
   return ["a", "code", "pre"].includes(element.tagName);
@@ -91,6 +99,15 @@ function isParent(node: Node): node is Parent {
 
 function text(value: string): TextNode {
   return { type: "text", value };
+}
+
+function normalizeRepoPath(path: string): string {
+  const cleanPath = path.replace(/^\.\//, "");
+  const parts = cleanPath.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`Unsafe repository path: ${path}`);
+  }
+  return cleanPath;
 }
 
 function link(label: string, href: string): ElementNode {

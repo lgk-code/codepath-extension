@@ -55,10 +55,17 @@ const SOURCE_SUFFIXES = [
 
 export function isUsefulPath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
-  if (IGNORE_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
+  if (hasIgnoredSegment(normalized)) return false;
   if (IGNORE_SUFFIXES.some((suffix) => normalized.toLowerCase().endsWith(suffix))) return false;
   if (["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"].includes(normalized)) return false;
   return SOURCE_SUFFIXES.some((suffix) => normalized.toLowerCase().endsWith(suffix));
+}
+
+function hasIgnoredSegment(path: string): boolean {
+  const normalized = path.toLowerCase();
+  if (IGNORE_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return true;
+  const ignoredNames = new Set(IGNORE_PREFIXES.map((prefix) => prefix.replace(/\/$/, "")));
+  return normalized.split("/").some((segment) => ignoredNames.has(segment));
 }
 
 export function isLikelyImportant(path: string): boolean {

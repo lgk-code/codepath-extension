@@ -68,6 +68,17 @@ test("analyzeProject defaults to focused important snippets", async () => {
   assert.doesNotMatch(messages, /not focused/);
 });
 
+test("analyzeProject includes the resolved default branch in results", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16 }],
+    files: { "README.md": "# Demo" }
+  });
+
+  const result = await analyzeProject({ owner: "acme", repo: "demo", pageType: "repo" }, settings);
+
+  assert.equal(result.branch, "main");
+});
+
 test("analyzeProject full-source mode sends every useful source file without truncation", async () => {
   let body: ChatRequestBody | undefined;
   const longSource = `export const marker = "${"x".repeat(7600)}";`;
@@ -178,7 +189,7 @@ test("generateSuggestedQuestions parses numbered list responses", async () => {
     kind: "feature",
     label: "推荐追问",
     summary: "功能路径分析指出推荐追问当前由 Sidebar.tsx 本地规则生成。",
-    sources: ["src/components/Sidebar.tsx", "src/lib/analyzer.ts"]
+    sources: ["entrypoints/background.ts", "src/components/Sidebar.tsx", "src/lib/analyzer.ts"]
   });
 
   assert.deepEqual(result.questions, [

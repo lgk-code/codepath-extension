@@ -6,6 +6,7 @@ export const DEFAULT_SETTINGS: Settings = {
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-v4-flash",
   githubToken: "",
+  maxOutputTokens: 4096,
   streamingMode: "untested"
 };
 

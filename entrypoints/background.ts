@@ -46,6 +46,9 @@ export default defineBackground(() => {
 
 async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHandlers = {}): Promise<RuntimeResponse<unknown>> {
   try {
+    const validationError = validateRuntimeRequest(request);
+    if (validationError) return fail(validationError);
+
     if (request.type === "get-settings") {
       return ok(await getSettings());
     }
@@ -112,6 +115,30 @@ async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHand
   }
 }
 
+function validateRuntimeRequest(request: RuntimeRequest): string {
+  if ("feature" in request) {
+    const error = validateText(request.feature, "功能描述", 500);
+    if (error) return error;
+  }
+  if ("question" in request) {
+    const error = validateText(request.question, "追问", 2000);
+    if (error) return error;
+  }
+  if ("summary" in request) {
+    const error = validateText(request.summary, "分析摘要", 30_000);
+    if (error) return error;
+  }
+  return "";
+}
+
+function validateText(value: string, label: string, maxLength: number): string {
+  const normalized = value.trim();
+  if (!normalized) return `${label}不能为空。`;
+  if (normalized.length > maxLength) return `${label}过长，最多 ${maxLength} 个字符。`;
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized)) return `${label}不能包含控制字符。`;
+  return "";
+}
+
 async function getSettings(): Promise<Settings> {
   const stored = await storageGet(SETTINGS_KEY);
   const value = stored[SETTINGS_KEY];
@@ -139,7 +166,8 @@ function normalizeSettings(settings: Settings): Settings {
     apiKey: settings.apiKey.trim(),
     baseUrl,
     model: settings.model.trim() || DEFAULT_SETTINGS.model,
-    githubToken: settings.githubToken?.trim() ?? ""
+    githubToken: settings.githubToken?.trim() ?? "",
+    maxOutputTokens: Number.isFinite(settings.maxOutputTokens) ? settings.maxOutputTokens : DEFAULT_SETTINGS.maxOutputTokens
   };
 }
 

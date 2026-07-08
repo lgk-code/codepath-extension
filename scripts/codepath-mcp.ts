@@ -13,8 +13,8 @@ const server = new McpServer({
   version: "0.1.0"
 });
 
-const githubUrlSchema = z.string().url().describe("GitHub repository or file URL, for example https://github.com/owner/repo");
-const featureSchema = z.string().min(1).describe("Feature or capability to analyze, for example 插件系统, 登录流程, 缓存机制");
+const githubUrlSchema = z.string().trim().url().max(300).describe("GitHub repository or file URL, for example https://github.com/owner/repo");
+const featureSchema = z.string().trim().min(1).max(500).refine((value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value), "Control characters are not allowed").describe("Feature or capability to analyze, for example 插件系统, 登录流程, 缓存机制");
 const modeSchema = z.enum(["human", "openclaw-skill", "new-project"]).default("openclaw-skill");
 
 server.registerTool(
@@ -22,13 +22,12 @@ server.registerTool(
   {
     description: "Analyze a GitHub project and return a Chinese project overview with source references.",
     inputSchema: {
-      url: githubUrlSchema,
-      githubToken: z.string().optional().describe("Optional GitHub token. Prefer environment variable CODEPATH_GITHUB_TOKEN.")
+      url: githubUrlSchema
     }
   },
-  async ({ url, githubToken }) => {
+  async ({ url }) => {
     const repo = parseRepoUrl(url);
-    const result = await analyzeProject(repo, settingsFromEnv({ githubToken }));
+    const result = await analyzeProject(repo, settingsFromEnv());
     return structuredResult({
       repo,
       summary: result.summary,
@@ -44,13 +43,12 @@ server.registerTool(
     description: "Analyze one feature in a GitHub project and return implementation path, key files, and source references.",
     inputSchema: {
       url: githubUrlSchema,
-      feature: featureSchema,
-      githubToken: z.string().optional().describe("Optional GitHub token. Prefer environment variable CODEPATH_GITHUB_TOKEN.")
+      feature: featureSchema
     }
   },
-  async ({ url, feature, githubToken }) => {
+  async ({ url, feature }) => {
     const repo = parseRepoUrl(url);
-    const result = await analyzeFeature(repo, settingsFromEnv({ githubToken }), feature);
+    const result = await analyzeFeature(repo, settingsFromEnv(), feature);
     return structuredResult({
       repo,
       feature: result.feature,
@@ -67,13 +65,12 @@ server.registerTool(
     description: "Generate an OpenClaw-ready Skill or task handoff Markdown from a GitHub feature implementation.",
     inputSchema: {
       url: githubUrlSchema,
-      feature: featureSchema,
-      githubToken: z.string().optional().describe("Optional GitHub token. Prefer environment variable CODEPATH_GITHUB_TOKEN.")
+      feature: featureSchema
     }
   },
-  async ({ url, feature, githubToken }) => {
+  async ({ url, feature }) => {
     const repo = parseRepoUrl(url);
-    const result = await generateSkillBlueprint(repo, settingsFromEnv({ githubToken }), feature, "openclaw-skill");
+    const result = await generateSkillBlueprint(repo, settingsFromEnv(), feature, "openclaw-skill");
     return structuredResult({
       repo,
       feature: result.feature,
@@ -92,13 +89,12 @@ server.registerTool(
     inputSchema: {
       url: githubUrlSchema,
       feature: featureSchema,
-      mode: modeSchema.describe("Output mode. Use new-project for implementation blueprints, openclaw-skill for OpenClaw handoff, human for readable analysis."),
-      githubToken: z.string().optional().describe("Optional GitHub token. Prefer environment variable CODEPATH_GITHUB_TOKEN.")
+      mode: modeSchema.describe("Output mode. Use new-project for implementation blueprints, openclaw-skill for OpenClaw handoff, human for readable analysis.")
     }
   },
-  async ({ url, feature, mode, githubToken }) => {
+  async ({ url, feature, mode }) => {
     const repo = parseRepoUrl(url);
-    const result = await generateSkillBlueprint(repo, settingsFromEnv({ githubToken }), feature, mode as BlueprintMode);
+    const result = await generateSkillBlueprint(repo, settingsFromEnv(), feature, mode as BlueprintMode);
     return structuredResult({
       repo,
       feature: result.feature,
@@ -118,14 +114,15 @@ function parseRepoUrl(url: string): RepoRef {
   return repo;
 }
 
-function settingsFromEnv(overrides: { githubToken?: string } = {}): Settings {
+function settingsFromEnv(): Settings {
   const apiKey = process.env.CODEPATH_API_KEY || process.env.OPENAI_API_KEY || "";
   const baseUrl = normalizeBaseUrl(process.env.CODEPATH_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_SETTINGS.baseUrl);
   const model = (process.env.CODEPATH_MODEL || process.env.OPENAI_MODEL || DEFAULT_SETTINGS.model).trim() || DEFAULT_SETTINGS.model;
-  const githubToken = overrides.githubToken || process.env.CODEPATH_GITHUB_TOKEN || process.env.GITHUB_TOKEN || DEFAULT_SETTINGS.githubToken;
+  const provider = process.env.CODEPATH_PROVIDER === "anthropic" || process.env.CODEPATH_PROVIDER === "openai" ? process.env.CODEPATH_PROVIDER : inferProviderFromBaseUrl(baseUrl);
+  const githubToken = process.env.CODEPATH_GITHUB_TOKEN || process.env.GITHUB_TOKEN || DEFAULT_SETTINGS.githubToken;
   return {
     ...DEFAULT_SETTINGS,
-    provider: inferProviderFromBaseUrl(baseUrl),
+    provider,
     apiKey,
     baseUrl,
     model,

@@ -26,18 +26,6 @@ import type {
 } from "../types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
-import {
-  analyzeFeature,
-  analyzeProject,
-  answerQuestion,
-  clearAnalysisCaches,
-  deletePersistentCacheEntry,
-  deletePersistentCacheRepo,
-  explainFile,
-  generateSuggestedQuestions,
-  generateSkillBlueprint,
-  getAnalysisCacheStats
-} from "../lib/analyzer";
 import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
@@ -61,6 +49,8 @@ type StreamTarget = "overview" | "feature" | "file" | "skill" | "ask";
 type SuggestionTarget = Exclude<StreamTarget, "ask">;
 
 type ActiveStream = {
+  runId: number;
+  repoKey: string;
   target: StreamTarget;
   question?: string;
   text: string;
@@ -94,7 +84,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-06-13-continuous-short-followups-v1";
+const UI_VERSION = "dev-2026-07-06-security-hardening-v1";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -128,7 +118,28 @@ export function Sidebar() {
   const contentRef = useRef<HTMLElement | null>(null);
   const autoScrollRef = useRef(true);
   const tabRef = useRef<Tab>("overview");
+  const repoRef = useRef<RepoRef | null>(repo);
+  const runIdRef = useRef(0);
   const tabScrollPositionsRef = useRef<Record<Tab, TabScrollPosition>>(createTabScrollPositions());
+
+  useEffect(() => {
+    repoRef.current = repo;
+  }, [repo]);
+
+  useEffect(() => {
+    runIdRef.current += 1;
+    setOverview(null);
+    setFeaturePath(null);
+    setSkillBlueprint(null);
+    setFileExplanation(null);
+    setAnswers([]);
+    setQuestion("");
+    setAnalysisSuggestions(createSuggestionStates());
+    setLoading("");
+    setLoadingStartedAt(null);
+    setActiveStream(null);
+    setError("");
+  }, [repoStateKey(repo)]);
 
   useEffect(() => {
     send<Settings>({ type: "get-settings" }).then(setSettings).catch((err) => setError(err.message));
@@ -174,11 +185,16 @@ export function Sidebar() {
     onDone: (value: T, elapsedMs: number) => void,
     meta: { question?: string } = {}
   ) {
+    const runId = runIdRef.current + 1;
+    runIdRef.current = runId;
     const startedAt = Date.now();
+    const startedRepoKey = repoStateKey(repoRef.current);
     setLoading(label);
     setLoadingStartedAt(startedAt);
     autoScrollRef.current = isContentNearBottom();
     setActiveStream({
+      runId,
+      repoKey: startedRepoKey,
       target,
       question: meta.question,
       text: "",
@@ -191,19 +207,26 @@ export function Sidebar() {
     try {
       const value = await action((text) =>
         setActiveStream((current) =>
-          current && current.target === target
+          current && current.runId === runId && current.target === target && current.repoKey === startedRepoKey && startedRepoKey === repoStateKey(repoRef.current)
             ? { ...current, text: current.text + text, receivedDelta: true }
             : current
         )
       );
+      if (!isCurrentRun(runId, startedRepoKey)) return;
       onDone(value, Date.now() - startedAt);
     } catch (err) {
-      setError(formatRunError(label, repo, Date.now() - startedAt, err));
+      if (isCurrentRun(runId, startedRepoKey)) setError(formatRunError(label, repoRef.current, Date.now() - startedAt, err));
     } finally {
-      setLoading("");
-      setLoadingStartedAt(null);
-      setActiveStream(null);
+      if (isCurrentRun(runId, startedRepoKey)) {
+        setLoading("");
+        setLoadingStartedAt(null);
+        setActiveStream((current) => (current?.runId === runId ? null : current));
+      }
     }
+  }
+
+  function isCurrentRun(runId: number, repoKey: string) {
+    return runIdRef.current === runId && repoKey === repoStateKey(repoRef.current);
   }
 
   function isContentNearBottom() {
@@ -248,7 +271,7 @@ export function Sidebar() {
 
   function markStreamFallback(target: StreamTarget, reason: string) {
     setActiveStream((current) =>
-      current && current.target === target
+      current && current.target === target && current.repoKey === repoStateKey(repoRef.current)
         ? { ...current, fallbackReason: reason, expectsStreaming: false, mode: "unsupported" }
         : current
     );
@@ -271,6 +294,12 @@ export function Sidebar() {
       setSettingsStatus("");
       setError(humanizeError(err));
     }
+  }
+
+  async function refreshSettings(status?: string) {
+    const latest = await send<Settings>({ type: "get-settings" });
+    setSettings(latest);
+    if (status) setSettingsStatus(status);
   }
 
   async function testSettings() {
@@ -542,7 +571,7 @@ export function Sidebar() {
             {activeStream?.target === "overview" && <StreamPreview repo={repo} stream={activeStream} />}
             {overview && (
               <>
-                <MarkdownBlock repo={repo} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
+                <MarkdownBlock repo={repo} branch={overview.branch} text={overview.summary} sources={overview.sources.map((item) => item.path)} timing={overview.timing} />
                 <SuggestionList
                   suggestions={analysisSuggestions.overview.questions}
                   loading={!!loading || analysisSuggestions.overview.loading}
@@ -589,7 +618,7 @@ export function Sidebar() {
             {activeStream?.target === "feature" && <StreamPreview repo={repo} stream={activeStream} />}
             {featurePath && (
               <>
-                <MarkdownBlock repo={repo} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
+                <MarkdownBlock repo={repo} branch={featurePath.branch} text={featurePath.summary} sources={featurePath.sources.map((item) => item.path)} timing={featurePath.timing} />
                 <SuggestionList
                   suggestions={analysisSuggestions.feature.questions}
                   loading={!!loading || analysisSuggestions.feature.loading}
@@ -629,7 +658,7 @@ export function Sidebar() {
             {activeStream?.target === "file" && <StreamPreview repo={repo} stream={activeStream} />}
             {fileExplanation && (
               <>
-                <MarkdownBlock repo={repo} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
+                <MarkdownBlock repo={repo} branch={fileExplanation.branch} text={fileExplanation.summary} sources={fileExplanation.sources.map((item) => item.path)} timing={fileExplanation.timing} />
                 <SuggestionList
                   suggestions={analysisSuggestions.file.questions}
                   loading={!!loading || analysisSuggestions.file.loading}
@@ -694,6 +723,7 @@ export function Sidebar() {
                 </div>
                 <MarkdownBlock
                   repo={repo}
+                  branch={skillBlueprint.branch}
                   text={skillBlueprint.summary}
                   sources={skillBlueprint.sources.map((item) => item.path)}
                   timing={skillBlueprint.timing}
@@ -717,6 +747,7 @@ export function Sidebar() {
             status={settingsStatus}
             diagnostics={settingsDiagnostics}
             onChange={saveSettings}
+            onRefreshSettings={refreshSettings}
             onTest={testSettings}
             onClearCache={clearCache}
             onRefreshCacheStats={refreshCacheStats}
@@ -737,15 +768,19 @@ export function Sidebar() {
 }
 
 function ResizeHandle(props: { width: number; onChange: (width: number) => void }) {
+  function applyWidth(nextWidth: number) {
+    const clamped = clamp(nextWidth, 340, Math.min(860, window.innerWidth - 32));
+    props.onChange(clamped);
+    window.localStorage.setItem("codepath.panelWidth", String(clamped));
+  }
+
   function startResize(event: React.PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startWidth = props.width;
 
     function onMove(moveEvent: PointerEvent) {
-      const nextWidth = clamp(startWidth + (startX - moveEvent.clientX), 340, Math.min(860, window.innerWidth - 32));
-      props.onChange(nextWidth);
-      window.localStorage.setItem("codepath.panelWidth", String(nextWidth));
+      applyWidth(startWidth + (startX - moveEvent.clientX));
     }
 
     function onUp() {
@@ -757,7 +792,21 @@ function ResizeHandle(props: { width: number; onChange: (width: number) => void 
     window.addEventListener("pointerup", onUp);
   }
 
-  return <div className="cp-resize-handle" onPointerDown={startResize} title="Drag to resize" />;
+  return (
+    <div
+      className="cp-resize-handle"
+      onPointerDown={startResize}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") applyWidth(props.width + 24);
+        if (event.key === "ArrowRight") applyWidth(props.width - 24);
+      }}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整 CodePath 面板宽度"
+      tabIndex={0}
+      title="Drag to resize"
+    />
+  );
 }
 
 function readSidebarCollapsed(): boolean {
@@ -766,7 +815,7 @@ function readSidebarCollapsed(): boolean {
 
 function TabButton(props: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
-    <button className={props.active ? "cp-tab active" : "cp-tab"} onClick={props.onClick} title={props.label}>
+    <button className={props.active ? "cp-tab active" : "cp-tab"} onClick={props.onClick} title={props.label} aria-label={props.label} aria-current={props.active ? "page" : undefined}>
       {props.icon}
     </button>
   );
@@ -809,7 +858,7 @@ function OverviewConversation(props: {
           <article className="cp-chat-item" key={`${item.question}-${index}`}>
             <strong>问：{item.question}</strong>
             {item.elapsedMs !== undefined && <div className="cp-chat-meta">回答耗时：{formatElapsed(item.elapsedMs)}</div>}
-            <MarkdownBlock repo={props.repo} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
+            <MarkdownBlock repo={props.repo} branch={item.answer.branch} text={item.answer.summary} sources={item.answer.sources.map((source) => source.path)} timing={item.timing} />
           </article>
         ))}
         {activeAskStream && (
@@ -830,6 +879,7 @@ function SettingsPanel(props: {
   cacheStats: CacheStats | null;
   lastCacheClearResult: CacheClearResult | null;
   onChange: (settings: Settings) => void;
+  onRefreshSettings: (status?: string) => Promise<void>;
   onTest: () => void;
   onClearCache: (scope: "repo" | "all") => void;
   onRefreshCacheStats: () => void;
@@ -839,7 +889,7 @@ function SettingsPanel(props: {
   onToggleCacheRepo: (repoKey: string) => void;
   hasRepo: boolean;
 }) {
-  const [draft, setDraft] = useState(props.settings);
+  const [draft, setDraft] = useState(() => settingsDraftWithoutSecrets(props.settings));
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelListStatus, setModelListStatus] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -848,15 +898,15 @@ function SettingsPanel(props: {
   const modelPlaceholder = DEFAULT_SETTINGS.model;
 
   useEffect(() => {
-    setDraft(props.settings);
+    setDraft(settingsDraftWithoutSecrets(props.settings));
     setModelOptions(props.settings.model ? [{ id: props.settings.model }] : []);
     setModelListStatus("");
   }, [props.settings]);
 
   async function fetchAvailableModels() {
-    const normalized = normalizeSettingsDraft(draft);
+    const normalized = buildSettingsForSave(draft, props.settings);
     if (!normalized.apiKey || !normalized.baseUrl) {
-      setModelListStatus("请先填写 API Key 和 Base URL。");
+      setModelListStatus("请先通过安全窗口保存 API Key，并填写 Base URL。");
       return;
     }
 
@@ -865,15 +915,27 @@ function SettingsPanel(props: {
     try {
       const result = await send<ModelListResult>({ type: "list-models", settings: normalized });
       setModelOptions(result.models);
-      setDraft({ ...normalized, baseUrl: result.baseUrl, model: result.selectedModel || normalized.model });
+      setDraft(settingsDraftWithoutSecrets({ ...normalized, baseUrl: result.baseUrl, model: result.selectedModel || normalized.model }));
       setModelListStatus(result.message || `已获取 ${result.models.length} 个模型。`);
     } catch (error) {
       setModelOptions([]);
-      setDraft(normalized);
+      setDraft(settingsDraftWithoutSecrets(normalized));
       setModelListStatus(`模型列表获取失败：${humanizeError(error)}。可以手动填写模型名称后保存。`);
     } finally {
       setFetchingModels(false);
     }
+  }
+
+  function openSecretEditor(field: "apiKey" | "githubToken") {
+    const url = chrome.runtime.getURL(`secret-input.html?field=${encodeURIComponent(field)}`);
+    window.open(url, "codepath-secret-input", "width=480,height=360,popup=yes");
+    setModelListStatus(field === "apiKey" ? "请在扩展安全窗口中更新模型 API Key。" : "请在扩展安全窗口中更新 GitHub Token。");
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      void props.onRefreshSettings();
+      if (attempts >= 30) window.clearInterval(timer);
+    }, 1000);
   }
 
   const selectedOptions =
@@ -886,7 +948,13 @@ function SettingsPanel(props: {
       <p className="cp-muted">接口格式会按 Base URL 自动识别：DeepSeek/OpenAI 兼容地址走 OpenAI 格式，Anthropic 地址走 Anthropic 格式。</p>
       <label className="cp-label">
         模型 API Key
-        <input className="cp-input" type="password" value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} placeholder="sk-..." />
+        <div className="cp-secret-row">
+          <span>{maskSecret(props.settings.apiKey)}</span>
+          <button className="cp-secondary" onClick={() => openSecretEditor("apiKey")}>
+            <KeyRound size={14} />
+            更新
+          </button>
+        </div>
       </label>
       <label className="cp-label">
         Base URL
@@ -914,9 +982,15 @@ function SettingsPanel(props: {
       </label>
       <label className="cp-label">
         GitHub Token（可选）
-        <input className="cp-input" type="password" value={draft.githubToken ?? ""} onChange={(event) => setDraft({ ...draft, githubToken: event.target.value })} />
+        <div className="cp-secret-row">
+          <span>{maskSecret(props.settings.githubToken || "")}</span>
+          <button className="cp-secondary" onClick={() => openSecretEditor("githubToken")}>
+            <KeyRound size={14} />
+            更新
+          </button>
+        </div>
       </label>
-      <button className="cp-primary" onClick={() => props.onChange(normalizeSettingsDraft(draft))}>
+      <button className="cp-primary" onClick={() => props.onChange(buildSettingsForSave(draft, props.settings))}>
         保存并校验设置
       </button>
       <button className="cp-secondary" onClick={props.onTest}>
@@ -941,7 +1015,7 @@ function SettingsPanel(props: {
         onDeleteRepo={props.onDeleteCacheRepo}
         onToggleRepo={props.onToggleCacheRepo}
       />
-      <SettingsSummary diagnostics={props.diagnostics} draft={draft} />
+      <SettingsSummary diagnostics={props.diagnostics} draft={draft} settings={props.settings} />
     </section>
   );
 }
@@ -1020,7 +1094,7 @@ function CacheSummary(props: {
   );
 }
 
-function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft: Settings }) {
+function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft: Settings; settings: Settings }) {
   const diagnostics = props.diagnostics;
   return (
     <div className="cp-settings-summary">
@@ -1032,7 +1106,7 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
         </div>
         <div>
           <dt>API Key</dt>
-          <dd>{diagnostics?.apiKeyPreview || maskSecret(props.draft.apiKey)}</dd>
+          <dd>{diagnostics?.apiKeyPreview || maskSecret(props.settings.apiKey)}</dd>
         </div>
         <div>
           <dt>Base URL</dt>
@@ -1044,7 +1118,7 @@ function SettingsSummary(props: { diagnostics: SettingsDiagnostics | null; draft
         </div>
         <div>
           <dt>GitHub Token</dt>
-          <dd>{diagnostics?.githubTokenPreview || maskSecret(props.draft.githubToken || "")}</dd>
+          <dd>{diagnostics?.githubTokenPreview || maskSecret(props.settings.githubToken || "")}</dd>
         </div>
         {diagnostics?.repoCheck && (
           <div>
@@ -1135,7 +1209,7 @@ function SuggestionList(props: {
   );
 }
 
-function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: string[]; timing?: TimingBreakdown }) {
+function MarkdownBlock(props: { repo: RepoRef | null; branch?: string; text: string; sources: string[]; timing?: TimingBreakdown }) {
   return (
     <div className="cp-result">
       {props.timing && <TimingMeta timing={props.timing} />}
@@ -1149,7 +1223,7 @@ function MarkdownBlock(props: { repo: RepoRef | null; text: string; sources: str
           <strong>参考源码</strong>
           {props.sources.map((source) =>
             props.repo ? (
-              <a key={source} href={githubFileUrl(props.repo, source)} target="_blank" rel="noreferrer">
+              <a key={source} href={githubFileUrl(props.repo, source, props.branch)} target="_blank" rel="noreferrer">
                 {source}
               </a>
             ) : (
@@ -1442,16 +1516,6 @@ async function sendSettingsViaStorage<T>(request: RuntimeRequest): Promise<Runti
 
 async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
   try {
-    if (request.type === "get-settings") {
-      return localOk(readLocalSettings() as T);
-    }
-
-    if (request.type === "save-settings") {
-      const settings = normalizeSettingsDraft(request.settings);
-      writeLocalSettings(settings);
-      return localOk(settings as T);
-    }
-
     if (request.type === "list-models") {
       const settings = normalizeSettingsDraft(request.settings);
       const models = await listModels(settings);
@@ -1464,81 +1528,10 @@ async function handleLocally<T>(request: RuntimeRequest): Promise<RuntimeRespons
       } as T);
     }
 
-    const settings = readLocalSettings();
-    if (request.type === "analyze-project") {
-      return localOk((await analyzeProject(request.repo, settings, { mode: request.mode })) as T);
-    }
-
-    if (request.type === "analyze-feature") {
-      return localOk((await analyzeFeature(request.repo, settings, request.feature)) as T);
-    }
-
-    if (request.type === "generate-skill-blueprint") {
-      return localOk((await generateSkillBlueprint(request.repo, settings, request.feature, request.mode)) as T);
-    }
-
-    if (request.type === "clear-cache") {
-      return localOk((await clearAnalysisCaches(request.scope, request.repo)) as T);
-    }
-
-    if (request.type === "cache-stats") {
-      return localOk((await getAnalysisCacheStats(request.repo)) as T);
-    }
-
-    if (request.type === "delete-cache-entry") {
-      return localOk((await deletePersistentCacheEntry(request.key)) as T);
-    }
-
-    if (request.type === "delete-cache-repo") {
-      return localOk((await deletePersistentCacheRepo(request.repoKey)) as T);
-    }
-
-    if (request.type === "explain-file") {
-      return localOk((await explainFile(request.repo, settings)) as T);
-    }
-
-    if (request.type === "generate-suggestions") {
-      return localOk((await generateSuggestedQuestions(request.repo, settings, request)) as T);
-    }
-
-    if (request.type === "answer-question") {
-      return localOk((await answerQuestion(request.repo, settings, request.question, request.context)) as T);
-    }
-
-    return { ok: false, error: "Unknown request." };
+    return { ok: false, error: "Extension storage or background is unavailable." };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
-}
-
-function readLocalSettings(): Settings {
-  return normalizeSettingsDraft({
-    ...DEFAULT_SETTINGS,
-    provider: DEFAULT_SETTINGS.provider,
-    apiKey: window.localStorage.getItem("codepath.apiKey") || "",
-    baseUrl: window.localStorage.getItem("codepath.baseUrl") || DEFAULT_SETTINGS.baseUrl,
-    model: window.localStorage.getItem("codepath.model") || DEFAULT_SETTINGS.model,
-    githubToken: window.localStorage.getItem("codepath.githubToken") || "",
-    supportsStreaming: window.localStorage.getItem("codepath.supportsStreaming") === "true",
-    streamingMode: readLocalStreamingMode()
-  });
-}
-
-function writeLocalSettings(settings: Settings) {
-  const normalized = normalizeSettingsDraft(settings);
-  window.localStorage.setItem("codepath.provider", normalized.provider);
-  window.localStorage.setItem("codepath.apiKey", normalized.apiKey || "");
-  window.localStorage.setItem("codepath.baseUrl", normalized.baseUrl || DEFAULT_SETTINGS.baseUrl);
-  window.localStorage.setItem("codepath.model", normalized.model || DEFAULT_SETTINGS.model);
-  window.localStorage.setItem("codepath.githubToken", normalized.githubToken || "");
-  window.localStorage.setItem("codepath.supportsStreaming", normalized.supportsStreaming ? "true" : "false");
-  window.localStorage.setItem("codepath.streamingMode", normalized.streamingMode || "untested");
-}
-
-function readLocalStreamingMode(): Settings["streamingMode"] {
-  const value = window.localStorage.getItem("codepath.streamingMode");
-  if (value === "realtime" || value === "buffered" || value === "unsupported" || value === "untested") return value;
-  return "untested";
 }
 
 function getExtensionSettings(): Promise<Settings> {
@@ -1588,8 +1581,25 @@ function normalizeSettingsDraft(settings: Settings): Settings {
     apiKey: settings.apiKey.trim(),
     baseUrl,
     model: settings.model.trim() || DEFAULT_SETTINGS.model,
-    githubToken: settings.githubToken?.trim() ?? ""
+    githubToken: settings.githubToken?.trim() ?? "",
+    maxOutputTokens: Number.isFinite(settings.maxOutputTokens) ? settings.maxOutputTokens : DEFAULT_SETTINGS.maxOutputTokens
   };
+}
+
+function settingsDraftWithoutSecrets(settings: Settings): Settings {
+  return {
+    ...normalizeSettingsDraft(settings),
+    apiKey: "",
+    githubToken: ""
+  };
+}
+
+function buildSettingsForSave(draft: Settings, existing: Settings): Settings {
+  return normalizeSettingsDraft({
+    ...draft,
+    apiKey: existing.apiKey,
+    githubToken: existing.githubToken || ""
+  });
 }
 
 function localOk<T>(data: T): RuntimeResponse<T> {
@@ -1621,23 +1631,9 @@ function buildAskContext(
   return parts.join("\n\n---\n\n");
 }
 
-function sendViaBridge<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
-  return new Promise((resolve, reject) => {
-    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const timeout = window.setTimeout(() => {
-      window.removeEventListener("codepath:page-response", listener);
-      reject(new Error("Page bridge response timed out."));
-    }, 5000);
-    const listener = (event: Event) => {
-      const detail = (event as CustomEvent<{ id: string } & RuntimeResponse<T>>).detail;
-      if (detail.id !== id) return;
-      window.clearTimeout(timeout);
-      window.removeEventListener("codepath:page-response", listener);
-      resolve(detail);
-    };
-    window.addEventListener("codepath:page-response", listener);
-    window.dispatchEvent(new CustomEvent("codepath:page-request", { detail: { id, request } }));
-  });
+function repoStateKey(repo: RepoRef | null): string {
+  if (!repo) return "none";
+  return [repo.owner, repo.repo, repo.branch || "", repo.pageType, repo.path || ""].join("/");
 }
 
 function sendViaMessage<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
@@ -1661,8 +1657,20 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
   return new Promise((resolve, reject) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const port = chrome.runtime.connect({ name: "codepath" });
+    let settled = false;
+    const settle = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      try {
+        port.disconnect();
+      } catch {
+        // Port may already be disconnected.
+      }
+      action();
+    };
     const timeout = window.setTimeout(() => {
-      reject(new Error("Background response timed out."));
+      settle(() => reject(new Error("Background response timed out.")));
     }, 120000);
 
     port.onMessage.addListener((message: unknown) => {
@@ -1671,19 +1679,15 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
       if ("event" in envelope) {
         if (envelope.event === "stream-delta" && envelope.text) onStreamDelta?.(envelope.text);
         if (envelope.event === "stream-fallback") onStreamFallback?.(envelope.text || "未知原因");
-        if (envelope.event === "stream-error") reject(new Error(envelope.error || "Streaming failed."));
+        if (envelope.event === "stream-error") settle(() => reject(new Error(envelope.error || "Streaming failed.")));
         return;
       }
-      window.clearTimeout(timeout);
-      resolve(envelope.response as RuntimeResponse<T>);
+      settle(() => resolve(envelope.response as RuntimeResponse<T>));
     });
 
     port.onDisconnect.addListener(() => {
       const error = chrome.runtime.lastError;
-      if (error) {
-        window.clearTimeout(timeout);
-        reject(new Error(error.message));
-      }
+      if (error && !settled) settle(() => reject(new Error(error.message)));
     });
 
     port.postMessage({ id, request } satisfies PortMessage);

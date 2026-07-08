@@ -11,6 +11,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   quality-gate:
     name: Quality gate
@@ -29,11 +32,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm run test
+
       - name: Type-check
         run: npm run compile
 
       - name: Build Chrome/Edge extension
         run: npm run build
+
+      - name: Check whitespace errors
+        run: git diff --check
+
+      - name: Verify build version sync
+        run: npm run verify:build-version
 
       - name: Verify MCP tool names
         run: npm run verify:mcp-tools

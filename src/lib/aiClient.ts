@@ -1,7 +1,12 @@
 import type { ModelOption, Settings, StreamingMode } from "../types";
+import { clearResponseTimeout, fetchWithTimeout, readJsonResponse, readResponseStreamChunk, safeResponseText } from "./fetchUtils";
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_MAX_TOKENS = 4096;
+const OPENAI_MAX_TOKENS = 4096;
+const MODEL_REQUEST_TIMEOUT_MS = 120_000;
+const MODEL_LIST_TIMEOUT_MS = 30_000;
+const MAX_STREAM_CONTENT_CHARS = 500_000;
 
 type ChatMessage = {
   role: "system" | "user";
@@ -84,7 +89,7 @@ async function chatOpenAi(settings: Settings, messages: ChatMessage[]): Promise<
   const endpoint = `${requireBaseUrl(settings.baseUrl)}/chat/completions`;
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithTimeout(endpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${settings.apiKey}`,
@@ -93,18 +98,19 @@ async function chatOpenAi(settings: Settings, messages: ChatMessage[]): Promise<
       body: JSON.stringify({
         model: settings.model,
         messages,
-        temperature: 0.2
+        temperature: 0.2,
+        max_tokens: settings.maxOutputTokens ?? OPENAI_MAX_TOKENS
       })
-    });
+    }, MODEL_REQUEST_TIMEOUT_MS);
   } catch (error) {
-    throw new Error(`Unable to reach model base URL ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Unable to reach model base URL: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (!response.ok) {
-    throw new Error(`模型接口 ${response.status}: ${await response.text()}`);
+    throw new Error(`模型接口 ${response.status}: ${await safeResponseText(response)}`);
   }
 
-  const data = (await response.json()) as ChatResponse;
+  const data = await readJsonResponse<ChatResponse>(response);
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("模型没有返回内容。");
   return content;
@@ -118,20 +124,20 @@ async function chatAnthropic(settings: Settings, messages: ChatMessage[]): Promi
   const endpoint = `${requireBaseUrl(settings.baseUrl)}/messages`;
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithTimeout(endpoint, {
       method: "POST",
       headers: anthropicHeaders(settings.apiKey),
       body: JSON.stringify(anthropicBody(settings, messages))
-    });
+    }, MODEL_REQUEST_TIMEOUT_MS);
   } catch (error) {
-    throw new Error(`Unable to reach model base URL ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Unable to reach model base URL: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (!response.ok) {
-    throw new Error(`模型接口 ${response.status}: ${await response.text()}`);
+    throw new Error(`模型接口 ${response.status}: ${await safeResponseText(response)}`);
   }
 
-  const data = (await response.json()) as AnthropicMessageResponse;
+  const data = await readJsonResponse<AnthropicMessageResponse>(response);
   const content = (data.content ?? [])
     .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
     .join("");
@@ -158,19 +164,19 @@ export async function listModels(settings: Pick<Settings, "provider" | "apiKey" 
   const endpoint = `${baseUrl}/models`;
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithTimeout(endpoint, {
       method: "GET",
       headers: inferProviderFromBaseUrl(baseUrl) === "anthropic" ? anthropicHeaders(settings.apiKey) : openAiHeaders(settings.apiKey)
-    });
+    }, MODEL_LIST_TIMEOUT_MS);
   } catch (error) {
-    throw new Error(`Unable to reach model list URL ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Unable to reach model list URL: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (!response.ok) {
-    throw new Error(`模型列表接口 ${response.status}: ${await response.text()}`);
+    throw new Error(`模型列表接口 ${response.status}: ${await safeResponseText(response)}`);
   }
 
-  const data = (await response.json()) as ModelsResponse;
+  const data = await readJsonResponse<ModelsResponse>(response);
   return (data.data ?? [])
     .map((item) => (typeof item.id === "string" ? item.id.trim() : ""))
     .filter(Boolean)
@@ -242,17 +248,17 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
   const endpoint = `${requireBaseUrl(settings.baseUrl)}/${provider === "anthropic" ? "messages" : "chat/completions"}`;
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithTimeout(endpoint, {
       method: "POST",
       headers: provider === "anthropic" ? anthropicHeaders(settings.apiKey) : openAiHeaders(settings.apiKey),
       body: JSON.stringify(provider === "anthropic" ? anthropicBody(settings, messages, true) : openAiBody(settings, messages, true))
-    });
+    }, MODEL_REQUEST_TIMEOUT_MS);
   } catch (error) {
-    throw new Error(`Unable to reach model base URL ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Unable to reach model base URL: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (!response.ok) {
-    throw new Error(`模型接口 ${response.status}: ${await response.text()}`);
+    throw new Error(`模型接口 ${response.status}: ${await safeResponseText(response)}`);
   }
 
   if (!response.body) {
@@ -267,30 +273,36 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
   let deltaCount = 0;
   const startedAt = Date.now();
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
+  try {
+    while (true) {
+      const { done, value } = await readResponseStreamChunk(response, reader);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const delta = parseSseLine(line, provider);
+        if (!delta) continue;
+        content += delta;
+        if (content.length > MAX_STREAM_CONTENT_CHARS) throw new StreamingUnsupportedError("streaming response is too large");
+        deltaCount += 1;
+        firstDeltaMs ??= Date.now() - startedAt;
+        onDelta(delta);
+      }
+    }
+
+    buffer += decoder.decode();
+    for (const line of buffer.split(/\r?\n/)) {
       const delta = parseSseLine(line, provider);
       if (!delta) continue;
       content += delta;
+      if (content.length > MAX_STREAM_CONTENT_CHARS) throw new StreamingUnsupportedError("streaming response is too large");
       deltaCount += 1;
       firstDeltaMs ??= Date.now() - startedAt;
       onDelta(delta);
     }
-  }
-
-  buffer += decoder.decode();
-  for (const line of buffer.split(/\r?\n/)) {
-    const delta = parseSseLine(line, provider);
-    if (!delta) continue;
-    content += delta;
-    deltaCount += 1;
-    firstDeltaMs ??= Date.now() - startedAt;
-    onDelta(delta);
+  } finally {
+    clearResponseTimeout(response);
   }
 
   if (!content) throw new StreamingUnsupportedError("no streaming delta content");
@@ -353,6 +365,7 @@ function openAiBody(settings: Settings, messages: ChatMessage[], stream = false)
     model: settings.model,
     messages,
     temperature: 0.2,
+    max_tokens: settings.maxOutputTokens ?? OPENAI_MAX_TOKENS,
     ...(stream ? { stream: true } : {})
   };
 }

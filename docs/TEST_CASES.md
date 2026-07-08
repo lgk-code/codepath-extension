@@ -11,13 +11,21 @@ npm.cmd run quality
 git diff --check
 ```
 
-`quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。需要定位问题时，可以拆开执行 `compile`、`build`、`verify:mcp-tools`、`scan:secrets`。
+WSL 项目请在 WSL shell 中执行：
+
+```bash
+npm run quality
+git diff --check
+```
+
+`quality` 会依次执行测试、类型检查、扩展构建、构建版本一致性检查、MCP 工具名检查、密钥和本机私人路径扫描。需要定位问题时，可以拆开执行 `test`、`compile`、`build`、`verify:build-version`、`verify:mcp-tools`、`scan:secrets`。
 
 ## 自动 CI 与 Release 检查
 
 GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行基础 CI：
 
 - 安装依赖。
+- 运行自动测试。
 - 类型检查。
 - 构建 Chrome/Edge MV3 扩展。
 - 检查 MCP 4 个工具名。

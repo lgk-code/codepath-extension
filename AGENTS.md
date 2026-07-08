@@ -65,7 +65,7 @@ npm run deploy:edge
 npm run quality
 ```
 
-`quality` 会依次执行类型检查、扩展构建、MCP 工具名检查、密钥和本机私人路径扫描。必要时仍可拆开执行 `compile`、`build`、`verify:mcp-tools`、`scan:secrets` 方便定位问题。
+`quality` 会依次执行测试、类型检查、扩展构建、构建版本一致性检查、MCP 工具名检查、密钥和本机私人路径扫描。必要时仍可拆开执行 `test`、`compile`、`build`、`verify:build-version`、`verify:mcp-tools`、`scan:secrets` 方便定位问题。
 
 ## 质量门禁与 CI/CD
 
@@ -89,8 +89,10 @@ CodePath 采用“两层门禁”：
 GitHub Actions 分为 CI 和 Release 两条流水线。CI 会在 `main` 的 push 和 pull request 上执行：
 
 - `npm ci`
+- `npm run test`
 - `npm run compile`
 - `npm run build`
+- `npm run verify:build-version`
 - `npm run verify:mcp-tools`
 - `npm run scan:secrets`
 - 打包 `.output/chrome-mv3` 为 `codepath-chrome-mv3-<commit>.zip`

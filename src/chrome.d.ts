@@ -33,5 +33,6 @@ type ChromePort = {
   onDisconnect: {
     addListener(callback: () => void): void;
   };
+  disconnect(): void;
   postMessage(message: unknown): void;
 };

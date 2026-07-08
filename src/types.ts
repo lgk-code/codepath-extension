@@ -9,6 +9,7 @@ export type Settings = {
   githubToken?: string;
   supportsStreaming?: boolean;
   streamingMode?: StreamingMode;
+  maxOutputTokens?: number;
 };
 
 export type ModelOption = {
@@ -55,6 +56,7 @@ export type TimingBreakdown = {
 export type ProjectOverview = {
   summary: string;
   sources: SourceRef[];
+  branch?: string;
   timing?: TimingBreakdown;
 };
 
@@ -64,6 +66,7 @@ export type FeaturePath = {
   feature: string;
   summary: string;
   sources: SourceRef[];
+  branch?: string;
   timing?: TimingBreakdown;
 };
 
@@ -74,6 +77,7 @@ export type SkillBlueprint = {
   mode: BlueprintMode;
   summary: string;
   sources: SourceRef[];
+  branch?: string;
   timing?: TimingBreakdown;
 };
 
@@ -81,6 +85,7 @@ export type FileExplanation = {
   path: string;
   summary: string;
   sources: SourceRef[];
+  branch?: string;
   timing?: TimingBreakdown;
 };
 

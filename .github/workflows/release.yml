@@ -32,8 +32,13 @@ jobs:
       - name: Quality gate
         run: npm run quality
 
+      - name: Check whitespace errors
+        run: git diff --check
+
       - name: Zip Chrome/Edge extension
-        run: npx wxt zip -b chrome
+        run: |
+          rm -f .output/*-chrome.zip
+          npx wxt zip -b chrome
 
       - name: Prepare stable release asset
         run: |
@@ -41,17 +46,17 @@ jobs:
           const fs = require("node:fs");
           const path = require("node:path");
           const outputDir = ".output";
-          const asset = fs
+          const assets = fs
             .readdirSync(outputDir)
-            .find((name) => /^codepath-.+-chrome\.zip$/.test(name));
-          if (!asset) {
-            throw new Error("No Chrome extension zip found in .output");
+            .filter((name) => /^codepath-.+-chrome\.zip$/.test(name));
+          if (assets.length !== 1) {
+            throw new Error(`Expected exactly one Chrome extension zip in .output, found ${assets.length}`);
           }
-          fs.copyFileSync(path.join(outputDir, asset), "CodePath.zip");
+          fs.copyFileSync(path.join(outputDir, assets[0]), "CodePath.zip");
           NODE
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: CodePath.zip
           fail_on_unmatched_files: true

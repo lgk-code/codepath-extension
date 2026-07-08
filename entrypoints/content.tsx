@@ -4,54 +4,82 @@ import { parseGithubUrl } from "../src/lib/githubUrl";
 import { Sidebar } from "../src/components/Sidebar";
 import "../src/styles.css";
 
-const CONTENT_BUILD = "dev-2026-06-13-continuous-short-followups-v1";
+const CONTENT_BUILD = "dev-2026-07-06-security-hardening-v1";
 const ROOT_ID = "codepath-dev-root";
 const LEGACY_ROOT_ID = "codepath-root";
+const OWNED_MARKER = "true";
+
+let reactRoot: ReturnType<typeof createRoot> | null = null;
+let ownedHost: HTMLElement | null = null;
 
 export default defineContentScript({
   matches: ["https://github.com/*/*"],
   main() {
-    injectBridge();
+    clearLegacyPageSecrets();
     mount();
     let lastUrl = location.href;
-    setInterval(() => {
+    const intervalId = window.setInterval(() => {
       if (lastUrl !== location.href) {
         lastUrl = location.href;
         mount();
       }
     }, 800);
+    return () => {
+      window.clearInterval(intervalId);
+      unmount();
+    };
   }
 });
 
-function injectBridge() {
-  if (document.getElementById("codepath-bridge")) return;
-  const script = document.createElement("script");
-  script.id = "codepath-bridge";
-  script.src = chrome.runtime.getURL("bridge.js");
-  script.onload = () => script.remove();
-  (document.head || document.documentElement).appendChild(script);
+function clearLegacyPageSecrets() {
+  window.localStorage.removeItem("codepath.apiKey");
+  window.localStorage.removeItem("codepath.githubToken");
 }
 
 function mount() {
   const repo = parseGithubUrl(location.href);
-  if (!repo) return;
+  if (!repo) {
+    unmount();
+    return;
+  }
 
   const legacyHost = document.getElementById(LEGACY_ROOT_ID);
-  if (legacyHost) legacyHost.remove();
+  if (legacyHost?.dataset.codepathOwned === OWNED_MARKER) legacyHost.remove();
 
-  let host = document.getElementById(ROOT_ID);
+  let host = getOwnedHost();
   if (host && host.dataset.codepathBuild !== CONTENT_BUILD) {
-    host.remove();
-    host = null;
+    unmount();
+    host = getOwnedHost();
   }
 
   if (!host) {
     host = document.createElement("div");
     host.id = ROOT_ID;
     host.dataset.codepathBuild = CONTENT_BUILD;
+    host.dataset.codepathOwned = OWNED_MARKER;
     document.body.appendChild(host);
-    createRoot(host).render(<Sidebar />);
+    ownedHost = host;
+    reactRoot = createRoot(host);
+    reactRoot.render(<Sidebar />);
   }
 
   window.dispatchEvent(new CustomEvent("codepath:url-change", { detail: repo }));
+}
+
+function getOwnedHost(): HTMLElement | null {
+  if (ownedHost?.isConnected && ownedHost.dataset.codepathOwned === OWNED_MARKER) return ownedHost;
+  const existing = document.getElementById(ROOT_ID);
+  if (existing instanceof HTMLElement && existing.dataset.codepathOwned === OWNED_MARKER) {
+    ownedHost = existing;
+    return existing;
+  }
+  return null;
+}
+
+function unmount() {
+  reactRoot?.unmount();
+  reactRoot = null;
+  const host = getOwnedHost();
+  host?.remove();
+  ownedHost = null;
 }

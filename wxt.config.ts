@@ -10,18 +10,15 @@ export default defineConfig({
       "https://github.com/*",
       "https://api.github.com/*",
       "https://codeload.github.com/*",
+      "https://api.deepseek.com/*",
+      "https://api.openai.com/*",
+      "https://api.anthropic.com/*",
       "https://dashscope.aliyuncs.com/*",
       "https://dashscope-intl.aliyuncs.com/*",
-      "https://*/*",
       "http://localhost/*",
       "http://127.0.0.1/*"
     ],
-    web_accessible_resources: [
-      {
-        resources: ["bridge.js"],
-        matches: ["https://github.com/*"]
-      }
-    ],
+    optional_host_permissions: ["https://*/*"],
     action: {
       default_title: "CodePath"
     }

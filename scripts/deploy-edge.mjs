@@ -11,6 +11,7 @@ const defaultTargetDir =
     : "/mnt/d/edge下载/CodePath";
 const targetDir = process.env.CODEPATH_EDGE_EXTENSION_DIR || defaultTargetDir;
 const resolvedTargetDir = path.resolve(targetDir);
+const allowedRoot = path.resolve(process.env.CODEPATH_EDGE_EXTENSION_ROOT || path.dirname(defaultTargetDir));
 
 if (!isSafeExtensionDir(resolvedTargetDir)) {
   throw new Error(`Refusing to deploy to unsafe extension directory: ${resolvedTargetDir}`);
@@ -51,6 +52,8 @@ function isSafeExtensionDir(dir) {
   const normalized = path.normalize(dir);
   const normalizedProjectRoot = path.normalize(projectRoot);
   if (normalized === normalizedProjectRoot || normalized.startsWith(`${normalizedProjectRoot}${path.sep}`)) return false;
+  const normalizedAllowedRoot = path.normalize(allowedRoot);
+  if (normalized !== normalizedAllowedRoot && !normalized.startsWith(`${normalizedAllowedRoot}${path.sep}`)) return false;
 
   const parts = normalized
     .slice(parsed.root.length)
@@ -61,6 +64,6 @@ function isSafeExtensionDir(dir) {
   const basename = path.basename(normalized).toLowerCase();
   if (!["codepath", "chrome-mv3"].includes(basename)) return false;
 
-  const dangerous = new Set(["users", "windows", "program files", "program files (x86)", "system32", "home", "mnt"]);
-  return !dangerous.has(basename);
+  const dangerous = new Set(["users", "windows", "program files", "program files (x86)", "system32", "home"]);
+  return !parts.some((part) => dangerous.has(part.toLowerCase()));
 }

@@ -1,10 +1,17 @@
 import { unzipSync, strFromU8 } from "fflate";
 import type { TreeFile } from "../types";
+import { fetchWithTimeout, readResponseBytesLimited } from "./fetchUtils";
+import { isUsefulPath } from "./fileRules";
 
 type ZipEntry = {
   path: string;
   content: Uint8Array;
 };
+
+const MAX_ZIP_BYTES = 25 * 1024 * 1024;
+const MAX_UNZIPPED_BYTES = 80 * 1024 * 1024;
+const MAX_ZIP_ENTRIES = 5000;
+const MAX_ZIP_ENTRY_BYTES = 2 * 1024 * 1024;
 
 export class ZipGithubClient {
   private entries: ZipEntry[] | null = null;
@@ -45,15 +52,51 @@ export class ZipGithubClient {
 
     for (const branch of branches) {
       try {
-        const response = await fetch(`https://codeload.github.com/${this.owner}/${this.repo}/zip/refs/heads/${encodeURIComponent(branch)}`);
+        const response = await fetchWithTimeout(`https://codeload.github.com/${this.owner}/${this.repo}/zip/refs/heads/${encodeURIComponent(branch)}`, {}, 45_000);
         if (!response.ok) {
           lastError = `${response.status} ${response.statusText}`;
           continue;
         }
+        const contentLength = Number(response.headers.get("content-length") ?? "0");
+        if (contentLength > MAX_ZIP_BYTES) {
+          lastError = `zip is too large (${contentLength} bytes)`;
+          continue;
+        }
 
-        const buffer = new Uint8Array(await response.arrayBuffer());
-        const zip = unzipSync(buffer);
+        const buffer = await readResponseBytesLimited(response, MAX_ZIP_BYTES);
+        const selectedPaths = new Set<string>();
+        let rawEntryCount = 0;
+        let selectedBytes = 0;
+        let limitError = "";
+        const zip = unzipSync(buffer, {
+          filter(file) {
+            rawEntryCount += 1;
+            if (rawEntryCount > MAX_ZIP_ENTRIES) {
+              limitError = `zip has too many entries (${rawEntryCount})`;
+              return false;
+            }
+            if (file.name.endsWith("/")) return false;
+            const path = stripRoot(file.name);
+            if (!path || !isUsefulPath(path)) return false;
+            if (file.originalSize > MAX_ZIP_ENTRY_BYTES) {
+              limitError = `zip entry is too large (${path}, ${file.originalSize} bytes)`;
+              return false;
+            }
+            if (selectedBytes + file.originalSize > MAX_UNZIPPED_BYTES) {
+              limitError = `zip content is too large (${selectedBytes + file.originalSize} bytes)`;
+              return false;
+            }
+            selectedBytes += file.originalSize;
+            selectedPaths.add(file.name);
+            return true;
+          }
+        });
+        if (limitError) {
+          lastError = limitError;
+          continue;
+        }
         const entries = Object.entries(zip)
+          .filter(([path]) => selectedPaths.has(path))
           .filter(([path]) => !path.endsWith("/"))
           .map(([path, content]) => ({
             path: stripRoot(path),

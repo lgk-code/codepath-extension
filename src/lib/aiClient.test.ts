@@ -132,6 +132,32 @@ test("chat sends Anthropic messages requests with system prompt and joins text b
   assert.equal(content, "第一段第二段");
 });
 
+test("chat sends OpenAI-compatible requests with a bounded output token limit", async () => {
+  let body: Record<string, unknown> = {};
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }]
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }) as typeof fetch;
+
+  await chat(
+    {
+      provider: "openai",
+      apiKey: "sk-test",
+      baseUrl: "https://models.example/v1",
+      model: "guide-model",
+      githubToken: ""
+    },
+    [{ role: "user", content: "Say OK." }]
+  );
+
+  assert.equal(body.max_tokens, 4096);
+});
+
 test("chatAuto streams Anthropic text_delta events", async () => {
   globalThis.fetch = (async () => {
     const chunks = [

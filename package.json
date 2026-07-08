@@ -4,6 +4,9 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
@@ -11,7 +14,9 @@
     "deploy:edge": "node scripts/deploy-edge.mjs",
     "build:firefox": "wxt build -b firefox",
     "compile": "wxt prepare && tsc --noEmit",
-    "quality": "npm run compile && npm run build && npm run verify:mcp-tools && npm run scan:secrets",
+    "test": "node --import tsx --test src/**/*.test.ts scripts/*.test.mjs",
+    "verify:build-version": "node scripts/verify-build-version.mjs",
+    "quality": "npm run test && npm run compile && npm run build && npm run verify:build-version && npm run verify:mcp-tools && npm run scan:secrets",
     "mcp": "tsx scripts/codepath-mcp.ts",
     "verify:mcp-tools": "node scripts/verify-mcp-tools.mjs",
     "scan:secrets": "node scripts/scan-secrets.mjs"

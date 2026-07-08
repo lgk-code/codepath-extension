@@ -1,4 +1,5 @@
 import type { TreeFile, Settings } from "../types";
+import { fetchWithTimeout, readJsonResponse, safeResponseText } from "./fetchUtils";
 
 type GithubRepo = {
   default_branch: string;
@@ -7,6 +8,7 @@ type GithubRepo = {
 };
 
 type GithubTreeResponse = {
+  truncated?: boolean;
   tree: Array<{
     path: string;
     type: "blob" | "tree";
@@ -31,6 +33,9 @@ export class GithubClient {
     const data = await this.request<GithubTreeResponse>(
       `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
     );
+    if (data.truncated) {
+      throw new Error("GitHub API returned a truncated repository tree. 请缩小分析范围或稍后使用分层遍历版本。");
+    }
     return data.tree.map((item) => ({
       path: item.path,
       type: item.type,
@@ -56,15 +61,15 @@ export class GithubClient {
 
     let response: Response;
     try {
-      response = await fetch(url, { headers });
+      response = await fetchWithTimeout(url, { headers }, 30_000);
     } catch (error) {
       throw new Error(`Unable to reach GitHub API: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     if (!response.ok) {
-      throw new Error(`GitHub API ${response.status}: ${await response.text()}`);
+      throw new Error(`GitHub API ${response.status}: ${await safeResponseText(response)}`);
     }
-    return response.json() as Promise<T>;
+    return readJsonResponse<T>(response);
   }
 }
 
