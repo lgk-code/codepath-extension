@@ -106,7 +106,7 @@ async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHand
     }
 
     if (request.type === "answer-question") {
-      return ok(await answerQuestion(request.repo, settings, request.question, request.context, streamHandlers));
+      return ok(await answerQuestion(request.repo, settings, request.question, request.context, streamHandlers, request.contextBasis));
     }
 
     return fail("Unknown request.");

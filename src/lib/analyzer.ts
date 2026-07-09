@@ -1,8 +1,12 @@
 import type {
+  AnalysisBasis,
   BlueprintMode,
   CacheClearResult,
   CacheClearScope,
   CacheDeleteResult,
+  CacheRecord,
+  CacheRecordKind,
+  CacheStatus,
   CacheEntry,
   CacheRepository,
   CacheStats,
@@ -10,9 +14,12 @@ import type {
   FeaturePath,
   ProjectAnalysisMode,
   ProjectOverview,
+  RepoSnapshot,
   RepoRef,
   Settings,
   SkillBlueprint,
+  SourceClientKind,
+  SourceClient,
   SuggestedQuestionsResult,
   SuggestionAnalysisKind,
   TimingBreakdown,
@@ -21,20 +28,16 @@ import type {
 import { GithubClient } from "./githubClient";
 import { ZipGithubClient } from "./zipGithubClient";
 import { chatAuto } from "./aiClient";
-import { classifyPath, isLikelyImportant, isUsefulPath } from "./fileRules";
-import { expandFeatureKeywords } from "./featureKeywords";
-import { extractImports } from "./imports";
+import { FILE_RULES_FINGERPRINT, classifyPath, isLikelyImportant, isUsefulPath } from "./fileRules";
+import { FEATURE_KEYWORDS_FINGERPRINT, expandFeatureKeywords } from "./featureKeywords";
+import { IMPORTS_FINGERPRINT, extractImports } from "./imports";
 
 type FileSnippet = {
   path: string;
   content: string;
+  blobSha?: string;
+  size?: number;
   imports?: string[];
-};
-
-type SourceClient = {
-  getRepo(owner: string, repo: string): Promise<{ default_branch: string }>;
-  getTree(owner: string, repo: string, branch: string): Promise<TreeFile[]>;
-  getFile(owner: string, repo: string, path: string, ref: string): Promise<string>;
 };
 
 type ProjectKind = "python-ml" | "browser-extension" | "frontend" | "node-backend" | "python-app" | "library" | "generic";
@@ -48,6 +51,7 @@ type ProjectProfile = {
 
 type RepoAnalysisContext = {
   branch: string;
+  snapshot: RepoSnapshot;
   files: TreeFile[];
   usefulFiles: TreeFile[];
   profile: ProjectProfile;
@@ -84,12 +88,21 @@ type BrowserStorageArea = {
 
 const repoContextCache = new Map<string, RepoAnalysisContext>();
 const snippetCache = new Map<string, string>();
-const overviewCache = new Map<string, ProjectOverview>();
-const featureCache = new Map<string, FeaturePath>();
-const fileExplanationCache = new Map<string, FileExplanation>();
-const questionCache = new Map<string, ProjectOverview>();
-const skillBlueprintCache = new Map<string, SkillBlueprint>();
+const overviewCache = new Map<string, CacheRecord<ProjectOverview>>();
+const featureCache = new Map<string, CacheRecord<FeaturePath>>();
+const fileExplanationCache = new Map<string, CacheRecord<FileExplanation>>();
+const questionCache = new Map<string, CacheRecord<ProjectOverview>>();
+const skillBlueprintCache = new Map<string, CacheRecord<SkillBlueprint>>();
 const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
+const PERSISTENT_CACHE_V2_PREFIX = "codepath-cache-v2:";
+const CACHE_SCHEMA_VERSION = 2;
+export const ANALYZER_VERSION = "2026-07-08-cache-v2";
+export const PROMPT_VERSION = createPromptVersion();
+const MAX_PERSISTENT_CACHE_ENTRIES = 240;
+const MAX_PERSISTENT_CACHE_REPO_ENTRIES = 80;
+const MAX_PERSISTENT_CACHE_BYTES = 4_500_000;
+const MAX_PERSISTENT_CACHE_REPO_BYTES = 1_500_000;
+const PERSISTENT_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const FULL_SOURCE_TOTAL_LIMIT = 120_000;
 const FULL_SOURCE_SINGLE_FILE_LIMIT = 40_000;
 const MAX_SUGGESTION_QUESTION_LENGTH = 72;
@@ -106,26 +119,26 @@ const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
 export async function analyzeProject(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
   const mode = options.mode ?? "focused";
   const timing = createTiming();
-  const cachedOverview = repo.branch ? findCachedOverview(repo, mode) : undefined;
-  if (cachedOverview) return withTiming(cachedOverview, timing, { cacheHit: true });
-
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, !settings.githubToken));
-  const cacheKey = overviewCacheKey(repo, context.branch, mode);
+  const persistResults = canUseTrustedPersistentCache(gh, settings);
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const selectedFiles = mode === "full-source" ? context.usefulFiles : pickImportantFiles(context.usefulFiles, context.profile);
+  const resultInputDigest = analysisInputDigest("overview", settings, context, selectedFiles, mode);
+  const cacheKey = overviewCacheKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest);
   const cached = overviewCache.get(cacheKey);
-  if (cached) return withTiming(cached, timing, { cacheHit: true });
+  if (cached && isUsableCacheRecord<ProjectOverview>(cached, "overview", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
+  if (cached) overviewCache.delete(cacheKey);
 
-  const persisted = settings.githubToken ? undefined : await persistentGet<ProjectOverview>(persistentOverviewKey(repo, context.branch, mode));
-  if (persisted) {
-    const withBranch = { ...persisted, branch: persisted.branch ?? context.branch };
-    overviewCache.set(cacheKey, withBranch);
-    return withTiming(withBranch, timing, { cacheHit: true });
+  const persisted = persistResults ? await persistentRead<CacheRecord<ProjectOverview>>(persistentOverviewKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest)) : { hit: false };
+  if (persisted.hit && isUsableCacheRecord<ProjectOverview>(persisted.value, "overview", context.snapshot, resultInputDigest)) {
+    overviewCache.set(cacheKey, persisted.value);
+    return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
   }
 
   const snippets =
     mode === "full-source"
-      ? await loadFullSourceSnippets(gh, repo, context.branch, context.usefulFiles, timing, !settings.githubToken)
-      : await loadSnippetsCached(gh, repo, context.branch, pickImportantFiles(context.usefulFiles, context.profile), context.profile.kind === "python-ml" ? 22000 : 16000, timing, !settings.githubToken);
+      ? await loadFullSourceSnippets(gh, repo, context.branch, context.snapshot.headSha, selectedFiles, timing, persistResults)
+      : await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, selectedFiles, context.profile.kind === "python-ml" ? 22000 : 16000, timing, persistResults);
   const structuralContext = buildStructuralContext(context, snippets);
 
   const content = await runModel(timing, settings, [
@@ -153,24 +166,39 @@ ${formatSnippets(snippets)}`
     }
   ], options);
 
-  const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path })), branch: context.branch };
-  overviewCache.set(cacheKey, overview);
-  if (!settings.githubToken) await persistentSet(persistentOverviewKey(repo, context.branch, mode), overview);
-  return withTiming(overview, timing);
+  const basis = analysisBasis(context, snippets, resultInputDigest);
+  const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path, blobSha: item.blobSha })), branch: context.branch, basis };
+  const record = cacheRecord("overview", overview, basis);
+  if (canCacheResult(timing)) {
+    overviewCache.set(cacheKey, record);
+    if (persistResults) await persistentSet(persistentOverviewKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest), record);
+  }
+  return withTiming(overview, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
 export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions = {}): Promise<FeaturePath> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, !settings.githubToken));
-  const cacheKey = featureCacheKey(repo, context.branch, normalizedFeature);
-  const cached = featureCache.get(cacheKey);
-  if (cached) return withTiming(cached, timing, { cacheHit: true });
+  const persistResults = canUseTrustedPersistentCache(gh, settings);
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
 
   const keywords = expandFeatureKeywords(normalizedFeature);
   const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 16);
-  const snippets = await loadSnippetsCached(gh, repo, context.branch, candidates, 24000, timing, !settings.githubToken);
+  const resultInputDigest = analysisInputDigest("feature", settings, context, candidates, normalizedFeature);
+  const cacheKey = featureCacheKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest);
+  const cached = featureCache.get(cacheKey);
+  if (cached && isUsableCacheRecord<FeaturePath>(cached, "feature", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
+  if (cached) featureCache.delete(cacheKey);
+  const persisted = persistResults
+    ? await persistentRead<CacheRecord<FeaturePath>>(persistentFeatureKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest))
+    : { hit: false };
+  if (persisted.hit && isUsableCacheRecord<FeaturePath>(persisted.value, "feature", context.snapshot, resultInputDigest)) {
+    featureCache.set(cacheKey, persisted.value);
+    return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
+  }
+
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, candidates, 24000, timing, persistResults);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
   const structuralContext = buildStructuralContext(context, withImports);
 
@@ -204,29 +232,46 @@ ${formatSnippets(withImports)}`
     }
   ], options);
 
+  const basis = analysisBasis(context, withImports, resultInputDigest);
   const result = {
     feature: normalizedFeature,
     summary: content,
-    sources: withImports.map((item) => ({ path: item.path, reason: "feature candidate" })),
-    branch: context.branch
+    sources: withImports.map((item) => ({ path: item.path, reason: "feature candidate", blobSha: item.blobSha })),
+    branch: context.branch,
+    basis
   };
-  featureCache.set(cacheKey, result);
-  return withTiming(result, timing);
+  const record = cacheRecord("feature", result, basis);
+  if (canCacheResult(timing)) {
+    featureCache.set(cacheKey, record);
+    if (persistResults) await persistentSet(persistentFeatureKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest), record);
+  }
+  return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
 export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode, options: AnalysisRunOptions = {}): Promise<SkillBlueprint> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, !settings.githubToken));
-  const cacheKey = skillBlueprintCacheKey(repo, context.branch, normalizedFeature, mode);
-  const cached = skillBlueprintCache.get(cacheKey);
-  if (cached) return withTiming(cached, timing, { cacheHit: true });
+  const persistResults = canUseTrustedPersistentCache(gh, settings);
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
 
   const keywords = expandFeatureKeywords(normalizedFeature);
   const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 18);
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(context.usefulFiles, context.profile).slice(0, 18);
-  const snippets = await loadSnippetsCached(gh, repo, context.branch, selected, 28000, timing, !settings.githubToken);
+  const resultInputDigest = analysisInputDigest("blueprint", settings, context, selected, `${mode}:${normalizedFeature}`);
+  const cacheKey = skillBlueprintCacheKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest);
+  const cached = skillBlueprintCache.get(cacheKey);
+  if (cached && isUsableCacheRecord<SkillBlueprint>(cached, "blueprint", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
+  if (cached) skillBlueprintCache.delete(cacheKey);
+  const persisted = persistResults
+    ? await persistentRead<CacheRecord<SkillBlueprint>>(persistentSkillBlueprintKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest))
+    : { hit: false };
+  if (persisted.hit && isUsableCacheRecord<SkillBlueprint>(persisted.value, "blueprint", context.snapshot, resultInputDigest)) {
+    skillBlueprintCache.set(cacheKey, persisted.value);
+    return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
+  }
+
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, selected, 28000, timing, persistResults);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
   const structuralContext = buildStructuralContext(context, withImports);
 
@@ -256,27 +301,44 @@ ${formatSnippets(withImports)}`
     }
   ], options);
 
+  const basis = analysisBasis(context, withImports, resultInputDigest);
   const result = {
     feature: normalizedFeature,
     mode,
     summary: content,
-    sources: withImports.map((item) => ({ path: item.path, reason: `${mode} candidate` })),
-    branch: context.branch
+    sources: withImports.map((item) => ({ path: item.path, reason: `${mode} candidate`, blobSha: item.blobSha })),
+    branch: context.branch,
+    basis
   };
-  skillBlueprintCache.set(cacheKey, result);
-  return withTiming(result, timing);
+  const record = cacheRecord("blueprint", result, basis);
+  if (canCacheResult(timing)) {
+    skillBlueprintCache.set(cacheKey, record);
+    if (persistResults) await persistentSet(persistentSkillBlueprintKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest), record);
+  }
+  return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
 export async function explainFile(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<FileExplanation> {
   const timing = createTiming();
   if (!repo.path) throw new Error("The current page is not a GitHub file page.");
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, !settings.githubToken));
-  const cacheKey = fileExplanationCacheKey(repo, repo.branch || context.branch, repo.path);
+  const persistResults = canUseTrustedPersistentCache(gh, settings);
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const currentFile = context.files.find((file) => file.type === "blob" && file.path === repo.path) ?? { path: repo.path, type: "blob" as const };
+  const resultInputDigest = analysisInputDigest("file", settings, context, [currentFile], repo.path);
+  const cacheKey = fileExplanationCacheKey(repo, context.branch, currentFile.sha || context.snapshot.treeSha, repo.path, resultInputDigest);
   const cached = fileExplanationCache.get(cacheKey);
-  if (cached) return withTiming(cached, timing, { cacheHit: true });
+  if (cached && isUsableCacheRecord<FileExplanation>(cached, "file", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
+  if (cached) fileExplanationCache.delete(cacheKey);
+  const persisted = persistResults
+    ? await persistentRead<CacheRecord<FileExplanation>>(persistentFileExplanationKey(repo, context.branch, currentFile.sha || context.snapshot.treeSha, repo.path, resultInputDigest))
+    : { hit: false };
+  if (persisted.hit && isUsableCacheRecord<FileExplanation>(persisted.value, "file", context.snapshot, resultInputDigest)) {
+    fileExplanationCache.set(cacheKey, persisted.value);
+    return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
+  }
 
-  const content = await loadFileCached(gh, repo, repo.branch || context.branch, repo.path, timing, !settings.githubToken);
+  const content = await loadFileCached(gh, repo, context.branch, context.snapshot.headSha, currentFile, timing, persistResults);
   const imports = extractImports(content);
   const structuralContext = buildStructuralContext(context, [{ path: repo.path, content, imports }]);
 
@@ -306,47 +368,79 @@ ${truncate(content, 18000)}`
     }
   ], options);
 
-  const result = { path: repo.path, summary, sources: [{ path: repo.path }], branch: repo.branch || context.branch };
-  fileExplanationCache.set(cacheKey, result);
-  return withTiming(result, timing);
+  const basis = analysisBasis(context, [{ path: repo.path, content, imports, blobSha: currentFile.sha, size: currentFile.size }], resultInputDigest);
+  const result = { path: repo.path, summary, sources: [{ path: repo.path, blobSha: currentFile.sha }], branch: context.branch, basis };
+  const record = cacheRecord("file", result, basis);
+  fileExplanationCache.set(cacheKey, record);
+  if (persistResults) await persistentSet(persistentFileExplanationKey(repo, context.branch, currentFile.sha || context.snapshot.treeSha, repo.path, resultInputDigest), record);
+  return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
-export async function answerQuestion(repo: RepoRef, settings: Settings, question: string, context?: string, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
+export async function answerQuestion(
+  repo: RepoRef,
+  settings: Settings,
+  question: string,
+  context?: string,
+  options: AnalysisRunOptions = {},
+  contextBasis?: AnalysisBasis
+): Promise<ProjectOverview> {
   const normalizedQuestion = validateTextInput(question, "追问", MAX_QUESTION_LENGTH);
   const timing = createTiming();
-  if (context && context.trim().length > 500 && !needsSourceLookup(normalizedQuestion)) {
-    const cacheKey = questionCacheKey(repo, "context", normalizedQuestion, context);
-    const cached = questionCache.get(cacheKey);
-    if (cached) return withTiming(cached, timing, { cacheHit: true });
-
-    const content = await runModel(timing, settings, [
-      systemPrompt(GENERIC_CONTEXT_PROFILE),
-      {
-        role: "user",
-        content: `The user is asking a follow-up question based on CodePath's cached repository guide.
+  let validatedContext = "";
+  let gh: SourceClient | undefined;
+  if (context && context.trim().length > 500 && contextBasis) {
+    assertCurrentAnalysisBasis(contextBasis);
+    gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+    const { snapshot } = await resolveRepoSnapshot(gh, repo, timing);
+    const status = cacheStatusFor(contextBasis.snapshot, snapshot);
+    if (status === "stale") {
+      throw new Error("旧分析上下文已过期，请重新分析项目后再追问。");
+    }
+    if (status === "unchecked") {
+      throw new Error("旧分析上下文无法校验，请重新分析项目后再追问。");
+    }
+    validatedContext = context;
+    if (!needsSourceLookup(normalizedQuestion)) {
+      const content = await runModel(timing, settings, [
+        systemPrompt(GENERIC_CONTEXT_PROFILE),
+        {
+          role: "user",
+          content: `The user is asking a follow-up question based on CodePath's cached repository guide.
 Answer from the previous context first. If the previous context is not enough, say what is missing and suggest which feature/file analysis to run next.
 Do not invent files.
 
 Repository: ${repo.owner}/${repo.repo}
 
 Previous context:
-${truncate(context, 12000)}
+${truncate(validatedContext, 12000)}
 
 User question:
 ${normalizedQuestion}`
-      }
-    ], options);
+        }
+      ], options);
 
-    const result = { summary: content, sources: [] };
-    questionCache.set(cacheKey, result);
-    return withTiming(result, timing);
+      const result = { summary: content, sources: [], branch: contextBasis.snapshot.refName, basis: contextBasis };
+      return withTiming(result, timing, {
+        ...snapshotTiming(contextBasis.snapshot, status),
+        lastValidatedAt: new Date().toISOString()
+      });
+    }
   }
 
-  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
-  const repoContext = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, !settings.githubToken));
-  const cacheKey = questionCacheKey(repo, repoContext.branch, normalizedQuestion, context ?? "");
-  const cached = questionCache.get(cacheKey);
-  if (cached) return withTiming(cached, timing, { cacheHit: true });
+  gh ??= await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+  const persistResults = canUseTrustedPersistentCache(gh, settings);
+  const repoContext = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  if (context && contextBasis && !validatedContext) {
+    assertCurrentAnalysisBasis(contextBasis);
+    const status = cacheStatusFor(contextBasis.snapshot, repoContext.snapshot);
+    if (status === "stale") {
+      throw new Error("旧分析上下文已过期，请重新分析项目后再追问。");
+    }
+    if (status === "unchecked") {
+      throw new Error("旧分析上下文无法校验，请重新分析项目后再追问。");
+    }
+    validatedContext = context;
+  }
 
   const keywords = normalizedQuestion
     .toLowerCase()
@@ -355,7 +449,21 @@ ${normalizedQuestion}`
     .slice(0, 14);
   const candidates = scoreFeatureFiles(repoContext.usefulFiles, keywords, repoContext.profile).slice(0, 14);
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(repoContext.usefulFiles, repoContext.profile).slice(0, 14);
-  const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, selected, 22000, timing, !settings.githubToken);
+  const contextForPrompt = validatedContext || "";
+  const resultInputDigest = analysisInputDigest("question", settings, repoContext, selected, `${normalizedQuestion}:${contextForPrompt}`);
+  const cacheKey = questionCacheKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest);
+  const cached = questionCache.get(cacheKey);
+  if (cached && isUsableCacheRecord<ProjectOverview>(cached, "question", repoContext.snapshot, resultInputDigest)) return cachedResult(cached, repoContext.snapshot, timing);
+  if (cached) questionCache.delete(cacheKey);
+  const persisted = persistResults
+    ? await persistentRead<CacheRecord<ProjectOverview>>(persistentQuestionKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest))
+    : { hit: false };
+  if (persisted.hit && isUsableCacheRecord<ProjectOverview>(persisted.value, "question", repoContext.snapshot, resultInputDigest)) {
+    questionCache.set(cacheKey, persisted.value);
+    return cachedResult(persisted.value, repoContext.snapshot, timing, { persistentCacheHit: true });
+  }
+
+  const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, repoContext.snapshot.headSha, selected, 22000, timing, persistResults);
   const structuralContext = buildStructuralContext(repoContext, snippets);
 
   const content = await runModel(timing, settings, [
@@ -372,7 +480,7 @@ Structural context:
 ${structuralContext}
 
 Previous context:
-${context ? truncate(context, 9000) : "None"}
+${contextForPrompt ? truncate(contextForPrompt, 9000) : "None"}
 
 User question:
 ${normalizedQuestion}
@@ -382,9 +490,20 @@ ${formatSnippets(snippets)}`
     }
   ], options);
 
-  const result = { summary: content, sources: snippets.map((item) => ({ path: item.path })), branch: repoContext.branch };
-  questionCache.set(cacheKey, result);
-  return withTiming(result, timing);
+  const basis = analysisBasis(repoContext, snippets, resultInputDigest);
+  const result = { summary: content, sources: snippets.map((item) => ({ path: item.path, blobSha: item.blobSha })), branch: repoContext.branch, basis };
+  const record = cacheRecord("question", result, basis);
+  if (canCacheResult(timing)) {
+    questionCache.set(cacheKey, record);
+    if (persistResults) await persistentSet(persistentQuestionKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest), record);
+  }
+  return withTiming(result, timing, snapshotTiming(repoContext.snapshot, statusForCurrentSnapshot(repoContext.snapshot)));
+}
+
+function assertCurrentAnalysisBasis(basis: AnalysisBasis) {
+  if (basis.promptVersion !== PROMPT_VERSION || basis.analyzerVersion !== ANALYZER_VERSION) {
+    throw new Error("旧分析上下文版本已过期，请重新分析项目后再追问。");
+  }
 }
 
 export async function generateSuggestedQuestions(
@@ -440,7 +559,9 @@ export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef
     return { scope, memoryCleared: false, persistentKeysCleared: 0 };
   }
   clearMemoryCaches(repo ? `${repo.owner}/${repo.repo}@` : "");
-  const persistentKeysCleared = await persistentClear(repo ? persistentRepoPrefix(repo) : PERSISTENT_CACHE_PREFIX);
+  const persistentKeysCleared = await persistentClearMany(
+    repo ? [persistentRepoPrefix(repo), persistentRepoV2Prefix(repo)] : [PERSISTENT_CACHE_PREFIX, PERSISTENT_CACHE_V2_PREFIX]
+  );
   return { scope, memoryCleared: true, persistentKeysCleared };
 }
 
@@ -452,11 +573,11 @@ export async function getAnalysisCacheStats(repo?: RepoRef): Promise<CacheStats>
 
   try {
     const items = await storageGet(storage, null);
-    const keys = Object.keys(items).filter((key) => key.startsWith(PERSISTENT_CACHE_PREFIX));
-    const repoPrefix = repo ? persistentRepoPrefix(repo) : "";
+    const keys = Object.keys(items).filter(isPersistentCacheKey);
+    const repoPrefixes = repo ? [persistentRepoPrefix(repo), persistentRepoV2Prefix(repo)] : [];
     const repositories = groupPersistentCacheKeys(keys);
     return {
-      currentRepoPersistentKeys: repoPrefix ? keys.filter((key) => key.startsWith(repoPrefix)).length : 0,
+      currentRepoPersistentKeys: repoPrefixes.length > 0 ? keys.filter((key) => repoPrefixes.some((prefix) => key.startsWith(prefix))).length : 0,
       allPersistentKeys: keys.length,
       repositories
     };
@@ -467,12 +588,12 @@ export async function getAnalysisCacheStats(repo?: RepoRef): Promise<CacheStats>
 
 export async function deletePersistentCacheEntry(key: string): Promise<CacheDeleteResult> {
   const storage = getChromeStorage();
-  if (!storage || !key.startsWith(PERSISTENT_CACHE_PREFIX)) {
+  if (!storage || !isPersistentCacheKey(key)) {
     return { target: "entry", memoryCleared: false, persistentKeysCleared: 0 };
   }
 
   const entry = parsePersistentCacheKey(key);
-  if (entry) clearMemoryCaches(`${entry.owner}/${entry.repo}@${entry.branch}`);
+  if (entry) clearMemoryCaches(`${entry.owner}/${entry.repo}@${entry.branch}:`);
   const existing = await storageGet(storage, key);
   await storageRemove(storage, [key]);
   return { target: "entry", memoryCleared: Boolean(entry), persistentKeysCleared: Object.prototype.hasOwnProperty.call(existing, key) ? 1 : 0 };
@@ -484,8 +605,8 @@ export async function deletePersistentCacheRepo(repoKey: string): Promise<CacheD
     return { target: "repo", memoryCleared: false, persistentKeysCleared: 0 };
   }
 
-  clearMemoryCaches(repoKey);
-  const persistentKeysCleared = await persistentClear(`${PERSISTENT_CACHE_PREFIX}${repoKey}:`);
+  clearMemoryCaches(`${repoKey}:`);
+  const persistentKeysCleared = await persistentClearMany([`${PERSISTENT_CACHE_PREFIX}${repoKey}:`, `${PERSISTENT_CACHE_V2_PREFIX}${repoKey}:`]);
   return { target: "repo", memoryCleared: true, persistentKeysCleared };
 }
 
@@ -545,44 +666,69 @@ async function createSourceClient(repo: RepoRef, settings: Settings): Promise<So
     if (!message.includes("403") && !message.toLowerCase().includes("rate limit")) throw error;
     const zipClient = new ZipGithubClient(repo.owner, repo.repo, repo.branch);
     return {
+      kind: zipClient.kind,
       getRepo: () => zipClient.getRepo(),
-      getTree: () => zipClient.getTree(),
-      getFile: (_owner, _repo, path) => zipClient.getFile(path)
+      getBranchSnapshot: (_owner, _repo, branch) => zipClient.getBranchSnapshot(repo.owner, repo.repo, branch),
+      getTree: (_owner, _repo, branch) => zipClient.getTree(repo.owner, repo.repo, branch),
+      getFile: (_owner, _repo, path, ref) => zipClient.getFile(repo.owner, repo.repo, path, ref)
     };
   }
 }
 
-async function loadTree(gh: SourceClient, repo: RepoRef, timing?: TimingCollector): Promise<{ branch: string; files: TreeFile[] }> {
+async function resolveRepoSnapshot(gh: SourceClient, repo: RepoRef, timing?: TimingCollector): Promise<{ branch: string; snapshot: RepoSnapshot }> {
   const info = await measure(timing, "githubMs", () => gh.getRepo(repo.owner, repo.repo));
   const branch = repo.branch || info.default_branch;
-  const files = await measure(timing, "treeMs", () => gh.getTree(repo.owner, repo.repo, branch));
-  return { branch, files };
+  let snapshot: RepoSnapshot;
+  try {
+    snapshot = await measure(timing, "githubMs", () => gh.getBranchSnapshot(repo.owner, repo.repo, branch));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`缓存无法校验，请重新连接 GitHub 或清理缓存后重试。${message}`);
+  }
+  if (timing) {
+    timing.timing.sourceClient ??= gh.kind;
+    timing.timing.headSha ??= snapshot.headSha;
+    timing.timing.treeSha ??= snapshot.treeSha;
+    timing.timing.capturedAt ??= snapshot.capturedAt;
+    timing.timing.lastValidatedAt = new Date().toISOString();
+    timing.timing.cacheStatus ??= gh.kind === "github-zip" ? "unchecked" : "fresh";
+  }
+  return { branch, snapshot };
 }
 
 async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: TimingCollector, persistContext = true): Promise<RepoAnalysisContext> {
-  const provisionalKey = repoCacheKey(repo, repo.branch || "default");
-  const provisional = repoContextCache.get(provisionalKey);
-  if (provisional) return provisional;
-
-  const { branch, files } = await loadTree(gh, repo, timing);
-  const key = repoCacheKey(repo, branch);
+  const { branch, snapshot } = await resolveRepoSnapshot(gh, repo, timing);
+  const trustedCache = persistContext && gh.kind === "github-api";
+  const key = repoContextCacheKey(repo, branch, snapshot.treeSha);
   const cached = repoContextCache.get(key);
-  if (cached) return cached;
-
-  const persisted = persistContext ? await persistentGet<RepoAnalysisContext>(persistentTreeKey(repo, branch)) : undefined;
-  if (persisted) {
-    repoContextCache.set(key, persisted);
-    if (!repo.branch) repoContextCache.set(provisionalKey, persisted);
-    return persisted;
+  if (cached) {
+    if (timing) timing.timing.sourceCacheHit ??= true;
+    return { ...cached, snapshot };
   }
 
+  const persisted = trustedCache ? await persistentRead<CacheRecord<RepoAnalysisContext>>(persistentTreeKey(repo, branch, snapshot.treeSha)) : { hit: false };
+  if (persisted.hit && isUsableCacheRecord<RepoAnalysisContext>(persisted.value, "tree", snapshot, `tree:${snapshot.treeSha}`)) {
+    if (timing) {
+      timing.timing.sourceCacheHit ??= true;
+      timing.timing.persistentCacheHit ??= true;
+    }
+    const context = { ...persisted.value.value, branch, snapshot };
+    repoContextCache.set(key, context);
+    return context;
+  }
+
+  const files = await measure(timing, "treeMs", () => gh.getTree(repo.owner, repo.repo, snapshot.treeSha));
   const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
   const profile = detectProjectProfile(usefulFiles);
   const treeSummary = summarizeTree(usefulFiles);
-  const context = { branch, files, usefulFiles, profile, treeSummary };
+  const context = { branch, snapshot, files, usefulFiles, profile, treeSummary };
   repoContextCache.set(key, context);
-  if (!repo.branch) repoContextCache.set(provisionalKey, context);
-  if (persistContext) await persistentSet(persistentTreeKey(repo, branch), context);
+  if (trustedCache) {
+    await persistentSet(
+      persistentTreeKey(repo, branch, snapshot.treeSha),
+      cacheRecord("tree", context, analysisBasis(context, [], `tree:${snapshot.treeSha}`))
+    );
+  }
   return context;
 }
 
@@ -590,6 +736,7 @@ async function loadSnippetsCached(
   gh: SourceClient,
   repo: RepoRef,
   branch: string,
+  fetchRef: string,
   files: TreeFile[],
   budget: number,
   timing?: TimingCollector,
@@ -601,12 +748,13 @@ async function loadSnippetsCached(
     if (used >= budget) break;
     if ((file.size ?? 0) > 180_000) continue;
     try {
-      const content = await loadFileCached(gh, repo, branch, file.path, timing, persistFiles);
+      const content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles);
       const remaining = budget - used;
       const clipped = truncate(content, Math.min(7000, remaining));
       used += clipped.length;
-      snippets.push({ path: file.path, content: clipped });
+      snippets.push({ path: file.path, content: clipped, blobSha: file.sha, size: file.size });
     } catch {
+      markSourceIncomplete(timing, file.path);
       // Skip files GitHub refuses or cannot decode; the rest of the context is still useful.
     }
   }
@@ -617,6 +765,7 @@ async function loadFullSourceSnippets(
   gh: SourceClient,
   repo: RepoRef,
   branch: string,
+  fetchRef: string,
   files: TreeFile[],
   timing?: TimingCollector,
   persistFiles = true
@@ -635,7 +784,7 @@ async function loadFullSourceSnippets(
   for (const file of sorted) {
     let content: string;
     try {
-      content = await loadFileCached(gh, repo, branch, file.path, timing, persistFiles);
+      content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles);
     } catch (error) {
       throw new Error(`全部源码分析读取失败：${file.path}。${error instanceof Error ? error.message : String(error)}`);
     }
@@ -647,7 +796,7 @@ async function loadFullSourceSnippets(
       throw fullSourceSizeError(`可用源码总长度超过 ${FULL_SOURCE_TOTAL_LIMIT}。`);
     }
     used += content.length;
-    snippets.push({ path: file.path, content });
+    snippets.push({ path: file.path, content, blobSha: file.sha, size: file.size });
   }
   return snippets;
 }
@@ -656,21 +805,52 @@ function fullSourceSizeError(detail: string): Error {
   return new Error(`全部源码分析超过限制：${detail}请改用“根据当前分析情况”，或使用功能路径/当前文件分析缩小范围。`);
 }
 
-async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, path: string, timing?: TimingCollector, persistFile = true): Promise<string> {
-  const key = fileCacheKey(repo, branch, path);
+function markSourceIncomplete(timing: TimingCollector | undefined, path: string) {
+  if (!timing) return;
+  timing.timing.sourceIncomplete = true;
+  timing.timing.skippedSourcePaths = [...(timing.timing.skippedSourcePaths ?? []), path];
+}
+
+function canCacheResult(timing: TimingCollector): boolean {
+  return timing.timing.sourceIncomplete !== true;
+}
+
+async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, fetchRef: string, file: TreeFile, timing?: TimingCollector, persistFile = true): Promise<string> {
+  const path = file.path;
+  const key = fileCacheKey(repo, branch, file, fetchRef);
+  const trustedCache = persistFile && gh.kind === "github-api";
   if (persistFile) {
     const cached = snippetCache.get(key);
-    if (cached !== undefined) return cached;
-    const persisted = await persistentGet<string>(persistentFileKey(repo, branch, path));
-    if (persisted !== undefined) {
-      snippetCache.set(key, persisted);
-      return persisted;
+    if (cached !== undefined) {
+      if (timing) timing.timing.sourceCacheHit ??= true;
+      return cached;
+    }
+    const persisted = trustedCache ? await persistentRead<CacheRecord<string>>(persistentFileKey(repo, branch, file, fetchRef)) : { hit: false };
+    if (persisted.hit && isUsableFileContentRecord(persisted.value, repo, branch, file, fetchRef)) {
+      if (timing) {
+        timing.timing.sourceCacheHit ??= true;
+        timing.timing.persistentCacheHit ??= true;
+      }
+      snippetCache.set(key, persisted.value.value);
+      return persisted.value.value;
     }
   }
-  const content = await measure(timing, "fileMs", () => gh.getFile(repo.owner, repo.repo, path, branch));
-  if (persistFile) {
+  const content = await measure(timing, "fileMs", () => gh.getFile(repo.owner, repo.repo, path, fetchRef));
+  if (trustedCache) {
     snippetCache.set(key, content);
-    if (content.length <= 180_000) await persistentSet(persistentFileKey(repo, branch, path), content);
+    if (content.length <= 180_000) {
+      const snapshot = repoSnapshotFromFile(repo, branch, file, fetchRef);
+      await persistentSet(
+        persistentFileKey(repo, branch, file, fetchRef),
+        cacheRecord("file", content, {
+          snapshot,
+          files: [{ path, blobSha: file.sha, size: file.size }],
+          inputDigest: fileContentInputDigest(file, fetchRef),
+          promptVersion: PROMPT_VERSION,
+          analyzerVersion: ANALYZER_VERSION
+        })
+      );
+    }
   }
   return content;
 }
@@ -679,44 +859,283 @@ function repoCacheKey(repo: RepoRef, branch: string): string {
   return `${repo.owner}/${repo.repo}@${branch}`;
 }
 
-function overviewCacheKey(repo: RepoRef, branch: string, mode: ProjectAnalysisMode = "focused"): string {
-  return mode === "focused" ? `${repoCacheKey(repo, branch)}:overview` : `${repoCacheKey(repo, branch)}:overview:${mode}`;
+function repoContextCacheKey(repo: RepoRef, branch: string, treeSha: string): string {
+  return `${repoCacheKey(repo, branch)}:tree:${treeSha}`;
 }
 
-function featureCacheKey(repo: RepoRef, branch: string, feature: string): string {
-  return `${repoCacheKey(repo, branch)}:feature:${normalizeCacheText(feature)}`;
+function overviewCacheKey(repo: RepoRef, branch: string, treeSha: string, mode: ProjectAnalysisMode, inputDigest: string): string {
+  return `${repoCacheKey(repo, branch)}:overview:${treeSha}:${mode}:${inputDigest}`;
 }
 
-function fileExplanationCacheKey(repo: RepoRef, branch: string, path: string): string {
-  return `${repoCacheKey(repo, branch)}:explain:${path}`;
+function featureCacheKey(repo: RepoRef, branch: string, treeSha: string, feature: string, inputDigest: string): string {
+  return `${repoCacheKey(repo, branch)}:feature:${treeSha}:${normalizeCacheText(feature)}:${inputDigest}`;
 }
 
-function questionCacheKey(repo: RepoRef, branch: string, question: string, context: string): string {
-  return `${repoCacheKey(repo, branch)}:question:${normalizeCacheText(question)}:${stringHash(context.slice(0, 16000))}`;
+function fileExplanationCacheKey(repo: RepoRef, branch: string, blobShaOrTreeSha: string, path: string, inputDigest: string): string {
+  return `${repoCacheKey(repo, branch)}:explain:${blobShaOrTreeSha}:${path}:${inputDigest}`;
 }
 
-function skillBlueprintCacheKey(repo: RepoRef, branch: string, feature: string, mode: BlueprintMode): string {
-  return `${repoCacheKey(repo, branch)}:blueprint:${mode}:${normalizeCacheText(feature)}`;
+function questionCacheKey(repo: RepoRef, branch: string, treeSha: string, question: string, context: string, inputDigest: string): string {
+  return `${repoCacheKey(repo, branch)}:question:${treeSha}:${normalizeCacheText(question)}:${stringHash(context.slice(0, 16000))}:${inputDigest}`;
 }
 
-function fileCacheKey(repo: RepoRef, branch: string, path: string): string {
-  return `${repoCacheKey(repo, branch)}:${path}`;
+function skillBlueprintCacheKey(repo: RepoRef, branch: string, treeSha: string, feature: string, mode: BlueprintMode, inputDigest: string): string {
+  return `${repoCacheKey(repo, branch)}:blueprint:${treeSha}:${mode}:${normalizeCacheText(feature)}:${inputDigest}`;
+}
+
+function fileCacheKey(repo: RepoRef, branch: string, file: TreeFile, identityScope = ""): string {
+  return `${repoCacheKey(repo, branch)}:file:${fileIdentity(file, identityScope)}:${file.path}`;
+}
+
+function fileIdentity(file: TreeFile, identityScope = ""): string {
+  return file.sha || stringHash(`${file.path}:${file.size ?? ""}:${identityScope}`);
 }
 
 function persistentRepoPrefix(repo: RepoRef): string {
   return `${PERSISTENT_CACHE_PREFIX}${repo.owner}/${repo.repo}@`;
 }
 
-function persistentTreeKey(repo: RepoRef, branch: string): string {
-  return `${PERSISTENT_CACHE_PREFIX}${repoCacheKey(repo, branch)}:tree`;
+function persistentRepoV2Prefix(repo: RepoRef): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${repo.owner}/${repo.repo}@`;
 }
 
-function persistentFileKey(repo: RepoRef, branch: string, path: string): string {
-  return `${PERSISTENT_CACHE_PREFIX}${fileCacheKey(repo, branch, path)}`;
+function persistentTreeKey(repo: RepoRef, branch: string, treeSha: string): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${repoCacheKey(repo, branch)}:tree:${treeSha}`;
 }
 
-function persistentOverviewKey(repo: RepoRef, branch: string, mode: ProjectAnalysisMode = "focused"): string {
-  return `${PERSISTENT_CACHE_PREFIX}${overviewCacheKey(repo, branch, mode)}`;
+function persistentFileKey(repo: RepoRef, branch: string, file: TreeFile, identityScope = ""): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${fileCacheKey(repo, branch, file, identityScope)}`;
+}
+
+function persistentOverviewKey(repo: RepoRef, branch: string, treeSha: string, mode: ProjectAnalysisMode, inputDigest: string): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${overviewCacheKey(repo, branch, treeSha, mode, inputDigest)}`;
+}
+
+function persistentFeatureKey(repo: RepoRef, branch: string, treeSha: string, feature: string, inputDigest: string): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${featureCacheKey(repo, branch, treeSha, feature, inputDigest)}`;
+}
+
+function persistentFileExplanationKey(repo: RepoRef, branch: string, blobShaOrTreeSha: string, path: string, inputDigest: string): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${fileExplanationCacheKey(repo, branch, blobShaOrTreeSha, path, inputDigest)}`;
+}
+
+function persistentQuestionKey(repo: RepoRef, branch: string, treeSha: string, question: string, context: string, inputDigest: string): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${questionCacheKey(repo, branch, treeSha, question, context, inputDigest)}`;
+}
+
+function persistentSkillBlueprintKey(repo: RepoRef, branch: string, treeSha: string, feature: string, mode: BlueprintMode, inputDigest: string): string {
+  return `${PERSISTENT_CACHE_V2_PREFIX}${skillBlueprintCacheKey(repo, branch, treeSha, feature, mode, inputDigest)}`;
+}
+
+function canUseTrustedPersistentCache(gh: SourceClient, settings: Settings): boolean {
+  return gh.kind === "github-api" && !settings.githubToken;
+}
+
+function analysisInputDigest(kind: CacheRecordKind, settings: Settings, context: RepoAnalysisContext, files: TreeFile[], extra: unknown): string {
+  return stringHash(
+    JSON.stringify({
+      kind,
+      extra,
+      treeSha: context.snapshot.treeSha,
+      files: files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path)),
+      model: modelFingerprint(settings),
+      promptVersion: PROMPT_VERSION,
+      analyzerVersion: ANALYZER_VERSION
+    })
+  );
+}
+
+function modelFingerprint(settings: Settings): string {
+  return stringHash(
+    JSON.stringify({
+      provider: settings.provider,
+      baseUrl: settings.baseUrl.replace(/\/+$/, ""),
+      model: settings.model,
+      maxOutputTokens: settings.maxOutputTokens ?? null
+    })
+  );
+}
+
+function createPromptVersion(): string {
+  return `${ANALYZER_VERSION}:${stringHash(
+    [
+      analyzeProject.toString(),
+      analyzeFeature.toString(),
+      generateSkillBlueprint.toString(),
+      explainFile.toString(),
+      answerQuestion.toString(),
+      generateSuggestedQuestions.toString(),
+      FEATURE_KEYWORDS_FINGERPRINT,
+      FILE_RULES_FINGERPRINT,
+      IMPORTS_FINGERPRINT,
+      expandFeatureKeywords.toString(),
+      classifyPath.toString(),
+      isLikelyImportant.toString(),
+      isUsefulPath.toString(),
+      assertCurrentAnalysisBasis.toString(),
+      detectProjectProfile.toString(),
+      pickImportantFiles.toString(),
+      profilePathScore.toString(),
+      scoreFeatureFiles.toString(),
+      featureIntentScore.toString(),
+      summarizeTree.toString(),
+      buildStructuralContext.toString(),
+      pickEntryCandidates.toString(),
+      summarizeImportantDirs.toString(),
+      buildImportRelations.toString(),
+      formatImportRelation.toString(),
+      resolveImportPath.toString(),
+      normalizePath.toString(),
+      formatSnippets.toString(),
+      suggestionKindLabel.toString(),
+      parseSuggestedQuestions.toString(),
+      parseSuggestionJson.toString(),
+      parseSuggestionLines.toString(),
+      cleanSuggestionQuestion.toString(),
+      trimToShortQuestion.toString(),
+      stripMarkdownFence.toString(),
+      extractJsonArray.toString(),
+      uniqueSuggestionQuestions.toString(),
+      questionReferencesAllowedSources.toString(),
+      extractReferencedPaths.toString(),
+      validateTextInput.toString(),
+      systemPrompt.toString(),
+      projectPrompt.toString(),
+      fullSourceProjectPrompt.toString(),
+      skillBlueprintPrompt.toString(),
+      truncate.toString(),
+      uniqueByPath.toString(),
+      extractImports.toString()
+    ].join("\n---\n")
+  )}`;
+}
+
+function analysisBasis(context: RepoAnalysisContext, snippets: FileSnippet[], inputDigest: string): AnalysisBasis {
+  return {
+    snapshot: context.snapshot,
+    files: snippets.map((snippet) => ({ path: snippet.path, blobSha: snippet.blobSha, size: snippet.size })),
+    inputDigest,
+    promptVersion: PROMPT_VERSION,
+    analyzerVersion: ANALYZER_VERSION
+  };
+}
+
+function cacheRecord<T>(kind: CacheRecordKind, value: T, basis: AnalysisBasis): CacheRecord<T> {
+  return {
+    schemaVersion: CACHE_SCHEMA_VERSION,
+    kind,
+    value,
+    basis
+  };
+}
+
+function isCacheRecord<T>(value: unknown, kind: CacheRecordKind): value is CacheRecord<T> {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<CacheRecord<T>>;
+  return record.schemaVersion === CACHE_SCHEMA_VERSION && record.kind === kind && isRepoSnapshot(record.basis?.snapshot) && "value" in record;
+}
+
+function isUsableCacheRecord<T>(value: unknown, kind: CacheRecordKind, currentSnapshot: RepoSnapshot, inputDigest: string): value is CacheRecord<T> {
+  if (!isCacheRecord<T>(value, kind)) return false;
+  if (!sameSnapshotScope(value.basis.snapshot, currentSnapshot)) return false;
+  if (value.basis.inputDigest !== inputDigest) return false;
+  if (value.basis.promptVersion !== PROMPT_VERSION) return false;
+  if (value.basis.analyzerVersion !== ANALYZER_VERSION) return false;
+  const status = cacheStatusFor(value.basis.snapshot, currentSnapshot);
+  return status === "fresh" || status === "same-tree-new-head";
+}
+
+function isUsableFileContentRecord(value: unknown, repo: RepoRef, branch: string, file: TreeFile, identityScope: string): value is CacheRecord<string> {
+  if (!isCacheRecord<string>(value, "file")) return false;
+  if (value.basis.snapshot.owner !== repo.owner || value.basis.snapshot.repo !== repo.repo || value.basis.snapshot.refName !== branch) return false;
+  const basisFile = value.basis.files[0];
+  if (!basisFile || basisFile.path !== file.path) return false;
+  if ((basisFile.blobSha ?? "") !== (file.sha ?? "")) return false;
+  if ((basisFile.size ?? 0) !== (file.size ?? 0)) return false;
+  if (value.basis.inputDigest !== fileContentInputDigest(file, identityScope)) return false;
+  if (value.basis.promptVersion !== PROMPT_VERSION) return false;
+  if (value.basis.analyzerVersion !== ANALYZER_VERSION) return false;
+  return value.basis.snapshot.treeSha === fileIdentity(file, identityScope);
+}
+
+function isRepoSnapshot(value: unknown): value is RepoSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Partial<RepoSnapshot>;
+  return (
+    typeof snapshot.owner === "string" &&
+    typeof snapshot.repo === "string" &&
+    typeof snapshot.refName === "string" &&
+    typeof snapshot.headSha === "string" &&
+    typeof snapshot.treeSha === "string" &&
+    typeof snapshot.capturedAt === "string" &&
+    (snapshot.lastValidatedAt === undefined || typeof snapshot.lastValidatedAt === "string")
+  );
+}
+
+function sameSnapshotScope(left: RepoSnapshot, right: RepoSnapshot): boolean {
+  return left.owner === right.owner && left.repo === right.repo && left.refName === right.refName;
+}
+
+function fileContentInputDigest(file: TreeFile, identityScope: string): string {
+  return file.sha || fileIdentity(file, identityScope);
+}
+
+function cachedResult<T extends object>(
+  record: CacheRecord<T>,
+  currentSnapshot: RepoSnapshot,
+  collector: TimingCollector,
+  patch: Partial<TimingBreakdown> = {}
+): T & { timing: TimingBreakdown } {
+  const status = cacheStatusFor(record.basis.snapshot, currentSnapshot);
+  if (status === "stale" || status === "unchecked") {
+    throw new Error("缓存无法校验，请重新连接 GitHub 或清理缓存后重试。");
+  }
+  return withTiming(
+    { ...record.value, basis: record.basis },
+    collector,
+    {
+      cacheHit: true,
+      resultCacheHit: true,
+      ...snapshotTiming(record.basis.snapshot, status),
+      lastValidatedAt: new Date().toISOString(),
+      ...patch
+    }
+  );
+}
+
+function cacheStatusFor(cachedSnapshot: RepoSnapshot, currentSnapshot: RepoSnapshot): CacheStatus {
+  if (cachedSnapshot.headSha.startsWith("unchecked:") || currentSnapshot.headSha.startsWith("unchecked:")) return "unchecked";
+  if (cachedSnapshot.headSha === currentSnapshot.headSha) return "fresh";
+  if (cachedSnapshot.treeSha === currentSnapshot.treeSha) return "same-tree-new-head";
+  return "stale";
+}
+
+function statusForCurrentSnapshot(snapshot: RepoSnapshot): CacheStatus {
+  return snapshot.headSha.startsWith("unchecked:") || snapshot.treeSha.startsWith("unchecked:") ? "unchecked" : "fresh";
+}
+
+function snapshotTiming(snapshot: RepoSnapshot, status: CacheStatus): Partial<TimingBreakdown> {
+  return {
+    cacheStatus: status,
+    headSha: snapshot.headSha,
+    treeSha: snapshot.treeSha,
+    capturedAt: snapshot.capturedAt,
+    lastValidatedAt: snapshot.lastValidatedAt ?? snapshot.capturedAt
+  };
+}
+
+function repoSnapshotFromFile(repo: RepoRef, branch: string, file: TreeFile, identityScope = ""): RepoSnapshot {
+  const capturedAt = new Date().toISOString();
+  const identity = fileIdentity(file, identityScope);
+  return {
+    owner: repo.owner,
+    repo: repo.repo,
+    refName: branch,
+    headSha: identity,
+    treeSha: identity,
+    capturedAt,
+    lastValidatedAt: capturedAt
+  };
 }
 
 function clearMemoryCaches(prefix: string) {
@@ -739,35 +1158,138 @@ function clearMap<T>(map: Map<string, T>, prefix: string) {
   }
 }
 
-async function persistentGet<T>(key: string): Promise<T | undefined> {
+async function persistentRead<T>(key: string): Promise<{ hit: boolean; value?: T }> {
   const storage = getChromeStorage();
-  if (!storage) return undefined;
+  if (!storage) return { hit: false };
   try {
     const items = await storageGet(storage, key);
-    return items[key] as T | undefined;
+    if (!Object.prototype.hasOwnProperty.call(items, key)) return { hit: false };
+    return { hit: true, value: items[key] as T };
   } catch {
-    return undefined;
+    return { hit: false };
   }
 }
 
 async function persistentSet(key: string, value: unknown): Promise<void> {
   const storage = getChromeStorage();
   if (!storage) return;
+  const isV2 = key.startsWith(PERSISTENT_CACHE_V2_PREFIX);
   try {
+    if (isV2) await prunePersistentCache(storage, key, { key, value });
     await storageSet(storage, { [key]: value });
+    if (isV2) await prunePersistentCache(storage, key);
   } catch {
-    // Persistent cache is a best-effort optimization; analysis should still work without it.
+    if (!isV2) return;
+    try {
+      await prunePersistentCache(storage, key, { key, value });
+      await storageSet(storage, { [key]: value });
+      await prunePersistentCache(storage, key);
+    } catch {
+      // Persistent cache is a best-effort optimization; analysis should still work without it.
+    }
   }
 }
 
-async function persistentClear(prefix: string): Promise<number> {
+async function persistentClearMany(prefixes: string[]): Promise<number> {
   const storage = getChromeStorage();
   if (!storage) return 0;
   try {
     const items = await storageGet(storage, null);
-    const keys = Object.keys(items).filter((key) => key.startsWith(prefix));
+    const keys = Object.keys(items).filter((key) => prefixes.some((prefix) => key.startsWith(prefix)));
     if (keys.length > 0) await storageRemove(storage, keys);
     return keys.length;
+  } catch {
+    return 0;
+  }
+}
+
+async function prunePersistentCache(
+  storage: BrowserStorageArea,
+  protectedKey: string,
+  pending?: { key: string; value: unknown }
+): Promise<void> {
+  const items = await storageGet(storage, null);
+  const entries = Object.keys(items)
+    .filter((key) => key.startsWith(PERSISTENT_CACHE_V2_PREFIX))
+    .map((key) => ({
+      key,
+      repoKey: persistentRepoKeyFromCacheKey(key),
+      createdAtMs: pending?.key === key ? persistentCacheTimeMs(pending.value) || persistentCacheTimeMs(items[key]) : persistentCacheTimeMs(items[key]),
+      size: key.length + estimatedStorageBytes(pending?.key === key ? pending.value : items[key])
+    }))
+    .sort((left, right) => left.createdAtMs - right.createdAtMs || left.key.localeCompare(right.key));
+  if (pending && pending.key.startsWith(PERSISTENT_CACHE_V2_PREFIX) && !Object.prototype.hasOwnProperty.call(items, pending.key)) {
+    entries.push({
+      key: pending.key,
+      repoKey: persistentRepoKeyFromCacheKey(pending.key),
+      createdAtMs: persistentCacheTimeMs(pending.value) || Date.now(),
+      size: pending.key.length + estimatedStorageBytes(pending.value)
+    });
+  }
+
+  const now = Date.now();
+  const keysToRemove = new Set(
+    entries
+      .filter((entry) => entry.key !== protectedKey && entry.createdAtMs > 0 && now - entry.createdAtMs > PERSISTENT_CACHE_TTL_MS)
+      .map((entry) => entry.key)
+  );
+
+  const activeEntries = entries.filter((entry) => !keysToRemove.has(entry.key));
+  pruneOverflow(activeEntries, MAX_PERSISTENT_CACHE_ENTRIES, keysToRemove, protectedKey);
+  pruneByteOverflow(activeEntries, MAX_PERSISTENT_CACHE_BYTES, keysToRemove, protectedKey);
+
+  const byRepo = new Map<string, typeof activeEntries>();
+  for (const entry of activeEntries) {
+    if (!entry.repoKey) continue;
+    const group = byRepo.get(entry.repoKey) ?? [];
+    group.push(entry);
+    byRepo.set(entry.repoKey, group);
+  }
+  for (const group of byRepo.values()) {
+    pruneOverflow(group, MAX_PERSISTENT_CACHE_REPO_ENTRIES, keysToRemove, protectedKey);
+    pruneByteOverflow(group, MAX_PERSISTENT_CACHE_REPO_BYTES, keysToRemove, protectedKey);
+  }
+
+  if (keysToRemove.size > 0) await storageRemove(storage, [...keysToRemove]);
+}
+
+function pruneOverflow<T extends { key: string; createdAtMs: number }>(entries: T[], maxEntries: number, keysToRemove: Set<string>, protectedKey: string) {
+  let remaining = entries.filter((entry) => !keysToRemove.has(entry.key)).length;
+  for (const entry of entries) {
+    if (remaining <= maxEntries) break;
+    if (entry.key === protectedKey) continue;
+    keysToRemove.add(entry.key);
+    remaining -= 1;
+  }
+}
+
+function pruneByteOverflow<T extends { key: string; size: number }>(entries: T[], maxBytes: number, keysToRemove: Set<string>, protectedKey: string) {
+  let remainingBytes = entries.filter((entry) => !keysToRemove.has(entry.key)).reduce((total, entry) => total + entry.size, 0);
+  for (const entry of entries) {
+    if (remainingBytes <= maxBytes) break;
+    if (entry.key === protectedKey || keysToRemove.has(entry.key)) continue;
+    keysToRemove.add(entry.key);
+    remainingBytes -= entry.size;
+  }
+}
+
+function persistentRepoKeyFromCacheKey(key: string): string {
+  const entry = parsePersistentCacheKey(key);
+  return entry ? `${entry.owner}/${entry.repo}@${entry.branch}` : "";
+}
+
+function persistentCacheTimeMs(value: unknown): number {
+  if (!value || typeof value !== "object") return 0;
+  const basis = (value as Partial<CacheRecord<unknown>>).basis;
+  const timestamp = basis?.snapshot?.lastValidatedAt || basis?.snapshot?.capturedAt;
+  if (!timestamp) return 0;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function estimatedStorageBytes(value: unknown): number {
+  try {
+    return JSON.stringify(value).length;
   } catch {
     return 0;
   }
@@ -801,8 +1323,13 @@ function groupPersistentCacheKeys(keys: string[]): CacheRepository[] {
 }
 
 function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; branch: string } & CacheEntry) | undefined {
-  if (!key.startsWith(PERSISTENT_CACHE_PREFIX)) return undefined;
-  const rest = key.slice(PERSISTENT_CACHE_PREFIX.length);
+  const prefix = key.startsWith(PERSISTENT_CACHE_V2_PREFIX)
+    ? PERSISTENT_CACHE_V2_PREFIX
+    : key.startsWith(PERSISTENT_CACHE_PREFIX)
+      ? PERSISTENT_CACHE_PREFIX
+      : "";
+  if (!prefix) return undefined;
+  const rest = key.slice(prefix.length);
   const delimiterIndex = rest.indexOf(":");
   if (delimiterIndex < 0) return undefined;
 
@@ -815,22 +1342,69 @@ function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; b
   const owner = repoBranch.slice(0, slashIndex);
   const repo = repoBranch.slice(slashIndex + 1, atIndex);
   const branch = repoBranch.slice(atIndex + 1);
-  const item = parseCacheItemSuffix(key, suffix);
+  const item = prefix === PERSISTENT_CACHE_V2_PREFIX ? parseV2CacheItemSuffix(key, suffix) : parseLegacyCacheItemSuffix(key, suffix);
   return { owner, repo, branch, ...item };
 }
 
-function parseCacheItemSuffix(key: string, suffix: string): CacheEntry {
+function parseLegacyCacheItemSuffix(key: string, suffix: string): CacheEntry {
   if (suffix === "tree") return { key, kind: "tree", label: "tree" };
   if (suffix === "overview") return { key, kind: "overview", label: "overview" };
   if (!suffix.includes(":")) return { key, kind: "file", label: `file: ${suffix}` };
   return { key, kind: "unknown", label: suffix || "unknown" };
 }
 
+function parseV2CacheItemSuffix(key: string, suffix: string): CacheEntry {
+  if (suffix.startsWith("tree:")) {
+    const treeSha = suffix.slice("tree:".length);
+    return { key, kind: "tree", label: `tree: ${shortCacheSha(treeSha)}` };
+  }
+  if (suffix.startsWith("overview:")) {
+    const parts = suffix.split(":");
+    return { key, kind: "overview", label: `overview: ${parts[2] || "focused"} @ ${shortCacheSha(parts[1] || "")}` };
+  }
+  if (suffix.startsWith("file:")) {
+    const rest = suffix.slice("file:".length);
+    const delimiterIndex = rest.indexOf(":");
+    const path = delimiterIndex >= 0 ? rest.slice(delimiterIndex + 1) : rest;
+    return { key, kind: "file", label: `file: ${path}` };
+  }
+  if (suffix.startsWith("explain:")) {
+    const parts = suffix.split(":");
+    return { key, kind: "file", label: `file analysis: ${parts.slice(2, -1).join(":") || "unknown"}` };
+  }
+  if (suffix.startsWith("feature:")) {
+    const parts = suffix.split(":");
+    return { key, kind: "feature", label: `feature: ${parts[2] || "unknown"} @ ${shortCacheSha(parts[1] || "")}` };
+  }
+  if (suffix.startsWith("blueprint:")) {
+    const parts = suffix.split(":");
+    return { key, kind: "blueprint", label: `blueprint: ${parts[2] || "unknown"} ${parts[3] || ""} @ ${shortCacheSha(parts[1] || "")}`.trim() };
+  }
+  if (suffix.startsWith("question:")) {
+    const parts = suffix.split(":");
+    return { key, kind: "question", label: `question: ${parts[2] || "unknown"} @ ${shortCacheSha(parts[1] || "")}` };
+  }
+  return { key, kind: "unknown", label: suffix || "unknown" };
+}
+
+function isPersistentCacheKey(key: string): boolean {
+  return key.startsWith(PERSISTENT_CACHE_PREFIX) || key.startsWith(PERSISTENT_CACHE_V2_PREFIX);
+}
+
+function shortCacheSha(value: string): string {
+  if (!value) return "unknown";
+  if (value.startsWith("unchecked:")) return "unchecked";
+  return value.slice(0, 7);
+}
+
 function cacheEntryRank(entry: CacheEntry): number {
   if (entry.kind === "tree") return 0;
   if (entry.kind === "overview") return 1;
-  if (entry.kind === "file") return 2;
-  return 3;
+  if (entry.kind === "feature") return 2;
+  if (entry.kind === "question") return 3;
+  if (entry.kind === "blueprint") return 4;
+  if (entry.kind === "file") return 5;
+  return 6;
 }
 
 function getChromeStorage(): BrowserStorageArea | undefined {
@@ -873,11 +1447,6 @@ function storageRemove(storage: BrowserStorageArea, keys: string[]): Promise<voi
       else resolve();
     });
   });
-}
-
-function findCachedOverview(repo: RepoRef, mode: ProjectAnalysisMode): ProjectOverview | undefined {
-  if (repo.branch) return overviewCache.get(overviewCacheKey(repo, repo.branch, mode));
-  return undefined;
 }
 
 function normalizeCacheText(value: string): string {

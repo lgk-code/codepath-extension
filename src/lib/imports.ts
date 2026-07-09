@@ -20,3 +20,5 @@ export function extractImports(code: string): string[] {
 function stripJsComments(code: string): string {
   return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
+
+export const IMPORTS_FINGERPRINT = [extractImports.toString(), stripJsComments.toString()].join("\n---\n");

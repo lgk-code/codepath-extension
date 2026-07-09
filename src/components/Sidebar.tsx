@@ -3,6 +3,7 @@ import { BookOpen, ChevronRight, Clipboard, Download, FileCode2, KeyRound, Layer
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
+  AnalysisBasis,
   FeaturePath,
   FileExplanation,
   BlueprintMode,
@@ -84,7 +85,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-06-security-hardening-v1";
+const UI_VERSION = "dev-2026-07-08-cache-freshness-v2";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -345,6 +346,7 @@ export function Sidebar() {
   function ask(text = question) {
     const trimmed = text.trim();
     if (!repo || !trimmed || loading) return;
+    const askContext = buildAskContext(overview, featurePath, fileExplanation, answers);
 
     if (tabRef.current !== "overview") switchTab("overview");
     run(
@@ -355,7 +357,8 @@ export function Sidebar() {
           type: "answer-question",
           repo,
           question: trimmed,
-          context: buildAskContext(overview, featurePath, fileExplanation, answers)
+          context: askContext.basis ? askContext.text : undefined,
+          contextBasis: askContext.basis
         }, onDelta, (reason) => markStreamFallback("ask", reason)),
       (answer, elapsedMs) => {
         setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
@@ -1210,11 +1213,12 @@ function SuggestionList(props: {
 }
 
 function MarkdownBlock(props: { repo: RepoRef | null; branch?: string; text: string; sources: string[]; timing?: TimingBreakdown }) {
+  const sourceRef = props.timing?.headSha && !props.timing.headSha.startsWith("unchecked:") ? props.timing.headSha : props.branch;
   return (
     <div className="cp-result">
-      {props.timing && <TimingMeta timing={props.timing} />}
+      {props.timing && <TimingMeta timing={props.timing} repo={props.repo} branch={props.branch} />}
       <div className="cp-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeLinkCodePaths(props.repo)]}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeLinkCodePaths(props.repo, sourceRef, props.sources)]}>
           {props.text}
         </ReactMarkdown>
       </div>
@@ -1223,7 +1227,7 @@ function MarkdownBlock(props: { repo: RepoRef | null; branch?: string; text: str
           <strong>参考源码</strong>
           {props.sources.map((source) =>
             props.repo ? (
-              <a key={source} href={githubFileUrl(props.repo, source, props.branch)} target="_blank" rel="noreferrer">
+              <a key={source} href={githubFileUrl(props.repo, source, sourceRef)} target="_blank" rel="noreferrer">
                 {source}
               </a>
             ) : (
@@ -1262,16 +1266,49 @@ function streamStatusText(stream: ActiveStream): string {
   return "当前使用普通一次性返回...";
 }
 
-function TimingMeta(props: { timing: TimingBreakdown }) {
+function TimingMeta(props: { timing: TimingBreakdown; repo: RepoRef | null; branch?: string }) {
   const parts = [
+    props.repo ? `仓库 ${props.repo.owner}/${props.repo.repo}` : "",
+    props.branch ? `分支 ${props.branch}` : "",
+    props.timing.resultCacheHit ? "结果缓存命中" : "实时分析",
+    props.timing.sourceCacheHit ? "源码缓存命中" : "",
+    props.timing.sourceIncomplete ? `源码片段不完整${props.timing.skippedSourcePaths?.length ? ` ${props.timing.skippedSourcePaths.length} 个文件` : ""}` : "",
+    props.timing.persistentCacheHit ? "持久化缓存" : "",
+    cacheStatusLabel(props.timing),
+    props.timing.headSha ? `基于 ${shortRef(props.timing.headSha)}` : "",
+    props.timing.capturedAt ? `生成 ${formatMetaTime(props.timing.capturedAt)}` : "",
+    props.timing.lastValidatedAt ? `校验 ${formatMetaTime(props.timing.lastValidatedAt)}` : "",
     props.timing.totalMs !== undefined ? `总耗时 ${formatElapsedCompact(props.timing.totalMs)}` : "",
     props.timing.modelMs !== undefined ? `模型 ${formatElapsedCompact(props.timing.modelMs)}` : "",
     props.timing.githubMs !== undefined ? `GitHub ${formatElapsedCompact((props.timing.githubMs ?? 0) + (props.timing.treeMs ?? 0))}` : "",
-    props.timing.fileMs !== undefined ? `文件 ${formatElapsedCompact(props.timing.fileMs)}` : "",
-    props.timing.cacheHit ? "来自缓存，重新分析请清空当前仓库缓存" : ""
+    props.timing.fileMs !== undefined ? `文件 ${formatElapsedCompact(props.timing.fileMs)}` : ""
   ].filter(Boolean);
   if (parts.length === 0) return null;
   return <div className="cp-chat-meta">{parts.join(" · ")}</div>;
+}
+
+function cacheStatusLabel(timing: TimingBreakdown): string {
+  if (timing.cacheStatus === "same-tree-new-head") return "提交已更新，源码树未变";
+  if (timing.cacheStatus === "stale") return "缓存已过期";
+  if (timing.cacheStatus === "unchecked") return "缓存未校验";
+  if (timing.cacheStatus === "fresh") return "源码快照一致";
+  return "";
+}
+
+function shortRef(value: string): string {
+  if (value.startsWith("unchecked:")) return "unchecked";
+  return value.slice(0, 7);
+}
+
+function formatMetaTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function createSuggestionStates(): Record<SuggestionTarget, SuggestionPanelState> {
@@ -1621,14 +1658,39 @@ function buildAskContext(
   featurePath: FeaturePath | null,
   fileExplanation: FileExplanation | null,
   answers: ChatTurn[]
-): string {
-  const parts = [
-    overview ? `Project overview:\n${overview.summary}` : "",
-    featurePath ? `Feature analysis (${featurePath.feature}):\n${featurePath.summary}` : "",
-    fileExplanation ? `File explanation (${fileExplanation.path}):\n${fileExplanation.summary}` : "",
-    ...answers.slice(-3).map((item) => `Previous question: ${item.question}\nAnswer: ${item.answer.summary}`)
-  ].filter(Boolean);
-  return parts.join("\n\n---\n\n");
+): { text: string; basis?: AnalysisBasis } {
+  const entries: Array<{ text: string; basis?: AnalysisBasis }> = [];
+  if (overview) entries.push({ text: `Project overview:\n${overview.summary}`, basis: overview.basis });
+  if (featurePath) entries.push({ text: `Feature analysis (${featurePath.feature}):\n${featurePath.summary}`, basis: featurePath.basis });
+  if (fileExplanation) entries.push({ text: `File explanation (${fileExplanation.path}):\n${fileExplanation.summary}`, basis: fileExplanation.basis });
+  entries.push(
+    ...answers.slice(-3).map((item) => ({
+      text: `Previous question: ${item.question}\nAnswer: ${item.answer.summary}`,
+      basis: item.answer.basis
+    }))
+  );
+  const bases = entries.map((entry) => entry.basis).filter((basis): basis is AnalysisBasis => Boolean(basis));
+  return {
+    text: entries.map((entry) => entry.text).join("\n\n---\n\n"),
+    basis: sharedAskContextBasis(bases, entries.length)
+  };
+}
+
+function sharedAskContextBasis(bases: AnalysisBasis[], expectedCount: number): AnalysisBasis | undefined {
+  if (bases.length !== expectedCount || bases.length === 0) return undefined;
+  const first = bases[0];
+  if (!first) return undefined;
+  return bases.every(
+    (basis) =>
+      basis.snapshot.owner === first.snapshot.owner &&
+      basis.snapshot.repo === first.snapshot.repo &&
+      basis.snapshot.refName === first.snapshot.refName &&
+      basis.snapshot.treeSha === first.snapshot.treeSha &&
+      basis.promptVersion === first.promptVersion &&
+      basis.analyzerVersion === first.analyzerVersion
+  )
+    ? first
+    : undefined;
 }
 
 function repoStateKey(repo: RepoRef | null): string {

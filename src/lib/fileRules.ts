@@ -53,6 +53,42 @@ const SOURCE_SUFFIXES = [
   ".yml"
 ];
 
+export const FILE_RULES_FINGERPRINT = JSON.stringify({
+  IGNORE_PREFIXES,
+  IGNORE_SUFFIXES,
+  SOURCE_SUFFIXES,
+  likelyImportantRules: [
+    "readme.md",
+    "package.json",
+    "tsconfig.json",
+    "vite.config",
+    "next.config",
+    "nuxt.config",
+    "main.",
+    "index.",
+    "app.",
+    "src/router/",
+    "src/routes/",
+    "src/pages/",
+    "src/api/",
+    "src/services/",
+    "src/store/"
+  ],
+  classifyRules: [
+    "页面:page,/pages/,/views/",
+    "组件:/components/",
+    "接口请求:/api/,request,client",
+    "业务服务:/service,/services/",
+    "状态管理:/store/,redux,zustand",
+    "路由:/router/,/routes/",
+    "测试:test,spec",
+    "配置:config",
+    "工具函数:/utils/,/lib/",
+    "源码:default"
+  ],
+  functionSources: [isUsefulPath.toString(), hasIgnoredSegment.toString(), isLikelyImportant.toString(), classifyPath.toString()]
+});
+
 export function isUsefulPath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
   if (hasIgnoredSegment(normalized)) return false;

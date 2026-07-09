@@ -14,6 +14,25 @@ type ElementNode = Parent & {
 };
 
 const PATH_PATTERN = /(?:^|[\s([`])((?:\.\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|vue|svelte|go|rs|java|kt|cs|php|rb|md|json|toml|ya?ml|txt|sh|css|scss|html))(?:[:#]L?\d+)?/g;
+const COMMON_PATH_ROOTS = new Set([
+  ".github",
+  "app",
+  "apps",
+  "bin",
+  "cmd",
+  "config",
+  "docs",
+  "entrypoints",
+  "example",
+  "examples",
+  "lib",
+  "packages",
+  "public",
+  "scripts",
+  "src",
+  "test",
+  "tests"
+]);
 
 export function githubFileUrl(repo: RepoRef, path: string, branchOverride?: string): string {
   const branch = branchOverride || repo.branch || "main";
@@ -24,13 +43,14 @@ export function githubFileUrl(repo: RepoRef, path: string, branchOverride?: stri
     .join("/")}`;
 }
 
-export function rehypeLinkCodePaths(repo: RepoRef | null): Plugin<[], Node> {
+export function rehypeLinkCodePaths(repo: RepoRef | null, refOverride?: string, knownPaths: string[] = []): Plugin<[], Node> {
   return () => {
     return (tree) => {
       if (!repo) return;
+      rewriteExplicitLinks(tree, repo, refOverride, knownPaths);
       visitTextParents(tree, [], (parent, index, textNode, ancestors) => {
         if (isInsideIgnoredElement(parent) || ancestors.some(isIgnoredElement)) return;
-        const replacement = linkifyText(textNode.value, repo);
+        const replacement = linkifyText(textNode.value, repo, refOverride);
         if (!replacement) return;
         parent.children.splice(index, 1, ...replacement);
       });
@@ -38,7 +58,89 @@ export function rehypeLinkCodePaths(repo: RepoRef | null): Plugin<[], Node> {
   };
 }
 
-function linkifyText(value: string, repo: RepoRef): Array<Node> | null {
+function rewriteExplicitLinks(node: Node, repo: RepoRef, refOverride: string | undefined, knownPaths: string[]) {
+  if (node.type === "element") {
+    const element = node as ElementNode;
+    if (element.tagName === "a" && element.properties) {
+      const path = explicitLinkPath(element, repo, knownPaths);
+      if (path) {
+        try {
+          element.properties.href = githubFileUrl(repo, path, refOverride);
+        } catch {
+          // Leave malformed or unsafe links untouched.
+        }
+      }
+    }
+  }
+  if (!isParent(node)) return;
+  for (const child of node.children) rewriteExplicitLinks(child, repo, refOverride, knownPaths);
+}
+
+function explicitLinkPath(element: ElementNode, repo: RepoRef, knownPaths: string[]): string {
+  const labelPath = textContent(element).trim();
+  if (looksLikeRepoPath(labelPath)) return labelPath.replace(/[:#]L?\d+$/, "");
+
+  const href = typeof element.properties?.href === "string" ? element.properties.href : "";
+  if (!href) return "";
+  const relativePath = explicitRelativePath(href);
+  if (relativePath) return relativePath;
+  try {
+    const url = new URL(href);
+    if (url.hostname !== "github.com") return "";
+    const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    if (parts[0] !== repo.owner || parts[1] !== repo.repo || parts[2] !== "blob") return "";
+    return githubBlobPath(parts.slice(3), knownPaths);
+  } catch {
+    return "";
+  }
+}
+
+function explicitRelativePath(href: string): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return "";
+  if (href.startsWith("#") || href.startsWith("/") || href.startsWith("../")) return "";
+  const path = stripLineSuffix(href.replace(/^\.\//, ""));
+  return looksLikeRepoPath(path) ? path : "";
+}
+
+function githubBlobPath(parts: string[], knownPaths: string[]): string {
+  const fromKnownPath = matchKnownPath(parts.slice(1), knownPaths);
+  if (fromKnownPath) return fromKnownPath;
+
+  const candidates = parts
+    .slice(1)
+    .map((_part, index) => parts.slice(index + 1).join("/"))
+    .filter(looksLikeRepoPath);
+  if (candidates.length === 0) return "";
+  const rooted = candidates.find((candidate) => {
+    const [root] = candidate.split("/");
+    return Boolean(root && COMMON_PATH_ROOTS.has(root.toLowerCase()));
+  });
+  if (rooted) return rooted;
+  return "";
+}
+
+function matchKnownPath(parts: string[], knownPaths: string[]): string {
+  const normalized = knownPaths.map((path) => stripLineSuffix(path.replace(/^\.\//, ""))).filter(looksLikeRepoPath);
+  const matches = normalized.filter((path) => parts.join("/").endsWith(path));
+  if (matches.length !== 1) return "";
+  return matches[0] ?? "";
+}
+
+function textContent(node: Node): string {
+  if (node.type === "text") return (node as TextNode).value;
+  if (!isParent(node)) return "";
+  return node.children.map(textContent).join("");
+}
+
+function looksLikeRepoPath(value: string): boolean {
+  return /^(?:\.\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|vue|svelte|go|rs|java|kt|cs|php|rb|md|json|toml|ya?ml|txt|sh|css|scss|html|svg)$/.test(stripLineSuffix(value));
+}
+
+function stripLineSuffix(value: string): string {
+  return value.replace(/[:#]L?\d+$/, "");
+}
+
+function linkifyText(value: string, repo: RepoRef, refOverride?: string): Array<Node> | null {
   const nodes: Array<Node> = [];
   let lastIndex = 0;
   let matched = false;
@@ -56,7 +158,7 @@ function linkifyText(value: string, repo: RepoRef): Array<Node> | null {
       nodes.push(text(value.slice(lastIndex, pathStart)));
     }
     try {
-      nodes.push(link(path, githubFileUrl(repo, path)));
+      nodes.push(link(path, githubFileUrl(repo, path, refOverride)));
     } catch {
       nodes.push(text(path));
     }

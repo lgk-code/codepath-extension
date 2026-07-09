@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { analyzeProject, clearAnalysisCaches, generateSuggestedQuestions } from "./analyzer";
-import type { RepoRef, Settings, TreeFile } from "../types";
+import { strToU8, zipSync } from "fflate";
+import { ANALYZER_VERSION, PROMPT_VERSION, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSuggestedQuestions } from "./analyzer";
+import type { AnalysisBasis, RepoRef, Settings, TreeFile } from "../types";
 
 const originalFetch = globalThis.fetch;
 
@@ -21,6 +22,7 @@ const settings: Settings = {
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
+  delete (globalThis as typeof globalThis & { chrome?: unknown }).chrome;
   await clearAnalysisCaches("all");
 });
 
@@ -77,6 +79,599 @@ test("analyzeProject includes the resolved default branch in results", async () 
   const result = await analyzeProject({ owner: "acme", repo: "demo", pageType: "repo" }, settings);
 
   assert.equal(result.branch, "main");
+});
+
+test("analyzeProject revalidates the branch snapshot before returning cached overview", async () => {
+  let modelCalls = 0;
+  let revision = 1;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    get tree() {
+      return [{ path: "README.md", type: "blob" as const, size: 16, sha: `blob-${revision}` }];
+    },
+    get files() {
+      return { "README.md": `# Demo ${revision}` };
+    },
+    get headSha() {
+      return `head-${revision}`;
+    },
+    get treeSha() {
+      return `tree-${revision}`;
+    },
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => `源码确认\n- 第 ${revision} 次分析。`
+  });
+
+  const first = await analyzeProject(repo, settings);
+  revision = 2;
+  const second = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 2);
+  assert.match(first.summary, /第 1 次分析/);
+  assert.match(second.summary, /第 2 次分析/);
+  assert.equal(second.timing?.resultCacheHit, undefined);
+  assert.equal(second.timing?.cacheStatus, "fresh");
+  assert.equal(second.basis?.snapshot.headSha, "head-2");
+});
+
+test("analyzeProject reuses cached overview when head changes but tree stays the same", async () => {
+  let modelCalls = 0;
+  let headSha = "head-one";
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-same" }],
+    files: { "README.md": "# Demo" },
+    get headSha() {
+      return headSha;
+    },
+    treeSha: "tree-same",
+    onModelRequest: () => {
+      modelCalls += 1;
+    }
+  });
+
+  await analyzeProject(repo, settings);
+  headSha = "head-two";
+  const second = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.equal(second.timing?.resultCacheHit, true);
+  assert.equal(second.timing?.cacheStatus, "same-tree-new-head");
+  assert.equal(second.timing?.headSha, "head-one");
+  assert.equal(second.timing?.lastValidatedAt !== undefined, true);
+});
+
+test("analyzeProject ignores legacy raw persistent overview cache entries", async () => {
+  const oldKey = "codepath-cache:acme/demo@main:overview";
+  installChromeStorageMock({
+    [oldKey]: {
+      summary: "stale legacy overview",
+      sources: [],
+      branch: "main"
+    }
+  });
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => "源码确认\n- 当前分析结果。"
+  });
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.match(result.summary, /当前分析结果/);
+  assert.equal(result.timing?.persistentCacheHit, undefined);
+});
+
+test("analyzeProject does not return an old cached overview when GitHub snapshot validation fails", async () => {
+  let modelCalls = 0;
+  let failSnapshot = false;
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (failSnapshot && url === "https://api.github.com/repos/acme/demo/branches/main") {
+      return new Response("branch unavailable", { status: 503 });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  await analyzeProject(repo, settings);
+  failSnapshot = true;
+
+  await assert.rejects(() => analyzeProject(repo, settings), /缓存无法校验/);
+  assert.equal(modelCalls, 1);
+});
+
+test("analyzeProject resolves slash branch names through Git refs", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    branchName: "feature/cache-fix",
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-feature",
+    treeSha: "tree-feature"
+  });
+
+  const result = await analyzeProject({ ...repo, branch: "feature/cache-fix" }, settings);
+
+  assert.equal(result.branch, "feature/cache-fix");
+  assert.equal(result.basis?.snapshot.headSha, "head-feature");
+  assert.equal(result.basis?.snapshot.treeSha, "tree-feature");
+});
+
+test("analyzeProject resolves slash branches through heads ref before commits endpoint", async () => {
+  const baseFetch = mockAnalyzeProjectFetch({
+    branchName: "feature/cache-fix",
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-feature",
+    treeSha: "tree-feature"
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo/commits/feature%2Fcache-fix") {
+      return jsonResponse({
+        sha: "shadow-commit",
+        commit: {
+          tree: {
+            sha: "shadow-tree"
+          }
+        }
+      });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  const result = await analyzeProject({ ...repo, branch: "feature/cache-fix" }, settings);
+
+  assert.equal(result.basis?.snapshot.headSha, "head-feature");
+  assert.equal(result.basis?.snapshot.treeSha, "tree-feature");
+});
+
+test("analyzeProject resolves commit permalink refs through commits endpoint", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    branchName: "1234567890abcdef1234567890abcdef12345678",
+    branchStatus: 404,
+    headRefStatus: 404,
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-commit" }],
+    files: { "README.md": "# Commit" },
+    headSha: "1234567890abcdef1234567890abcdef12345678",
+    treeSha: "tree-commit"
+  });
+
+  const result = await analyzeProject({ ...repo, branch: "1234567890abcdef1234567890abcdef12345678" }, settings);
+
+  assert.equal(result.basis?.snapshot.headSha, "1234567890abcdef1234567890abcdef12345678");
+  assert.equal(result.basis?.snapshot.treeSha, "tree-commit");
+});
+
+test("analyzeProject resolves tag refs through git refs", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    branchName: "v1.0.0",
+    branchStatus: 404,
+    headRefStatus: 404,
+    tagRef: { type: "commit", sha: "tag-commit" },
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-tag" }],
+    files: { "README.md": "# Tag" },
+    headSha: "tag-commit",
+    treeSha: "tree-tag"
+  });
+
+  const result = await analyzeProject({ ...repo, branch: "v1.0.0" }, settings);
+
+  assert.equal(result.basis?.snapshot.headSha, "tag-commit");
+  assert.equal(result.basis?.snapshot.treeSha, "tree-tag");
+});
+
+test("analyzeProject dereferences annotated tags before resolving tree snapshots", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    branchName: "v1.0.0",
+    branchStatus: 404,
+    headRefStatus: 404,
+    tagRef: { type: "tag", sha: "tag-object", tagObjectSha: "annotated-commit" },
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-tag" }],
+    files: { "README.md": "# Tag" },
+    headSha: "annotated-commit",
+    treeSha: "tree-tag"
+  });
+
+  const result = await analyzeProject({ ...repo, branch: "v1.0.0" }, settings);
+
+  assert.equal(result.basis?.snapshot.headSha, "annotated-commit");
+  assert.equal(result.basis?.snapshot.treeSha, "tree-tag");
+});
+
+test("analyzeProject rejects truncated Git trees instead of caching partial context", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    treeTruncated: true,
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current"
+  });
+
+  await assert.rejects(() => analyzeProject(repo, settings), /truncated repository tree/);
+});
+
+test("explainFile does not reuse a file explanation when the file blob changes", async () => {
+  let modelCalls = 0;
+  let revision = 1;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    get tree() {
+      return [{ path: "src/app.ts", type: "blob" as const, size: 32, sha: `blob-${revision}` }];
+    },
+    get files() {
+      return { "src/app.ts": `export const revision = ${revision};` };
+    },
+    get headSha() {
+      return `head-${revision}`;
+    },
+    get treeSha() {
+      return `tree-${revision}`;
+    },
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => `源码确认\n- 文件第 ${revision} 次分析。`
+  });
+
+  const fileRepo: RepoRef = { ...repo, pageType: "file", path: "src/app.ts" };
+  const first = await explainFile(fileRepo, settings);
+  revision = 2;
+  const second = await explainFile(fileRepo, settings);
+
+  assert.equal(modelCalls, 2);
+  assert.match(first.summary, /第 1 次分析/);
+  assert.match(second.summary, /第 2 次分析/);
+  assert.equal(second.timing?.resultCacheHit, undefined);
+  assert.equal(second.basis?.files[0]?.blobSha, "blob-2");
+});
+
+test("explainFile uses git tree blob identity for files filtered out of project snippets", async () => {
+  let revision = 1;
+  const modelPrompts: string[] = [];
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    get tree() {
+      return [{ path: "assets/logo.svg", type: "blob" as const, size: 32, sha: `svg-blob-${revision}` }];
+    },
+    get files() {
+      return { "assets/logo.svg": `<svg>revision-${revision}</svg>` };
+    },
+    get headSha() {
+      return `head-${revision}`;
+    },
+    get treeSha() {
+      return `tree-${revision}`;
+    },
+    onModelRequest: (body) => {
+      modelPrompts.push(JSON.stringify(body.messages ?? []));
+    }
+  });
+
+  const fileRepo: RepoRef = { ...repo, pageType: "file", path: "assets/logo.svg" };
+  await explainFile(fileRepo, settings);
+  revision = 2;
+  const second = await explainFile(fileRepo, settings);
+
+  assert.equal(second.basis?.files[0]?.blobSha, "svg-blob-2");
+  assert.match(modelPrompts.at(-1) ?? "", /revision-2/);
+  assert.doesNotMatch(modelPrompts.at(-1) ?? "", /revision-1/);
+});
+
+test("analyzeProject ignores v2 persistent overview records whose basis does not match the current request", async () => {
+  const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
+  const key = persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  installChromeStorageMock({
+    [key]: {
+      schemaVersion: 2,
+      kind: "overview",
+      value: {
+        summary: "stale injected overview",
+        sources: [{ path: "README.md", blobSha: "blob-stale" }],
+        branch: "main"
+      },
+      basis: {
+        snapshot: snapshotForTest("stale-head", "stale-tree"),
+        files: [{ path: "README.md", blobSha: "blob-stale", size: 16 }],
+        inputDigest: "wrong-digest",
+        promptVersion: PROMPT_VERSION,
+        analyzerVersion: ANALYZER_VERSION
+      }
+    }
+  });
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree,
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => "源码确认\n- 当前分析结果。"
+  });
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.match(result.summary, /当前分析结果/);
+});
+
+test("analyzeProject treats corrupt v2 CacheRecord snapshots as cache misses", async () => {
+  const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
+  const key = persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  installChromeStorageMock({
+    [key]: {
+      schemaVersion: 2,
+      kind: "overview",
+      value: {
+        summary: "corrupt cached overview",
+        sources: [{ path: "README.md", blobSha: "blob-current" }],
+        branch: "main"
+      },
+      basis: {
+        snapshot: { ...snapshotForTest("head-current", "tree-current"), headSha: 123 },
+        files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
+        inputDigest: persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
+        promptVersion: PROMPT_VERSION,
+        analyzerVersion: ANALYZER_VERSION
+      }
+    }
+  });
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree,
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => "源码确认\n- 当前分析结果。"
+  });
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.match(result.summary, /当前分析结果/);
+});
+
+test("analyzeProject does not reuse v2 CacheRecords from another repository scope", async () => {
+  const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
+  const key = persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  installChromeStorageMock({
+    [key]: {
+      schemaVersion: 2,
+      kind: "overview",
+      value: {
+        summary: "wrong repo cached overview",
+        sources: [{ path: "README.md", blobSha: "blob-current" }],
+        branch: "main"
+      },
+      basis: {
+        snapshot: { ...snapshotForTest("head-current", "tree-current"), owner: "other" },
+        files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
+        inputDigest: persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
+        promptVersion: PROMPT_VERSION,
+        analyzerVersion: ANALYZER_VERSION
+      }
+    }
+  });
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree,
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => "源码确认\n- 当前分析结果。"
+  });
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.match(result.summary, /当前分析结果/);
+});
+
+test("analyzeProject does not cache overview results when selected snippets fail to load", async () => {
+  let modelCalls = 0;
+  let packageAvailable = false;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [
+      { path: "README.md", type: "blob", size: 16, sha: "readme-blob" },
+      { path: "package.json", type: "blob", size: 18, sha: "package-blob" }
+    ],
+    get files() {
+      const files: Record<string, string> = { "README.md": "# Demo" };
+      if (packageAvailable) files["package.json"] = "{\"scripts\":{\"dev\":\"vite\"}}";
+      return files;
+    },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => (packageAvailable ? "源码确认\n- 完整分析结果。" : "源码确认\n- 不完整分析结果。")
+  });
+
+  const first = await analyzeProject(repo, settings);
+  packageAvailable = true;
+  const second = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 2);
+  assert.equal(first.timing?.sourceIncomplete, true);
+  assert.deepEqual(first.timing?.skippedSourcePaths, ["package.json"]);
+  assert.match(second.summary, /完整分析结果/);
+  assert.equal(second.timing?.resultCacheHit, undefined);
+});
+
+test("persistent v2 cache prunes old per-repository entries", async () => {
+  const initial = Object.fromEntries(
+    Array.from({ length: 90 }, (_item, index) => [
+      `codepath-cache-v2:acme/demo@main:overview:old-tree-${index}:focused:old-digest-${index}`,
+      cacheRecordForTest("overview", `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`)
+    ])
+  );
+  const store = installChromeStorageMock(initial);
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current"
+  });
+
+  await analyzeProject(repo, settings);
+
+  const v2RepoKeys = Object.keys(store).filter((key) => key.startsWith("codepath-cache-v2:acme/demo@main:"));
+  assert.equal(v2RepoKeys.length <= 80, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(store, "codepath-cache-v2:acme/demo@main:overview:old-tree-0:focused:old-digest-0"), false);
+});
+
+test("persistent v2 cache prunes and retries when storage write initially hits quota", async () => {
+  const initial = Object.fromEntries(
+    Array.from({ length: 90 }, (_item, index) => [
+      `codepath-cache-v2:acme/demo@main:overview:quota-old-tree-${index}:focused:quota-old-digest-${index}`,
+      cacheRecordForTest("overview", `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`)
+    ])
+  );
+  const store = installChromeStorageMock(initial, { failSetCount: 1 });
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current"
+  });
+
+  await analyzeProject(repo, settings);
+
+  const keys = Object.keys(store);
+  assert.equal(keys.some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:focused:")), true);
+  assert.equal(keys.filter((key) => key.startsWith("codepath-cache-v2:acme/demo@main:")).length <= 80, true);
+});
+
+test("persistent v2 cache accounts for the pending record size before writing", async () => {
+  const initial = Object.fromEntries(
+    Array.from({ length: 4 }, (_item, index) => [
+      `codepath-cache-v2:acme/demo@main:overview:large-old-tree-${index}:focused:large-old-digest-${index}`,
+      cacheRecordForTest("overview", `2026-02-0${index + 1}T00:00:00.000Z`, "x".repeat(500_000))
+    ])
+  );
+  const store = installChromeStorageMock(initial, { maxSerializedBytes: 1_800_000 });
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    modelContent: () => `源码确认\n- ${"y".repeat(900_000)}`
+  });
+
+  await analyzeProject(repo, settings);
+
+  const keys = Object.keys(store);
+  assert.equal(keys.some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:focused:")), true);
+  assert.equal(keys.some((key) => key.includes("large-old-tree-0")), false);
+});
+
+test("analyzeProject marks zip fallback snapshots as unchecked and does not reuse result cache", async () => {
+  let modelCalls = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo") {
+      return new Response("rate limited", { status: 403 });
+    }
+    if (url === "https://codeload.github.com/acme/demo/zip/refs/heads/main") {
+      return zipResponse({ "demo-main/README.md": "# Demo" });
+    }
+    if (url === "https://models.example/v1/chat/completions") {
+      modelCalls += 1;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content: `源码确认\n- zip 第 ${modelCalls} 次分析。`
+            }
+          }
+        ]
+      });
+    }
+    return new Response(`unexpected URL: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  const first = await analyzeProject({ owner: "acme", repo: "demo", pageType: "repo" }, settings);
+  const second = await analyzeProject({ owner: "acme", repo: "demo", pageType: "repo" }, settings);
+
+  assert.equal(modelCalls, 2);
+  assert.equal(first.timing?.cacheStatus, "unchecked");
+  assert.equal(second.timing?.cacheStatus, "unchecked");
+  assert.equal(second.timing?.resultCacheHit, undefined);
+  assert.match(first.timing?.headSha ?? "", /^unchecked:/);
+});
+
+test("answerQuestion refuses context-only answers when the previous analysis basis is stale", async () => {
+  let revision = 1;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    get tree() {
+      return [{ path: "README.md", type: "blob" as const, size: 16, sha: `blob-${revision}` }];
+    },
+    get files() {
+      return { "README.md": `# Demo ${revision}` };
+    },
+    get headSha() {
+      return `head-${revision}`;
+    },
+    get treeSha() {
+      return `tree-${revision}`;
+    }
+  });
+  const staleBasis: AnalysisBasis = {
+    snapshot: snapshotForTest("head-1", "tree-1"),
+    files: [{ path: "README.md", blobSha: "blob-1", size: 16 }],
+    inputDigest: "old-context",
+    promptVersion: PROMPT_VERSION,
+    analyzerVersion: ANALYZER_VERSION
+  };
+  revision = 2;
+
+  await assert.rejects(
+    () => answerQuestion(repo, settings, "这个项目主要做什么？", "旧分析上下文。".repeat(80), {}, staleBasis),
+    /旧分析上下文已过期/
+  );
+});
+
+test("answerQuestion refuses context-only answers from older prompt versions", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Demo" },
+    headSha: "head-current",
+    treeSha: "tree-current"
+  });
+  const oldBasis: AnalysisBasis = {
+    snapshot: snapshotForTest("head-current", "tree-current"),
+    files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
+    inputDigest: "old-context",
+    promptVersion: "old-prompt",
+    analyzerVersion: ANALYZER_VERSION
+  };
+
+  await assert.rejects(
+    () => answerQuestion(repo, settings, "这个项目主要做什么？", "旧分析上下文。".repeat(80), {}, oldBasis),
+    /上下文版本已过期/
+  );
 });
 
 test("analyzeProject full-source mode sends every useful source file without truncation", async () => {
@@ -290,21 +885,100 @@ type ChatRequestBody = {
 
 function mockAnalyzeProjectFetch(input: {
   tree: TreeFile[];
+  treeTruncated?: boolean;
   files: Record<string, string>;
+  branchName?: string;
+  branchStatus?: number;
+  headRefStatus?: number;
+  tagRef?: { type: "commit" | "tag"; sha: string; tagObjectSha?: string };
+  headSha?: string;
+  treeSha?: string;
+  modelContent?: string | (() => string);
   onModelRequest?: (body: ChatRequestBody) => void;
 }): typeof fetch {
   return (async (request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
+    const branchName = input.branchName ?? "main";
+    const headSha = input.headSha ?? "head-main";
+    const treeSha = input.treeSha ?? "tree-main";
     if (url === "https://api.github.com/repos/acme/demo") {
       return jsonResponse({ default_branch: "main" });
     }
 
-    if (url === "https://api.github.com/repos/acme/demo/git/trees/main?recursive=1") {
-      return jsonResponse({ tree: input.tree });
+    if (!branchName.includes("/") && url === `https://api.github.com/repos/acme/demo/branches/${encodeURIComponent(branchName)}`) {
+      if (input.branchStatus && input.branchStatus >= 400) return new Response("branch unavailable", { status: input.branchStatus });
+      return jsonResponse({
+        name: branchName,
+        commit: {
+          sha: headSha,
+          commit: {
+            tree: {
+              sha: treeSha
+            }
+          }
+        }
+      });
+    }
+
+    if (url === `https://api.github.com/repos/acme/demo/git/ref/heads/${branchName.split("/").map(encodeURIComponent).join("/")}`) {
+      if (input.headRefStatus && input.headRefStatus >= 400) return new Response("head ref unavailable", { status: input.headRefStatus });
+      return jsonResponse({
+        ref: `refs/heads/${branchName}`,
+        object: {
+          type: "commit",
+          sha: headSha
+        }
+      });
+    }
+
+    if (url === `https://api.github.com/repos/acme/demo/commits/${encodeURIComponent(branchName)}`) {
+      if (branchName === headSha) {
+        return jsonResponse({
+          sha: headSha,
+          commit: {
+            tree: {
+              sha: treeSha
+            }
+          }
+        });
+      }
+      return new Response("commit unavailable", { status: 404 });
+    }
+
+    if (url === `https://api.github.com/repos/acme/demo/git/ref/tags/${branchName.split("/").map(encodeURIComponent).join("/")}` && input.tagRef) {
+      return jsonResponse({
+        ref: `refs/tags/${branchName}`,
+        object: {
+          type: input.tagRef.type,
+          sha: input.tagRef.sha
+        }
+      });
+    }
+
+    if (input.tagRef?.type === "tag" && url === `https://api.github.com/repos/acme/demo/git/tags/${input.tagRef.sha}`) {
+      return jsonResponse({
+        object: {
+          type: "commit",
+          sha: input.tagRef.tagObjectSha ?? headSha
+        }
+      });
+    }
+
+    if (url === `https://api.github.com/repos/acme/demo/git/commits/${headSha}`) {
+      return jsonResponse({
+        sha: headSha,
+        tree: {
+          sha: treeSha
+        }
+      });
+    }
+
+    if (url === `https://api.github.com/repos/acme/demo/git/trees/${treeSha}?recursive=1`) {
+      return jsonResponse({ tree: input.tree, truncated: input.treeTruncated });
     }
 
     if (url.startsWith("https://api.github.com/repos/acme/demo/contents/")) {
-      const encodedPath = url.slice("https://api.github.com/repos/acme/demo/contents/".length).replace(/\?ref=main$/, "");
+      const encodedPath = url.slice("https://api.github.com/repos/acme/demo/contents/".length).replace(/\?ref=.*/, "");
       const path = decodeURIComponent(encodedPath);
       const content = input.files[path];
       if (content === undefined) return new Response("not found", { status: 404 });
@@ -318,7 +992,16 @@ function mockAnalyzeProjectFetch(input: {
       const body = JSON.parse(String(init?.body)) as ChatRequestBody;
       input.onModelRequest?.(body);
       return jsonResponse({
-        choices: [{ message: { content: "源码确认\n- 测试分析结果。\n\n谨慎推断\n- 无。\n\n建议继续验证\n- 无。" } }]
+        choices: [
+          {
+            message: {
+              content:
+                typeof input.modelContent === "function"
+                  ? input.modelContent()
+                  : input.modelContent ?? "源码确认\n- 测试分析结果。\n\n谨慎推断\n- 无。\n\n建议继续验证\n- 无。"
+            }
+          }
+        ]
       });
     }
 
@@ -328,4 +1011,132 @@ function mockAnalyzeProjectFetch(input: {
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function installChromeStorageMock(initial: Record<string, unknown>, options: { failSetCount?: number; maxSerializedBytes?: number } = {}): Record<string, unknown> {
+  const store = { ...initial };
+  const runtime: { lastError?: { message?: string } } = {};
+  let failSetCount = options.failSetCount ?? 0;
+  (globalThis as typeof globalThis & { chrome?: unknown }).chrome = {
+    storage: {
+      local: {
+        get(key: string | null, callback: (items: Record<string, unknown>) => void) {
+          if (key === null) callback({ ...store });
+          else callback(Object.prototype.hasOwnProperty.call(store, key) ? { [key]: store[key] } : {});
+        },
+        set(items: Record<string, unknown>, callback: () => void) {
+          if (failSetCount > 0) {
+            failSetCount -= 1;
+            runtime.lastError = { message: "QUOTA_BYTES quota exceeded" };
+            callback();
+            delete runtime.lastError;
+            return;
+          }
+          const nextStore = { ...store, ...items };
+          if (options.maxSerializedBytes !== undefined && JSON.stringify(nextStore).length > options.maxSerializedBytes) {
+            runtime.lastError = { message: "QUOTA_BYTES quota exceeded" };
+            callback();
+            delete runtime.lastError;
+            return;
+          }
+          Object.assign(store, items);
+          callback();
+        },
+        remove(keys: string[], callback: () => void) {
+          for (const key of keys) delete store[key];
+          callback();
+        }
+      }
+    },
+    runtime
+  };
+  return store;
+}
+
+function snapshotForTest(headSha: string, treeSha: string) {
+  const capturedAt = "2026-07-08T00:00:00.000Z";
+  return {
+    owner: "acme",
+    repo: "demo",
+    refName: "main",
+    headSha,
+    treeSha,
+    capturedAt,
+    lastValidatedAt: capturedAt
+  };
+}
+
+function persistentOverviewTestKey(repoRef: RepoRef, branch: string, treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): string {
+  const inputDigest = persistentOverviewInputDigestForTest(treeSha, mode, files, testSettings);
+  return `codepath-cache-v2:${repoRef.owner}/${repoRef.repo}@${branch}:overview:${treeSha}:${mode}:${inputDigest}`;
+}
+
+function persistentOverviewInputDigestForTest(treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): string {
+  return stringHashForTest(
+    JSON.stringify({
+      kind: "overview",
+      extra: mode,
+      treeSha,
+      files: files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path)),
+      model: modelFingerprintForTest(testSettings),
+      promptVersion: PROMPT_VERSION,
+      analyzerVersion: ANALYZER_VERSION
+    })
+  );
+}
+
+function cacheRecordForTest(kind: "overview", capturedAt: string, summary = "old") {
+  return {
+    schemaVersion: 2,
+    kind,
+    value: { summary, sources: [], branch: "main" },
+    basis: {
+      snapshot: {
+        owner: "acme",
+        repo: "demo",
+        refName: "main",
+        headSha: `old-head-${capturedAt}`,
+        treeSha: `old-tree-${capturedAt}`,
+        capturedAt,
+        lastValidatedAt: capturedAt
+      },
+      files: [],
+      inputDigest: "old",
+      promptVersion: PROMPT_VERSION,
+      analyzerVersion: ANALYZER_VERSION
+    }
+  };
+}
+
+function modelFingerprintForTest(testSettings: Settings): string {
+  return stringHashForTest(
+    JSON.stringify({
+      provider: testSettings.provider,
+      baseUrl: testSettings.baseUrl.replace(/\/+$/, ""),
+      model: testSettings.model,
+      maxOutputTokens: testSettings.maxOutputTokens ?? null
+    })
+  );
+}
+
+function stringHashForTest(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function zipResponse(files: Record<string, string>): Response {
+  const entries = Object.fromEntries(Object.entries(files).map(([path, content]) => [path, strToU8(content)]));
+  const bytes = zipSync(entries);
+  const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/zip",
+      "Content-Length": String(bytes.byteLength)
+    }
+  });
 }

@@ -51,6 +51,12 @@ const COMMON_BRANCH_PREFIXES = new Set(["bugfix", "build", "chore", "ci", "docs"
 
 function splitBranchAndPath(parts: string[], pageType: "file" | "directory"): { branch: string | undefined; path: string } {
   if (parts.length === 0) return { branch: undefined, path: "" };
+  if (parts.length > 1 && (looksLikeCommitRef(parts[0]!) || looksLikeReleaseTag(parts[0]!))) {
+    return {
+      branch: parts[0],
+      path: parts.slice(1).join("/")
+    };
+  }
   if (parts.length > 2 && COMMON_BRANCH_PREFIXES.has(parts[0]!.toLowerCase())) {
     return {
       branch: parts.slice(0, 2).join("/"),
@@ -81,6 +87,14 @@ function splitBranchAndPath(parts: string[], pageType: "file" | "directory"): { 
 
 function looksLikeFile(part: string): boolean {
   return /\.[A-Za-z0-9]{1,8}$/.test(part);
+}
+
+function looksLikeCommitRef(part: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(part);
+}
+
+function looksLikeReleaseTag(part: string): boolean {
+  return /^v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9._-]+)?$/i.test(part);
 }
 
 function decodePathPart(value: string): string {

@@ -1,5 +1,5 @@
 import { unzipSync, strFromU8 } from "fflate";
-import type { TreeFile } from "../types";
+import type { RepoSnapshot, SourceClient, TreeFile } from "../types";
 import { fetchWithTimeout, readResponseBytesLimited } from "./fetchUtils";
 import { isUsefulPath } from "./fileRules";
 
@@ -13,9 +13,12 @@ const MAX_UNZIPPED_BYTES = 80 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 5000;
 const MAX_ZIP_ENTRY_BYTES = 2 * 1024 * 1024;
 
-export class ZipGithubClient {
+export class ZipGithubClient implements SourceClient {
+  readonly kind = "github-zip" as const;
+
   private entries: ZipEntry[] | null = null;
   private resolvedBranch = "main";
+  private snapshotIdentity = "";
 
   constructor(
     private readonly owner: string,
@@ -28,7 +31,23 @@ export class ZipGithubClient {
     return { default_branch: this.resolvedBranch };
   }
 
-  async getTree(): Promise<TreeFile[]> {
+  async getBranchSnapshot(owner: string, repo: string, branch: string): Promise<RepoSnapshot> {
+    await this.ensureEntries();
+    const capturedAt = new Date().toISOString();
+    const refName = this.resolvedBranch || branch;
+    const identity = this.snapshotIdentity || `${refName}:unknown`;
+    return {
+      owner,
+      repo,
+      refName,
+      headSha: `unchecked:${identity}`,
+      treeSha: `unchecked:${identity}`,
+      capturedAt,
+      lastValidatedAt: capturedAt
+    };
+  }
+
+  async getTree(_owner = this.owner, _repo = this.repo, _branch = this.resolvedBranch): Promise<TreeFile[]> {
     const entries = await this.ensureEntries();
     return entries.map((entry) => ({
       path: entry.path,
@@ -37,7 +56,7 @@ export class ZipGithubClient {
     }));
   }
 
-  async getFile(path: string): Promise<string> {
+  async getFile(_owner: string, _repo: string, path: string, _ref: string): Promise<string> {
     const entries = await this.ensureEntries();
     const entry = entries.find((item) => item.path === path);
     if (!entry) throw new Error(`File not found in zip: ${path}`);
@@ -47,7 +66,7 @@ export class ZipGithubClient {
   private async ensureEntries(): Promise<ZipEntry[]> {
     if (this.entries) return this.entries;
 
-    const branches = unique([this.requestedBranch, "main", "master"].filter(Boolean) as string[]);
+    const branches = this.requestedBranch ? [this.requestedBranch] : ["main", "master"];
     let lastError = "";
 
     for (const branch of branches) {
@@ -106,6 +125,7 @@ export class ZipGithubClient {
 
         this.entries = entries;
         this.resolvedBranch = branch;
+        this.snapshotIdentity = `${branch}:${hashEntries(entries)}`;
         return entries;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
@@ -121,6 +141,25 @@ function stripRoot(path: string): string {
   return index >= 0 ? path.slice(index + 1) : path;
 }
 
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
+function hashEntries(entries: ZipEntry[]): string {
+  let hash = 2166136261;
+  for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
+    hash = hashString(hash, entry.path);
+    hash = hashString(hash, ":");
+    for (const byte of entry.content) {
+      hash ^= byte;
+      hash = Math.imul(hash, 16777619);
+    }
+    hash = hashString(hash, "\n");
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function hashString(hash: number, value: string): number {
+  let next = hash;
+  for (let index = 0; index < value.length; index += 1) {
+    next ^= value.charCodeAt(index);
+    next = Math.imul(next, 16777619);
+  }
+  return next;
 }

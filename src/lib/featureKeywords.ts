@@ -26,6 +26,8 @@ const KEYWORDS: Record<string, string[]> = {
   Skill: ["skill", "blueprint", "openclaw", "markdown"]
 };
 
+export const FEATURE_KEYWORDS_FINGERPRINT = JSON.stringify(KEYWORDS);
+
 export function expandFeatureKeywords(feature: string): string[] {
   const normalized = feature.trim();
   const base = new Set<string>([normalized.toLowerCase()]);

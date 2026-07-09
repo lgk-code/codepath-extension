@@ -41,6 +41,46 @@ export type TreeFile = {
 export type SourceRef = {
   path: string;
   reason?: string;
+  blobSha?: string;
+};
+
+export type SourceClientKind = "github-api" | "github-zip";
+
+export type SourceClient = {
+  kind: SourceClientKind;
+  getRepo(owner: string, repo: string): Promise<{ default_branch: string }>;
+  getTree(owner: string, repo: string, branch: string): Promise<TreeFile[]>;
+  getFile(owner: string, repo: string, path: string, ref: string): Promise<string>;
+  getBranchSnapshot(owner: string, repo: string, branch: string): Promise<RepoSnapshot>;
+};
+
+export type CacheStatus = "fresh" | "same-tree-new-head" | "stale" | "unchecked";
+
+export type RepoSnapshot = {
+  owner: string;
+  repo: string;
+  refName: string;
+  headSha: string;
+  treeSha: string;
+  capturedAt: string;
+  lastValidatedAt?: string;
+};
+
+export type AnalysisBasis = {
+  snapshot: RepoSnapshot;
+  files: Array<{ path: string; blobSha?: string; size?: number }>;
+  inputDigest: string;
+  promptVersion: string;
+  analyzerVersion: string;
+};
+
+export type CacheRecordKind = "tree" | "overview" | "feature" | "file" | "question" | "blueprint";
+
+export type CacheRecord<T> = {
+  schemaVersion: number;
+  kind: CacheRecordKind;
+  value: T;
+  basis: AnalysisBasis;
 };
 
 export type TimingBreakdown = {
@@ -51,12 +91,24 @@ export type TimingBreakdown = {
   modelMs?: number;
   totalMs?: number;
   cacheHit?: boolean;
+  resultCacheHit?: boolean;
+  sourceCacheHit?: boolean;
+  sourceIncomplete?: boolean;
+  skippedSourcePaths?: string[];
+  persistentCacheHit?: boolean;
+  sourceClient?: SourceClientKind;
+  cacheStatus?: CacheStatus;
+  headSha?: string;
+  treeSha?: string;
+  capturedAt?: string;
+  lastValidatedAt?: string;
 };
 
 export type ProjectOverview = {
   summary: string;
   sources: SourceRef[];
   branch?: string;
+  basis?: AnalysisBasis;
   timing?: TimingBreakdown;
 };
 
@@ -67,6 +119,7 @@ export type FeaturePath = {
   summary: string;
   sources: SourceRef[];
   branch?: string;
+  basis?: AnalysisBasis;
   timing?: TimingBreakdown;
 };
 
@@ -78,6 +131,7 @@ export type SkillBlueprint = {
   summary: string;
   sources: SourceRef[];
   branch?: string;
+  basis?: AnalysisBasis;
   timing?: TimingBreakdown;
 };
 
@@ -86,6 +140,7 @@ export type FileExplanation = {
   summary: string;
   sources: SourceRef[];
   branch?: string;
+  basis?: AnalysisBasis;
   timing?: TimingBreakdown;
 };
 
@@ -121,7 +176,7 @@ export type CacheClearResult = {
   persistentKeysCleared: number;
 };
 
-export type CacheEntryKind = "tree" | "overview" | "file" | "unknown";
+export type CacheEntryKind = "tree" | "overview" | "feature" | "question" | "blueprint" | "file" | "unknown";
 
 export type CacheEntry = {
   key: string;
@@ -164,7 +219,7 @@ export type RuntimeRequest =
   | { type: "generate-skill-blueprint"; repo: RepoRef; feature: string; mode: BlueprintMode }
   | { type: "explain-file"; repo: RepoRef }
   | { type: "generate-suggestions"; repo: RepoRef; kind: SuggestionAnalysisKind; label?: string; summary: string; sources: string[] }
-  | { type: "answer-question"; repo: RepoRef; question: string; context?: string };
+  | { type: "answer-question"; repo: RepoRef; question: string; context?: string; contextBasis?: AnalysisBasis };
 
 export type RuntimeResponse<T> = {
   ok: boolean;
