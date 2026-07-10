@@ -104,7 +104,7 @@ npm.cmd run mcp
 - CI artifact 用于开发验证。
 - 正式发布使用 annotated `v*` tag（例如 `git tag -a v0.1.3 -m "v0.1.3"`）；tag 必须匹配 `package.json` 版本、指向当前 checkout `HEAD`，且 commit 已进入 `origin/main`。
 - 推送 annotated tag 后，由仓库 owner 在 Actions 的 Release workflow 中通过 `Run workflow` 填入 tag，或从默认分支发送受信事件：`gh api repos/lgk-code/codepath-extension/dispatches --method POST -f event_type=release -f "client_payload[tag]=v0.1.3"`。tag push 本身不发布。
-- Release workflow 只接受仓库 owner 触发的 `repository_dispatch`，先以只读权限验证 tag/main/package 并构建，再由 `release` environment 的独立写权限 job 发布固定资产 `CodePath.zip`；如仓库有独立审查者，可再为该 environment 配置 required reviewers。
+- Release workflow 同时要求初始 `github.actor` 和重跑操作的 `github.triggering_actor` 都是仓库 owner，先以只读权限验证 tag/main/package 并构建，再由 `release` environment 的独立写权限 job 发布固定资产 `CodePath.zip`；如仓库有独立审查者，可再为该 environment 配置 required reviewers。
 - 仓库必须启用 active tag ruleset `Immutable release tags`，以 `refs/tags/v*` 为范围，限制 update 和 deletion，且不配置 bypass actor；允许首次创建 release tag，但创建后不可移动或删除。
 - 候选构建和 environment 后的发布 job 都会通过 GitHub Rulesets API 验证上述不可变 tag 策略；任何 ref exclusion 都按无法证明覆盖范围处理并拒绝发布。写权限 job 只执行 `github.workflow_sha` 固定的受信脚本，并同时复验 annotated tag object SHA 与 peel 后 commit SHA；任一身份变化都必须阻止发布。
 - 迁移备份和 `E:\projects\CodePath-migration.bundle` 不属于仓库，也不得上传到 Release。

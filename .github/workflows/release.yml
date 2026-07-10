@@ -21,7 +21,7 @@ permissions:
 jobs:
   build-extension:
     name: Build trusted release candidate
-    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -119,7 +119,7 @@ jobs:
 
   publish-release:
     name: Publish owner-authorized GitHub Release
-    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner
     needs: build-extension
     runs-on: ubuntu-latest
     environment: release

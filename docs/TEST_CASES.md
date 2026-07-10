@@ -182,7 +182,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
 - Release workflow 必须从默认分支的 owner-only `workflow_dispatch` 或 `repository_dispatch` 运行；两种入口都必须显式提供已推送 annotated tag。候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
-- 用户仓库的两个 release job 都必须要求 `github.actor == github.repository_owner`；非 owner 的 write collaborator 不能通过 dispatch 获得发布权限。
+- 用户仓库的两个 release job 都必须同时要求 `github.actor` 与 `github.triggering_actor` 等于 `github.repository_owner`；非 owner 的 write collaborator 既不能触发发布，也不能通过重跑 owner 的历史 run 获得发布权限。
 - `release` environment 审批完成后，写权限 job 必须从 `github.workflow_sha` checkout verifier，不能执行浮动 `main` 上后来出现的脚本。
 - 写权限 job 必须重新 fetch 远端 annotated tag，同时确认 tag object SHA 和 peel 后 commit SHA 与只读构建输出完全一致后才能发布。
 - `refs/tags/v*` 必须由 active tag ruleset 同时限制 update 和 deletion；写权限 job 在发布前必须通过 Rulesets API 验证策略仍存在，避免 tag 校验与发布之间被移动。

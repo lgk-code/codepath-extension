@@ -30,8 +30,12 @@ test("release publication is orchestrated by the trusted default-branch workflow
   assert.match(release, /workflow_dispatch:[\s\S]*tag:[\s\S]*required:\s*true/);
   assert.match(release, /RELEASE_TAG:\s*\$\{\{ inputs\.tag \|\| github\.event\.client_payload\.tag \}\}/);
   assert.doesNotMatch(release, /push:\s*[\s\S]*tags:/);
-  assert.match(release, /if:\s*github\.ref == 'refs\/heads\/main' && github\.actor == github\.repository_owner/);
+  assert.match(
+    release,
+    /if:\s*github\.ref == 'refs\/heads\/main' && github\.actor == github\.repository_owner && github\.triggering_actor == github\.repository_owner/
+  );
   assert.equal((release.match(/github\.actor == github\.repository_owner/g) ?? []).length, 2);
+  assert.equal((release.match(/github\.triggering_actor == github\.repository_owner/g) ?? []).length, 2);
   assert.match(release, /permissions:\s*\n\s*contents:\s*read/);
   assert.equal((release.match(/contents:\s*write/g) ?? []).length, 1);
   assert.match(release, /environment:\s*release/);
