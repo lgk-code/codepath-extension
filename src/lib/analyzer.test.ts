@@ -1074,6 +1074,31 @@ test("focused analysis propagates file rate limits into the full ZIP retry", asy
   assert.equal(result.sources.some((source) => source.path === "README.md"), true);
 });
 
+test("full-source analysis propagates file rate limits into the full ZIP retry", async () => {
+  let codeloadCalls = 0;
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-main" }],
+    files: { "README.md": "# API content" }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo/contents/README.md?ref=head-main") {
+      return new Response("rate limited", { status: 403, headers: { "x-ratelimit-remaining": "0" } });
+    }
+    if (url === "https://codeload.github.com/acme/demo/zip/main") {
+      codeloadCalls += 1;
+      return zipResponse({ "demo-main/README.md": "# ZIP full source" });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  const result = await analyzeProject(repo, settings, { mode: "full-source" });
+
+  assert.equal(codeloadCalls, 1);
+  assert.equal(result.timing?.cacheStatus, "unchecked");
+  assert.equal(result.sources.some((source) => source.path === "README.md"), true);
+});
+
 test("repository clearing invalidates every rate-limit fallback attempt in the same operation", async () => {
   let releaseApiFile: (() => void) | undefined;
   let markApiFileStarted: (() => void) | undefined;
@@ -1168,6 +1193,36 @@ test("model errors mentioning GitHub rate limits never trigger source fallback",
 
   assert.equal(modelCalls, 1);
   assert.equal(codeloadCalls, 0);
+});
+
+test("stream failures emit error without a successful done event", async () => {
+  const events: string[] = [];
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-main" }],
+    files: { "README.md": "# API content" }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    if (String(request) === "https://models.example/v1/chat/completions") {
+      return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" }
+      });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      analyzeProject(repo, { ...settings, supportsStreaming: true }, {
+        onModelStart: () => events.push("start"),
+        onModelDelta: (text) => events.push(`delta:${text}`),
+        onModelDone: () => events.push("done"),
+        onModelError: (error) => events.push(`error:${error}`)
+      }),
+    /without a terminal event/
+  );
+
+  assert.deepEqual(events, ["start", "delta:partial", "error:stream ended without a terminal event"]);
 });
 
 test("explainFile treats a cache record with missing basis files as a miss", async () => {

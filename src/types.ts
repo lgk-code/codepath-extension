@@ -235,4 +235,4 @@ export type RuntimeResponse<T> = {
 export type PortMessage =
   | { id: string; request: RuntimeRequest }
   | { id: string; response: RuntimeResponse<unknown> }
-  | { id: string; event: "heartbeat" | "stream-start" | "stream-delta" | "stream-done" | "stream-error" | "stream-fallback"; text?: string; error?: string };
+  | { id: string; event: "heartbeat" | "stream-start" | "stream-delta" | "stream-done" | "stream-error"; text?: string; error?: string };

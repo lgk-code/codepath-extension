@@ -18,7 +18,7 @@ import { GithubClient } from "../src/lib/githubClient";
 import { validateRequestLocation } from "../src/lib/runtimeBoundary";
 import { createSettingsStore } from "../src/lib/settingsStore";
 
-const BACKGROUND_BUILD = "dev-2026-07-10-adversarial-review-fixes-v14";
+const BACKGROUND_BUILD = "dev-2026-07-10-adversarial-review-fixes-v15";
 const DEV_RELOAD_ALARM_NAME = "codepath-dev-self-reload";
 const DEV_RELOAD_ALARM_PERIOD_MINUTES = 0.5;
 const DEV_RELOAD_ACTIVE_INTERVAL_MS = 5_000;
@@ -28,7 +28,7 @@ type StreamHandlers = {
   onModelStart?: () => void;
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
-  onModelFallback?: (reason: string) => void;
+  onModelError?: (error: string) => void;
 };
 
 let devReloadStarted = false;
@@ -83,7 +83,7 @@ async function handlePortRequest(port: ChromePort, envelope: Extract<PortMessage
         onModelStart: () => post({ id: envelope.id, event: "stream-start" }),
         onModelDelta: (text) => post({ id: envelope.id, event: "stream-delta", text }),
         onModelDone: () => post({ id: envelope.id, event: "stream-done" }),
-        onModelFallback: (reason) => post({ id: envelope.id, event: "stream-fallback", text: reason })
+        onModelError: (error) => post({ id: envelope.id, event: "stream-error", error })
       },
       senderUrl(port.sender)
     );

@@ -29,7 +29,11 @@ test("rehypeLinkCodePaths rewrites explicit markdown links to the analyzed commi
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12",
+    ["src/app.ts"]
+  ) as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
   const anchor = tree.children[0];
@@ -54,7 +58,11 @@ test("rehypeLinkCodePaths rewrites explicit relative markdown links with non-pat
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12",
+    ["src/app.ts"]
+  ) as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
@@ -77,7 +85,11 @@ test("rehypeLinkCodePaths extracts file paths from same-repo links that use slas
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12",
+    ["packages/ui/src/app.ts"]
+  ) as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
@@ -215,4 +227,49 @@ test("rehypeLinkCodePaths does not create source links without an immutable comm
   transformer(tree);
 
   assert.equal(tree.children.every((node) => node.type === "text"), true);
+});
+
+test("rehypeLinkCodePaths linkifies only paths present in analyzed sources", () => {
+  const tree = {
+    type: "root",
+    children: [{ type: "text", value: "Read src/app.ts, not src/not-real.ts." }]
+  };
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12",
+    ["src/app.ts"]
+  ) as unknown as () => unknown;
+  const transformer = plugin() as (tree: unknown) => void;
+
+  transformer(tree);
+
+  const nodes = tree.children as Array<{ type: string; tagName?: string; properties?: Record<string, string> }>;
+  const anchors = nodes.filter((node) => node.type === "element" && node.tagName === "a");
+  assert.equal(anchors.length, 1);
+  assert.match(anchors[0]?.properties?.href ?? "", /\/src\/app\.ts$/);
+  assert.equal(JSON.stringify(tree).includes("src/not-real.ts"), true);
+});
+
+test("rehypeLinkCodePaths makes same-commit links inert when the path was not analyzed", () => {
+  const tree = {
+    type: "root",
+    children: [
+      {
+        type: "element",
+        tagName: "a",
+        properties: { href: "https://github.com/acme/demo/blob/abcdef1234567890abcdef1234567890abcdef12/src/not-real.ts" },
+        children: [{ type: "text", value: "src/not-real.ts" }]
+      }
+    ]
+  };
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12",
+    ["src/app.ts"]
+  ) as unknown as () => unknown;
+  const transformer = plugin() as (tree: unknown) => void;
+
+  transformer(tree);
+
+  assert.equal(tree.children[0]?.tagName, "span");
 });

@@ -27,6 +27,8 @@ test("release workflow verifies tag provenance against full main history", () =>
 test("release publication is orchestrated by the trusted default-branch workflow", () => {
   const release = fs.readFileSync(".github/workflows/release.yml", "utf8");
   assert.match(release, /repository_dispatch:/);
+  assert.match(release, /workflow_dispatch:[\s\S]*tag:[\s\S]*required:\s*true/);
+  assert.match(release, /RELEASE_TAG:\s*\$\{\{ inputs\.tag \|\| github\.event\.client_payload\.tag \}\}/);
   assert.doesNotMatch(release, /push:\s*[\s\S]*tags:/);
   assert.match(release, /if:\s*github\.ref == 'refs\/heads\/main' && github\.actor == github\.repository_owner/);
   assert.equal((release.match(/github\.actor == github\.repository_owner/g) ?? []).length, 2);

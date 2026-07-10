@@ -60,7 +60,6 @@ type ActiveStream = {
   receivedDelta: boolean;
   expectsStreaming: boolean;
   mode: Settings["streamingMode"];
-  fallbackReason?: string;
 };
 
 type AnalysisSuggestionRequest = {
@@ -87,7 +86,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v14";
+const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v15";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -184,7 +183,7 @@ export function Sidebar() {
   async function run<T>(
     target: StreamTarget,
     label: string,
-    action: (onDelta: (text: string) => void, onFallback: (reason: string) => void) => Promise<T>,
+    action: (onDelta: (text: string) => void) => Promise<T>,
     onDone: (value: T, elapsedMs: number) => void,
     meta: { question?: string } = {}
   ) {
@@ -215,7 +214,7 @@ export function Sidebar() {
       )
     );
     try {
-      const value = await action(streamBatcher.push, (reason) => markStreamFallback(runId, startedRepoKey, target, reason));
+      const value = await action(streamBatcher.push);
       streamBatcher.flush();
       if (!isCurrentRun(runId, startedRepoKey)) return;
       onDone(value, Date.now() - startedAt);
@@ -273,14 +272,6 @@ export function Sidebar() {
       ? Math.max(0, element.scrollHeight - element.clientHeight - position.bottomOffset)
       : position.scrollTop;
     element.scrollTo({ top });
-  }
-
-  function markStreamFallback(runId: number, repoKey: string, target: StreamTarget, reason: string) {
-    setActiveStream((current) =>
-      current && current.runId === runId && current.target === target && current.repoKey === repoKey && isCurrentRun(runId, repoKey)
-        ? { ...current, fallbackReason: reason, expectsStreaming: false, mode: "unsupported" }
-        : current
-    );
   }
 
   async function saveSettings(next: Settings) {
@@ -357,14 +348,14 @@ export function Sidebar() {
     run(
       "ask",
       "正在回答问题...",
-      (onDelta, onFallback) =>
+      (onDelta) =>
         send<ProjectOverview>({
           type: "answer-question",
           repo,
           question: trimmed,
           context: askContext.basis ? askContext.text : undefined,
           contextBasis: askContext.basis
-        }, onDelta, onFallback),
+        }, onDelta),
       (answer, elapsedMs) => {
         setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
         setQuestion("");
@@ -560,12 +551,7 @@ export function Sidebar() {
                 run(
                   "overview",
                   projectAnalysisMode === "full-source" ? "正在进行全部源码分析..." : "正在分析项目...",
-                  (onDelta, onFallback) =>
-                    send<ProjectOverview>(
-                      { type: "analyze-project", repo, mode: projectAnalysisMode },
-                      onDelta,
-                      onFallback
-                    ),
+                  (onDelta) => send<ProjectOverview>({ type: "analyze-project", repo, mode: projectAnalysisMode }, onDelta),
                   (result) => {
                     setOverview(result);
                     requestAnalysisSuggestions("overview", overviewSuggestionRequest(result));
@@ -612,7 +598,7 @@ export function Sidebar() {
                 run(
                   "feature",
                   "正在分析功能路径...",
-                  (onDelta, onFallback) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta, onFallback),
+                  (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta),
                   (result) => {
                     setFeaturePath(result);
                     requestAnalysisSuggestions("feature", featureSuggestionRequest(result));
@@ -652,7 +638,7 @@ export function Sidebar() {
                 run(
                   "file",
                   "正在解释当前文件...",
-                  (onDelta, onFallback) => send<FileExplanation>({ type: "explain-file", repo }, onDelta, onFallback),
+                  (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta),
                   (result) => {
                     setFileExplanation(result);
                     requestAnalysisSuggestions("file", fileSuggestionRequest(result));
@@ -705,7 +691,7 @@ export function Sidebar() {
                 run(
                   "skill",
                   "正在生成借鉴材料...",
-                  (onDelta, onFallback) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta, onFallback),
+                  (onDelta) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta),
                   (result) => {
                     setSkillBlueprint(result);
                     requestAnalysisSuggestions("skill", skillSuggestionRequest(result));
@@ -899,6 +885,7 @@ function SettingsPanel(props: {
 }) {
   const [draft, setDraft] = useState(() => settingsDraftWithoutSecrets(props.settings));
   const [draftDirty, setDraftDirty] = useState(false);
+  const draftRevisionRef = useRef(0);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelListStatus, setModelListStatus] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -914,12 +901,14 @@ function SettingsPanel(props: {
   }, [draftDirty, props.settings]);
 
   function updateDraft(next: Settings) {
+    draftRevisionRef.current += 1;
     setDraft(next);
     setDraftDirty(true);
   }
 
   async function fetchAvailableModels() {
     const normalized = buildSettingsForSave(draft, props.settings);
+    const requestedDraftRevision = draftRevisionRef.current;
     if (!normalized.apiKey || !normalized.baseUrl) {
       setModelListStatus("请先通过安全窗口保存 API Key，并填写 Base URL。");
       return;
@@ -930,11 +919,14 @@ function SettingsPanel(props: {
     try {
       const result = await send<ModelListResult>({ type: "list-models", settings: normalized });
       setModelOptions(result.models);
+      if (draftRevisionRef.current !== requestedDraftRevision) {
+        setModelListStatus("模型列表已更新；检测到表单仍在编辑，未覆盖当前草稿。");
+        return;
+      }
       updateDraft(settingsDraftWithoutSecrets({ ...normalized, baseUrl: result.baseUrl, model: result.selectedModel || normalized.model }));
       setModelListStatus(result.message || `已获取 ${result.models.length} 个模型。`);
     } catch (error) {
       setModelOptions([]);
-      updateDraft(settingsDraftWithoutSecrets(normalized));
       setModelListStatus(`模型列表获取失败：${humanizeError(error)}。可以手动填写模型名称后保存。`);
     } finally {
       setFetchingModels(false);
@@ -1021,6 +1013,7 @@ function SettingsPanel(props: {
       <button
         className="cp-primary"
         onClick={() => {
+          draftRevisionRef.current += 1;
           setDraftDirty(false);
           props.onChange(buildSettingsForSave(draft, props.settings));
         }}
@@ -1276,7 +1269,6 @@ function StreamPreview(props: { repo: RepoRef | null; stream: ActiveStream }) {
   return (
     <div className="cp-stream-preview">
       <div className="cp-chat-meta">{status}</div>
-      {props.stream.fallbackReason && <div className="cp-stream-placeholder">流式失败后已回退普通返回：{props.stream.fallbackReason}</div>}
       {props.stream.text ? (
         <MarkdownBlock repo={props.repo} text={props.stream.text} sources={[]} />
       ) : (
@@ -1287,7 +1279,6 @@ function StreamPreview(props: { repo: RepoRef | null; stream: ActiveStream }) {
 }
 
 function streamStatusText(stream: ActiveStream): string {
-  if (stream.fallbackReason) return "已回退普通一次性返回...";
   if (stream.receivedDelta) return stream.mode === "buffered" ? "接口可能缓冲，正在接收模型输出..." : "正在实时接收模型输出...";
   if (stream.expectsStreaming) {
     if (stream.mode === "buffered") return "接口支持 stream=true，但疑似缓冲；正在等待模型内容...";
@@ -1537,21 +1528,21 @@ function formatElapsedCompact(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
-async function send<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<T> {
+async function send<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<T> {
   if (!validateRequestLocation(request, location.href)) {
     throw new Error("GitHub 页面已导航，请在当前页面重新发起分析。");
   }
-  const response = await sendBestEffort<T>(request, onStreamDelta, onStreamFallback);
+  const response = await sendBestEffort<T>(request, onStreamDelta);
   if (!response.ok) throw new Error(response.error || "Request failed.");
   return response.data as T;
 }
 
-async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<RuntimeResponse<T>> {
+async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<RuntimeResponse<T>> {
   const storageResponse = await sendSettingsViaStorage<T>(request).catch(() => undefined);
   if (storageResponse?.ok) return storageResponse;
 
   const portError: { message?: string; dispatched: boolean } = { dispatched: true };
-  const portResponse = await sendViaPort<T>(request, onStreamDelta, onStreamFallback).catch((error) => {
+  const portResponse = await sendViaPort<T>(request, onStreamDelta).catch((error) => {
     portError.message = error instanceof Error ? error.message : String(error);
     portError.dispatched = error instanceof PortRequestError ? error.dispatched : true;
     return undefined;
@@ -1704,7 +1695,7 @@ class PortRequestError extends Error {
   }
 }
 
-function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<RuntimeResponse<T>> {
+function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void): Promise<RuntimeResponse<T>> {
   return new Promise((resolve, reject) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let port: ReturnType<typeof chrome.runtime.connect>;
@@ -1743,7 +1734,6 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
       if ("event" in envelope) {
         if (envelope.event === "heartbeat") return;
         if (envelope.event === "stream-delta" && envelope.text) onStreamDelta?.(envelope.text);
-        if (envelope.event === "stream-fallback") onStreamFallback?.(envelope.text || "未知原因");
         if (envelope.event === "stream-error") settle(() => reject(new PortRequestError(envelope.error || "Streaming failed.", dispatched)));
         return;
       }

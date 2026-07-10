@@ -35,6 +35,7 @@ test("secret editor is opened and mutated only through the background", () => {
   assert.match(sidebar, /const \[draftDirty, setDraftDirty\] = useState\(false\)/);
   assert.match(sidebar, /if \(draftDirty\) return;[\s\S]{0,180}settingsDraftWithoutSecrets\(props\.settings\)/);
   assert.match(sidebar, /function updateDraft\(next: Settings\)[\s\S]{0,100}setDraftDirty\(true\)/);
+  assert.match(sidebar, /requestedDraftRevision[\s\S]{0,600}draftRevisionRef\.current !== requestedDraftRevision/);
 });
 
 test("prompt version fingerprints every source-backed analysis prompt", () => {
@@ -74,7 +75,12 @@ test("streaming UI updates are scoped to the active repository run", () => {
   assert.match(sidebar, /repoKey === repoStateKey\(repoRef\.current\)/);
   assert.match(sidebar, /isRepoStateCurrent\(repoKey, location\.href\)/);
   assert.match(sidebar, /current\.runId === runId/);
-  assert.match(sidebar, /function markStreamFallback\(runId/);
+  assert.doesNotMatch(sidebar, /markStreamFallback|stream-fallback|fallbackReason/);
+  const background = read("entrypoints/background.ts");
+  const analyzer = read("src/lib/analyzer.ts");
+  assert.match(background, /onModelError: \(error\) => post\(\{ id: envelope\.id, event: "stream-error", error \}\)/);
+  assert.match(analyzer, /const result = await chatAuto[\s\S]{0,180}onModelDone/);
+  assert.match(analyzer, /catch \(error\)[\s\S]{0,180}onModelError/);
 });
 
 test("navigation events are signals and repository requests are sender-scoped", () => {

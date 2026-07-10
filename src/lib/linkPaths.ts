@@ -14,25 +14,6 @@ type ElementNode = Parent & {
 };
 
 const PATH_PATTERN = /(?:^|[\s([`])((?:\.\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|vue|svelte|go|rs|java|kt|cs|php|rb|md|json|toml|ya?ml|txt|sh|css|scss|html))(?:[:#]L?\d+)?/g;
-const COMMON_PATH_ROOTS = new Set([
-  ".github",
-  "app",
-  "apps",
-  "bin",
-  "cmd",
-  "config",
-  "docs",
-  "entrypoints",
-  "example",
-  "examples",
-  "lib",
-  "packages",
-  "public",
-  "scripts",
-  "src",
-  "test",
-  "tests"
-]);
 
 export function githubFileUrl(repo: RepoRef, path: string, branchOverride?: string): string {
   const branch = branchOverride || repo.branch || "main";
@@ -55,17 +36,17 @@ export function rehypeLinkCodePaths(repo: RepoRef | null, refOverride?: string, 
         rewriteExplicitLinks(tree, repo, immutableRef, knownPaths);
         visitTextParents(tree, [], (parent, index, textNode, ancestors) => {
           if (isInsideIgnoredElement(parent) || ancestors.some(isIgnoredElement)) return;
-          const replacement = linkifyText(textNode.value, repo, immutableRef);
+          const replacement = linkifyText(textNode.value, repo, immutableRef, knownPaths);
           if (!replacement) return;
           parent.children.splice(index, 1, ...replacement);
         });
       }
-      sanitizeModelLinksAndImages(tree, repo, immutableRef);
+      sanitizeModelLinksAndImages(tree, repo, immutableRef, knownPaths);
     };
   };
 }
 
-function sanitizeModelLinksAndImages(node: Node, repo: RepoRef | null, immutableRef: string | undefined) {
+function sanitizeModelLinksAndImages(node: Node, repo: RepoRef | null, immutableRef: string | undefined, knownPaths: string[]) {
   if (node.type === "element") {
     const element = node as ElementNode;
     if (element.tagName === "img") {
@@ -75,17 +56,17 @@ function sanitizeModelLinksAndImages(node: Node, repo: RepoRef | null, immutable
       element.children = [text(alt)];
     } else if (element.tagName === "a") {
       const href = typeof element.properties?.href === "string" ? element.properties.href : "";
-      if (!isAllowedImmutableSourceLink(href, repo, immutableRef)) {
+      if (!isAllowedImmutableSourceLink(href, repo, immutableRef, knownPaths)) {
         element.tagName = "span";
         element.properties = { className: ["cp-blocked-link"] };
       }
     }
   }
   if (!isParent(node)) return;
-  for (const child of node.children) sanitizeModelLinksAndImages(child, repo, immutableRef);
+  for (const child of node.children) sanitizeModelLinksAndImages(child, repo, immutableRef, knownPaths);
 }
 
-function isAllowedImmutableSourceLink(href: string, repo: RepoRef | null, immutableRef: string | undefined): boolean {
+function isAllowedImmutableSourceLink(href: string, repo: RepoRef | null, immutableRef: string | undefined, knownPaths: string[]): boolean {
   if (!href || !repo || !immutableRef) return false;
   try {
     const url = new URL(href);
@@ -98,7 +79,8 @@ function isAllowedImmutableSourceLink(href: string, repo: RepoRef | null, immuta
       parts[2] === "blob" &&
       parts[3] === immutableRef &&
       parts.length > 4 &&
-      parts.slice(4).every((part) => Boolean(part) && part !== "." && part !== "..")
+      parts.slice(4).every((part) => Boolean(part) && part !== "." && part !== "..") &&
+      Boolean(knownSourcePath(parts.slice(4).join("/"), knownPaths))
     );
   } catch {
     return false;
@@ -125,12 +107,12 @@ function rewriteExplicitLinks(node: Node, repo: RepoRef, refOverride: string | u
 
 function explicitLinkPath(element: ElementNode, repo: RepoRef, knownPaths: string[]): string {
   const labelPath = textContent(element).trim();
-  if (looksLikeRepoPath(labelPath)) return labelPath.replace(/[:#]L?\d+$/, "");
+  if (looksLikeRepoPath(labelPath)) return knownSourcePath(labelPath, knownPaths);
 
   const href = typeof element.properties?.href === "string" ? element.properties.href : "";
   if (!href) return "";
   const relativePath = explicitRelativePath(href);
-  if (relativePath) return relativePath;
+  if (relativePath) return knownSourcePath(relativePath, knownPaths);
   try {
     const url = new URL(href);
     if (url.hostname !== "github.com") return "";
@@ -150,20 +132,7 @@ function explicitRelativePath(href: string): string {
 }
 
 function githubBlobPath(parts: string[], knownPaths: string[]): string {
-  const fromKnownPath = matchKnownPath(parts.slice(1), knownPaths);
-  if (fromKnownPath) return fromKnownPath;
-
-  const candidates = parts
-    .slice(1)
-    .map((_part, index) => parts.slice(index + 1).join("/"))
-    .filter(looksLikeRepoPath);
-  if (candidates.length === 0) return "";
-  const rooted = candidates.find((candidate) => {
-    const [root] = candidate.split("/");
-    return Boolean(root && COMMON_PATH_ROOTS.has(root.toLowerCase()));
-  });
-  if (rooted) return rooted;
-  return "";
+  return matchKnownPath(parts.slice(1), knownPaths);
 }
 
 function matchKnownPath(parts: string[], knownPaths: string[]): string {
@@ -171,6 +140,15 @@ function matchKnownPath(parts: string[], knownPaths: string[]): string {
   const matches = normalized.filter((path) => parts.join("/").endsWith(path));
   if (matches.length !== 1) return "";
   return matches[0] ?? "";
+}
+
+function knownSourcePath(value: string, knownPaths: string[]): string {
+  const candidate = stripLineSuffix(value.replace(/^\.\//, ""));
+  if (!looksLikeRepoPath(candidate)) return "";
+  const matches = knownPaths
+    .map((path) => stripLineSuffix(path.replace(/^\.\//, "")))
+    .filter((path) => path === candidate);
+  return matches.length === 1 ? candidate : "";
 }
 
 function textContent(node: Node): string {
@@ -187,7 +165,7 @@ function stripLineSuffix(value: string): string {
   return value.replace(/[:#]L?\d+$/, "");
 }
 
-function linkifyText(value: string, repo: RepoRef, refOverride?: string): Array<Node> | null {
+function linkifyText(value: string, repo: RepoRef, refOverride: string, knownPaths: string[]): Array<Node> | null {
   const nodes: Array<Node> = [];
   let lastIndex = 0;
   let matched = false;
@@ -204,8 +182,9 @@ function linkifyText(value: string, repo: RepoRef, refOverride?: string): Array<
     if (pathStart > lastIndex) {
       nodes.push(text(value.slice(lastIndex, pathStart)));
     }
+    const sourcePath = knownSourcePath(path, knownPaths);
     try {
-      nodes.push(link(path, githubFileUrl(repo, path, refOverride)));
+      nodes.push(sourcePath ? link(sourcePath, githubFileUrl(repo, sourcePath, refOverride)) : text(path));
     } catch {
       nodes.push(text(path));
     }

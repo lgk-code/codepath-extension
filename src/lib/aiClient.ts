@@ -194,8 +194,7 @@ export async function listModels(settings: Pick<Settings, "provider" | "apiKey" 
 export async function chatAuto(
   settings: Settings,
   messages: ChatMessage[],
-  onDelta?: (text: string) => void,
-  _onFallback?: (reason: string) => void
+  onDelta?: (text: string) => void
 ): Promise<string> {
   if (!onDelta || settings.supportsStreaming !== true) {
     return chat(settings, messages);

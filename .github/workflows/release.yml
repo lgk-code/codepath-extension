@@ -2,8 +2,15 @@ name: Release
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_TAG: ${{ inputs.tag || github.event.client_payload.tag }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Annotated release tag already pushed to origin
+        required: true
+        type: string
   repository_dispatch:
     types:
       - release
@@ -34,13 +41,10 @@ jobs:
       - name: Verify immutable release tag ruleset
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.client_payload.tag }}
         run: node scripts/verify-release-ruleset.mjs "$RELEASE_TAG"
 
       - name: Verify annotated tag provenance from trusted main
         id: provenance
-        env:
-          RELEASE_TAG: ${{ github.event.client_payload.tag }}
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then

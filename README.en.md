@@ -37,7 +37,7 @@ The Release package does not include any API key or GitHub token. Your secrets a
 - Analyzes requested feature paths such as login, upload, search, training flow, or cache management.
 - Explains the current GitHub file page.
 - Supports follow-up questions and contextual suggested questions.
-- Renders Markdown, links source references back to GitHub files, and detects streaming support.
+- Renders Markdown, links only analyzed source references back to GitHub files, and detects streaming support.
 - Shows answer timing, cache status, and model / GitHub connection diagnostics.
 
 ## Demo
@@ -58,7 +58,7 @@ The project is managed with Git. See the [development guide](docs/DEVELOPMENT.md
 - Model 401/403: check API Key, model access, and provider account status.
 - Model 404: check that the Base URL, API format, and model name match; OpenAI format uses `/chat/completions`, while Anthropic format uses `/messages`.
 - Slow answers: check the timing line in each result.
-- Streaming looks like a one-shot response: some providers or proxies buffer SSE; CodePath will show realtime, buffered, unsupported, or fallback mode in diagnostics.
+- Streaming looks like a one-shot response: some providers or proxies buffer SSE; CodePath reports realtime, buffered, or unsupported modes. A dispatched streaming request is never replayed automatically after failure; inspect the error before retrying manually.
 
 ## Security Notes
 

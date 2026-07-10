@@ -143,6 +143,7 @@ export class GithubClient implements SourceClient {
           viable.push(candidate);
         }
       } catch (error) {
+        if (error instanceof GithubRateLimitError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("did not include a head commit SHA")) continue;
         throw new Error(`Ambiguous GitHub ref/path could not be validated safely: ${message}`);

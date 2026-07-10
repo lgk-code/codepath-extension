@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { RepoRef } from "../types";
-import { GithubClient } from "./githubClient";
+import { GithubClient, GithubRateLimitError } from "./githubClient";
 import { parseGithubUrl } from "./githubUrl";
 
 const originalFetch = globalThis.fetch;
@@ -205,6 +205,27 @@ test("GithubClient memoizes ref disambiguation within one analysis client", asyn
   await client.resolveRepoRef(repo);
 
   assert.equal(fetchCalls, 3);
+});
+
+test("GithubClient preserves typed rate limits during ref path validation", async () => {
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = new URL(String(request));
+    if (url.pathname.endsWith("/git/matching-refs/heads/feature")) {
+      return jsonResponse([{ ref: "refs/heads/feature/cache-fix" }]);
+    }
+    if (url.pathname.endsWith("/git/matching-refs/tags/feature")) return jsonResponse([]);
+    if (url.pathname.endsWith("/contents/src/app.ts")) {
+      return new Response("API rate limit exceeded", { status: 403, headers: { "x-ratelimit-remaining": "0" } });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const repo = parseGithubUrl("https://github.com/acme/demo/blob/feature/cache-fix/src/app.ts");
+  assert.ok(repo);
+
+  await assert.rejects(
+    () => new GithubClient({ githubToken: "" }).resolveRepoRef(repo),
+    (error: unknown) => error instanceof GithubRateLimitError
+  );
 });
 
 test("GithubClient filters matching refs before applying the candidate budget", async () => {

@@ -72,7 +72,7 @@ type AnalysisRunOptions = {
   onModelStart?: () => void;
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
-  onModelFallback?: (reason: string) => void;
+  onModelError?: (error: string) => void;
   sourceMode?: "zip";
   cacheGuard?: CacheGenerationGuard;
 };
@@ -699,9 +699,12 @@ async function runModel(
     const willStream = settings.supportsStreaming === true && Boolean(options.onModelDelta);
     if (willStream) options.onModelStart?.();
     try {
-      return await chatAuto(settings, messages, options.onModelDelta, options.onModelFallback);
-    } finally {
+      const result = await chatAuto(settings, messages, options.onModelDelta);
       if (willStream) options.onModelDone?.();
+      return result;
+    } catch (error) {
+      if (willStream) options.onModelError?.(error instanceof Error ? error.message : String(error));
+      throw error;
     }
   });
 }
@@ -899,6 +902,7 @@ async function loadFullSourceSnippets(
     try {
       content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles, cacheGuard);
     } catch (error) {
+      if (error instanceof GithubRateLimitError) throw error;
       throw new Error(`全部源码分析读取失败：${file.path}。${error instanceof Error ? error.message : String(error)}`);
     }
 

@@ -141,6 +141,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - Git tree mode 为 `120000` 的符号链接必须按当前源码快照隔离文件内容缓存；链接 blob 不变但目标内容随 tree 更新时，模型只能看到新目标内容。
 - 403/429 错误响应正文读取失败时，错误仍必须保留 GitHub 状态码并触发 ZIP fallback。
 - 只有 GitHub client 确认的 typed 限流错误才能触发 ZIP fallback：429，或带 `x-ratelimit-remaining: 0`、`retry-after`、明确 rate-limit 正文的 403。权限不足的 403 即使来自 GitHub 也不得降级；模型接口错误即使正文包含 `GitHub`、`403` 或 `429`，同样不得重放模型请求或降级源码来源。
+- slash-ref 路径校验和全部源码文件读取不得把 typed 限流包装成普通错误；这两个阶段的真实限流也必须到达同一个整操作 ZIP retry 边界。
 - prompt cache fingerprint 必须使用 64 位摘要，并包含五个实际承载 inline prompt 的 analysis attempt 以及决定 prompt 内容/路径的 helper；只修改任一分析指令时，旧模型结果必须自然失效。
 - `basis.files` 缺失、类型错误、file payload 非字符串，或任一结果 kind 的 payload 不符合公开结果结构时，持久化记录必须按 cache miss 处理，不能让分析因本地存储损坏而崩溃。
 
@@ -150,18 +151,21 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 密钥编辑页不得出现在 `web_accessible_resources`，扩展页 CSP 必须禁止 framing；Sidebar 只能请求 background 以扩展身份打开该窗口，密钥页只能向 background 发送 allowlisted 单字段更新。
 - 所有设置写入必须由 background 串行处理；非密钥表单不得携带或覆盖密钥，模型探测期间连接配置变化时不得写入旧探测元数据。
 - 密钥窗口关闭后的状态轮询只能刷新密钥掩码；用户已经编辑 Base URL、provider 或模型草稿时，轮询不得每秒用已保存设置覆盖未保存输入。
+- 获取模型列表请求进行期间如用户继续编辑表单，旧请求完成后只能更新候选列表和状态，不能用请求开始时的旧草稿覆盖新输入。
 - 中性代理 URL 配置为 Anthropic provider 时，应发送 `/messages` 与 `x-api-key`，不得退回 OpenAI 格式。
 - 长时间模型请求期间后台每 20 秒发送 heartbeat；前端不得因端口超时通过 `sendMessage` 重放分析。
 - `list-models` 只有在 port 请求尚未成功投递时才允许本地 fallback；投递后的超时、断连或流错误不得切换 transport 重放。
 - GitHub 单页导航后、Sidebar 状态刷新前发起的旧页面请求必须被当前位置校验拒绝，不得发送旧 branch/path。
-- 已投递分析在 GitHub 单页导航后返回时，完成、错误、fallback 和流式 delta 都必须直接比对当前 `location.href`，不得在 800 ms 轮询窗口内提交旧结果。
-- 同一 repo/target 的新任务启动后，旧任务的 fallback 必须因 runId 不同而被拒绝，不能修改新任务的 stream 状态。
+- 已投递分析在 GitHub 单页导航后返回时，完成、错误和流式 delta 都必须直接比对当前 `location.href`，不得在 800 ms 轮询窗口内提交旧结果。
+- 同一 repo/target 的新任务启动后，旧任务的 delta 或错误状态必须因 runId 不同而被拒绝，不能修改新任务的 stream 状态。
+- 流式失败必须发送一次 `stream-error`，不得先发送 `stream-done`；成功完成才允许发送 `stream-done`。
 - OpenAI `[DONE]` 和 Anthropic `message_stop` 到达后应立即完成，不等待服务端关闭连接。
 - 大量流式 delta 应按批次刷新 Markdown；最终文本不能丢字、重复或跨仓库显示。
 - 任一流式模型 POST 一旦发出，不论首个 delta 是否到达，解析、大小、读取或协议错误都不得自动发送第二次非流请求。
 - OpenAI 流必须以 `[DONE]`、Anthropic 流必须以 `message_stop` 完成；连接在 terminal event 前 EOF 时必须报错，不能把部分输出当成功结果缓存。
 - background 必须比较 sender 当前完整 owner/repo/branch/page/path，而不只比较仓库名；同仓库 SPA 导航后的旧请求也必须拒绝。
 - 模型 Markdown 只能把当前仓库、40 位 immutable commit 下的源码路径渲染为链接；unchecked ZIP 路径、外部链接和图片必须渲染为不发请求的普通文本。
+- 即使模型写出同仓库同 commit 的路径，也只有出现在当前结果 `sources` 中的实际分析文件才允许成为链接；不存在或未参与分析的路径必须保持普通文本。
 
 ## 部署与发布门禁
 
@@ -177,7 +181,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 不同部署目标共享同一个 `.output` 时，必须先获取 output-scoped Mutex，再获取 target-scoped Mutex；锁顺序固定为 output 后 target，并覆盖 staging copy 完成。
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
-- Release workflow 必须从默认分支 `repository_dispatch` 运行；候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
+- Release workflow 必须从默认分支的 owner-only `workflow_dispatch` 或 `repository_dispatch` 运行；两种入口都必须显式提供已推送 annotated tag。候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
 - 用户仓库的两个 release job 都必须要求 `github.actor == github.repository_owner`；非 owner 的 write collaborator 不能通过 dispatch 获得发布权限。
 - `release` environment 审批完成后，写权限 job 必须从 `github.workflow_sha` checkout verifier，不能执行浮动 `main` 上后来出现的脚本。
 - 写权限 job 必须重新 fetch 远端 annotated tag，同时确认 tag object SHA 和 peel 后 commit SHA 与只读构建输出完全一致后才能发布。
