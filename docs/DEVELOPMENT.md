@@ -105,5 +105,6 @@ npm.cmd run mcp
 - 正式发布使用 annotated `v*` tag（例如 `git tag -a v0.1.3 -m "v0.1.3"`）；tag 必须匹配 `package.json` 版本、指向当前 checkout `HEAD`，且 commit 已进入 `origin/main`。
 - 推送 annotated tag 后，从默认分支发送受信发布事件：`gh api repos/lgk-code/codepath-extension/dispatches --method POST -f event_type=release -f "client_payload[tag]=v0.1.3"`。tag push 本身不发布。
 - Release workflow 先以只读权限验证 tag/main/package 并构建，再由 `release` environment 的独立写权限 job 发布固定资产 `CodePath.zip`；仓库应为该 environment 配置所需审批。
-- 审批后的发布 job 会再次 fetch annotated tag；若 tag 在构建后被移动、改成 lightweight tag，或不再指向已构建 SHA，发布必须失败。
+- 仓库必须启用 active tag ruleset `Immutable release tags`，以 `refs/tags/v*` 为范围，限制 update 和 deletion，且不配置 bypass actor；允许首次创建 release tag，但创建后不可移动或删除。
+- 审批后的发布 job 会先通过 GitHub Rulesets API 验证上述不可变 tag 策略，再次 fetch annotated tag；若策略缺失、tag 在构建后被移动、改成 lightweight tag，或不再指向已构建 SHA，发布必须失败。
 - 迁移备份和 `E:\projects\CodePath-migration.bundle` 不属于仓库，也不得上传到 Release。

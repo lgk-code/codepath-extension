@@ -466,6 +466,44 @@ test("explainFile uses git tree blob identity for files filtered out of project 
   assert.doesNotMatch(modelPrompts.at(-1) ?? "", /revision-1/);
 });
 
+test("explainFile scopes symlink target content to the current repository snapshot", async () => {
+  let revision = 1;
+  const modelPrompts: string[] = [];
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    get tree() {
+      return [
+        {
+          path: "src/current.ts",
+          type: "blob" as const,
+          mode: "120000",
+          size: 14,
+          sha: "stable-symlink-blob"
+        } as TreeFile & { mode: string }
+      ];
+    },
+    get files() {
+      return { "src/current.ts": `export const targetRevision = ${revision};` };
+    },
+    get headSha() {
+      return `head-${revision}`;
+    },
+    get treeSha() {
+      return `tree-${revision}`;
+    },
+    onModelRequest: (body) => {
+      modelPrompts.push(JSON.stringify(body.messages ?? []));
+    }
+  });
+
+  const fileRepo: RepoRef = { ...repo, pageType: "file", path: "src/current.ts" };
+  await explainFile(fileRepo, settings);
+  revision = 2;
+  await explainFile(fileRepo, settings);
+
+  assert.match(modelPrompts.at(-1) ?? "", /targetRevision = 2/);
+  assert.doesNotMatch(modelPrompts.at(-1) ?? "", /targetRevision = 1/);
+});
+
 test("analyzeProject ignores v2 persistent overview records whose basis does not match the current request", async () => {
   const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
   const key = await persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
@@ -974,6 +1012,76 @@ test("focused analysis propagates file rate limits into the full ZIP retry", asy
   assert.equal(codeloadCalls, 1);
   assert.equal(result.timing?.cacheStatus, "unchecked");
   assert.equal(result.sources.some((source) => source.path === "README.md"), true);
+});
+
+test("repository clearing invalidates every rate-limit fallback attempt in the same operation", async () => {
+  let releaseApiFile: (() => void) | undefined;
+  let markApiFileStarted: (() => void) | undefined;
+  const apiFileStarted = new Promise<void>((resolve) => {
+    markApiFileStarted = resolve;
+  });
+  const apiFileGate = new Promise<void>((resolve) => {
+    releaseApiFile = resolve;
+  });
+  let apiFileCalls = 0;
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-main" }],
+    files: { "README.md": "# API content" }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo/contents/README.md?ref=head-main") {
+      apiFileCalls += 1;
+      if (apiFileCalls === 1) {
+        markApiFileStarted?.();
+        await apiFileGate;
+      }
+      return new Response("rate limited", { status: 403 });
+    }
+    if (url === "https://codeload.github.com/acme/demo/zip/main") {
+      return zipResponse({ "demo-main/README.md": "# ZIP content" });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  const pending = analyzeProject(repo, settings);
+  await apiFileStarted;
+  await clearAnalysisCaches("repo", repo);
+  releaseApiFile?.();
+  await pending;
+  const second = await analyzeProject(repo, settings);
+
+  assert.equal(second.timing?.sourceCacheHit, undefined);
+});
+
+test("GitHub rate-limit fallback survives an unreadable error response body", async () => {
+  let codeloadCalls = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo") {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("error body stream failed"));
+          }
+        }),
+        { status: 429 }
+      );
+    }
+    if (url === "https://codeload.github.com/acme/demo/zip/main") {
+      codeloadCalls += 1;
+      return zipResponse({ "demo-main/README.md": "# ZIP content" });
+    }
+    if (url === "https://models.example/v1/chat/completions") {
+      return jsonResponse({ choices: [{ message: { content: "源码确认\n- unreadable body fallback complete。" } }] });
+    }
+    return new Response(`unexpected URL: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(codeloadCalls, 1);
+  assert.equal(result.timing?.cacheStatus, "unchecked");
 });
 
 test("analyzeProject reuses the successful API repository probe", async () => {

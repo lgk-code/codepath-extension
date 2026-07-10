@@ -35,6 +35,7 @@ export type RepoRef = {
 export type TreeFile = {
   path: string;
   type: "blob" | "tree";
+  mode?: string;
   sha?: string;
   size?: number;
 };

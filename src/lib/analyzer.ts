@@ -74,6 +74,7 @@ type AnalysisRunOptions = {
   onModelDone?: () => void;
   onModelFallback?: (reason: string) => void;
   sourceMode?: "zip";
+  cacheGuard?: CacheGenerationGuard;
 };
 
 type SuggestedQuestionsInput = {
@@ -109,7 +110,7 @@ const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
 const PERSISTENT_CACHE_V2_PREFIX = "codepath-cache-v2:";
 const PERSISTENT_CACHE_V2_ENCODED_PREFIX = "codepath-cache-v2:e:";
 const CACHE_SCHEMA_VERSION = 2;
-export const ANALYZER_VERSION = "2026-07-09-adversarial-v3";
+export const ANALYZER_VERSION = "2026-07-10-adversarial-v4";
 export const PROMPT_VERSION = createPromptVersion();
 const MAX_PERSISTENT_CACHE_ENTRIES = 240;
 const MAX_PERSISTENT_CACHE_REPO_ENTRIES = 80;
@@ -130,12 +131,12 @@ const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
 };
 
 export async function analyzeProject(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
-  return runWithGithubRateLimitFallback(options, (attemptOptions) => analyzeProjectAttempt(repo, settings, attemptOptions));
+  return runWithGithubRateLimitFallback(repo, options, (attemptOptions) => analyzeProjectAttempt(repo, settings, attemptOptions));
 }
 
 async function analyzeProjectAttempt(repo: RepoRef, settings: Settings, options: AnalysisRunOptions): Promise<ProjectOverview> {
   const mode = options.mode ?? "focused";
-  const cacheGuard = captureCacheGeneration(repo);
+  const cacheGuard = options.cacheGuard ?? captureCacheGeneration(repo);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
@@ -195,12 +196,12 @@ ${formatSnippets(snippets)}`
 }
 
 export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions = {}): Promise<FeaturePath> {
-  return runWithGithubRateLimitFallback(options, (attemptOptions) => analyzeFeatureAttempt(repo, settings, feature, attemptOptions));
+  return runWithGithubRateLimitFallback(repo, options, (attemptOptions) => analyzeFeatureAttempt(repo, settings, feature, attemptOptions));
 }
 
 async function analyzeFeatureAttempt(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions): Promise<FeaturePath> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
-  const cacheGuard = captureCacheGeneration(repo);
+  const cacheGuard = options.cacheGuard ?? captureCacheGeneration(repo);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
@@ -272,7 +273,7 @@ ${formatSnippets(withImports)}`
 }
 
 export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode, options: AnalysisRunOptions = {}): Promise<SkillBlueprint> {
-  return runWithGithubRateLimitFallback(options, (attemptOptions) => generateSkillBlueprintAttempt(repo, settings, feature, mode, attemptOptions));
+  return runWithGithubRateLimitFallback(repo, options, (attemptOptions) => generateSkillBlueprintAttempt(repo, settings, feature, mode, attemptOptions));
 }
 
 async function generateSkillBlueprintAttempt(
@@ -283,7 +284,7 @@ async function generateSkillBlueprintAttempt(
   options: AnalysisRunOptions
 ): Promise<SkillBlueprint> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
-  const cacheGuard = captureCacheGeneration(repo);
+  const cacheGuard = options.cacheGuard ?? captureCacheGeneration(repo);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
@@ -353,11 +354,11 @@ ${formatSnippets(withImports)}`
 }
 
 export async function explainFile(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<FileExplanation> {
-  return runWithGithubRateLimitFallback(options, (attemptOptions) => explainFileAttempt(repo, settings, attemptOptions));
+  return runWithGithubRateLimitFallback(repo, options, (attemptOptions) => explainFileAttempt(repo, settings, attemptOptions));
 }
 
 async function explainFileAttempt(repo: RepoRef, settings: Settings, options: AnalysisRunOptions): Promise<FileExplanation> {
-  const cacheGuard = captureCacheGeneration(repo);
+  const cacheGuard = options.cacheGuard ?? captureCacheGeneration(repo);
   const timing = createTiming();
   if (!repo.path) throw new Error("The current page is not a GitHub file page.");
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
@@ -426,7 +427,7 @@ export async function answerQuestion(
   options: AnalysisRunOptions = {},
   contextBasis?: AnalysisBasis
 ): Promise<ProjectOverview> {
-  return runWithGithubRateLimitFallback(options, (attemptOptions) =>
+  return runWithGithubRateLimitFallback(repo, options, (attemptOptions) =>
     answerQuestionAttempt(repo, settings, question, context, attemptOptions, contextBasis)
   );
 }
@@ -440,7 +441,7 @@ async function answerQuestionAttempt(
   contextBasis: AnalysisBasis | undefined
 ): Promise<ProjectOverview> {
   const normalizedQuestion = validateTextInput(question, "追问", MAX_QUESTION_LENGTH);
-  const cacheGuard = captureCacheGeneration(repo);
+  const cacheGuard = options.cacheGuard ?? captureCacheGeneration(repo);
   const timing = createTiming();
   let validatedContext = "";
   let gh: SourceClient | undefined;
@@ -722,14 +723,16 @@ function withTiming<T extends object>(
 }
 
 async function runWithGithubRateLimitFallback<T>(
+  repo: RepoRef,
   options: AnalysisRunOptions,
   run: (attemptOptions: AnalysisRunOptions) => Promise<T>
 ): Promise<T> {
+  const guardedOptions = options.cacheGuard ? options : { ...options, cacheGuard: captureCacheGeneration(repo) };
   try {
-    return await run(options);
+    return await run(guardedOptions);
   } catch (error) {
-    if (options.sourceMode === "zip" || !isGithubRateLimitError(error)) throw error;
-    return run({ ...options, sourceMode: "zip" });
+    if (guardedOptions.sourceMode === "zip" || !isGithubRateLimitError(error)) throw error;
+    return run({ ...guardedOptions, sourceMode: "zip" });
   }
 }
 
@@ -1009,7 +1012,9 @@ function fileCacheKey(repo: RepoRef, branch: string, file: TreeFile, identitySco
 }
 
 function fileIdentity(file: TreeFile, identityScope = ""): string {
-  return file.sha || stringHash(`${file.path}:${file.size ?? ""}:${identityScope}`);
+  if (file.sha && file.mode !== "120000") return file.sha;
+  if (file.mode === "120000") return `symlink:${file.sha ?? "unknown"}:${identityScope}`;
+  return stringHash(`${file.path}:${file.mode ?? ""}:${file.sha ?? ""}:${file.size ?? ""}:${identityScope}`);
 }
 
 function persistentTreeKey(repo: RepoRef, branch: string, treeSha: string): string {
@@ -1049,7 +1054,7 @@ async function analysisInputDigest(kind: CacheRecordKind, settings: Settings, co
     kind,
     JSON.stringify(extra),
     context.snapshot.treeSha,
-    JSON.stringify(files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path))),
+    JSON.stringify(files.map((file) => ({ path: file.path, mode: file.mode, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path))),
     await modelFingerprint(settings),
     PROMPT_VERSION,
     ANALYZER_VERSION
@@ -1193,7 +1198,7 @@ function sameSnapshotScope(left: RepoSnapshot, right: RepoSnapshot): boolean {
 }
 
 function fileContentInputDigest(file: TreeFile, identityScope: string): string {
-  return file.sha || fileIdentity(file, identityScope);
+  return fileIdentity(file, identityScope);
 }
 
 function cachedResult<T extends object>(

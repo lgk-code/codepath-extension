@@ -38,4 +38,6 @@ test("release publication is orchestrated by the trusted default-branch workflow
   assert.match(publishJob, /CURRENT_COMMIT/);
   assert.match(publishJob, /EXPECTED_COMMIT/);
   assert.match(publishJob, /CURRENT_COMMIT" != "\$EXPECTED_COMMIT/);
+  assert.match(publishJob, /Verify immutable release tag ruleset/);
+  assert.match(publishJob, /node scripts\/verify-release-ruleset\.mjs "\$RELEASE_TAG"/);
 });

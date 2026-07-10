@@ -138,6 +138,8 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 多个候选 ref 都存在时，ZIP fallback 最多下载 3 个有界 archive，并按完整路径索引筛选唯一可行候选；多个路径都可行时仍拒绝。
 - 聚焦分析允许跳过普通文件读取错误，但 403/429 rate limit 必须向外传播并触发整次 ZIP 重试，不能让模型基于空 snippets 继续。
 - API 文件读取统一使用 raw media type 并限制为 2 MiB；1-2 MiB 文件不能被 JSON `encoding: none` 静默当作空源码，超限必须明确失败。
+- Git tree mode 为 `120000` 的符号链接必须按当前源码快照隔离文件内容缓存；链接 blob 不变但目标内容随 tree 更新时，模型只能看到新目标内容。
+- 403/429 错误响应正文读取失败时，错误仍必须保留 GitHub 状态码并触发 ZIP fallback。
 
 ## 传输、流式与安全窗口
 
@@ -166,6 +168,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
 - Release workflow 必须从默认分支 `repository_dispatch` 运行；候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
 - `release` environment 审批完成后，写权限 job 必须重新 fetch 并解引用远端 annotated tag，确认其 commit 与只读构建输出 SHA 完全一致后才能发布。
+- `refs/tags/v*` 必须由 active tag ruleset 同时限制 update 和 deletion；写权限 job 在发布前必须通过 Rulesets API 验证策略仍存在，避免 tag 校验与发布之间被移动。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
 - `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应同时拒绝脆弱版本和不满足上游 semver/Node engine 的强制 override。
 - esbuild 必须同时满足 WXT/tsx 的 `0.27.x` 范围并避开 `>=0.27.3 <0.28.1` 公告区间；当前固定为 `0.27.2`，不得用不兼容的 `0.28.x` override。
@@ -178,6 +181,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 编码 key 使用显式 `codepath-cache-v2:e:` 子命名空间；旧 ref `release%2Fx` 与新 ref `release/x` 必须分组、删除和复用隔离。
 - persistent cache 配额必须按 UTF-8 字节计算；多字节文本超过单仓库限制时不得写入，也不得为其驱逐有效记录。
 - persistent 删除尚未完成时启动的新分析必须等待删除线性化完成，不得读取即将删除的旧结果。
+- 一次分析的 API 和 ZIP fallback 必须共享同一个 cache generation guard；中途清理仓库缓存后，fallback 不得重新填充任何内存或持久化缓存。
 
 ## 回归关注点
 

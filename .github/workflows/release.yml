@@ -121,6 +121,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify immutable release tag ruleset
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-extension.outputs.tag }}
+        run: node scripts/verify-release-ruleset.mjs "$RELEASE_TAG"
+
       - name: Revalidate tag after release approval
         env:
           RELEASE_TAG: ${{ needs.build-extension.outputs.tag }}

@@ -23,6 +23,15 @@ test("GithubClient accepts bounded recursive tree responses above the generic JS
   assert.deepEqual(files, [{ path: "README.md", type: "blob", sha: "blob-1", size: undefined }]);
 });
 
+test("GithubClient preserves git tree modes needed to identify symbolic links", async () => {
+  globalThis.fetch = (async () =>
+    jsonResponse({ tree: [{ path: "src/current.ts", type: "blob", mode: "120000", sha: "link-1", size: 14 }], truncated: false })) as typeof fetch;
+
+  const files = await new GithubClient({ githubToken: "" }).getTree("acme", "demo", "tree-1");
+
+  assert.deepEqual(files, [{ path: "src/current.ts", type: "blob", mode: "120000", sha: "link-1", size: 14 }]);
+});
+
 test("GithubClient memoizes successful repository metadata", async () => {
   let repoRequests = 0;
   globalThis.fetch = (async () => {

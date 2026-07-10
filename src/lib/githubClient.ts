@@ -51,6 +51,7 @@ type GithubTreeResponse = {
   tree: Array<{
     path: string;
     type: "blob" | "tree";
+    mode?: string;
     sha: string;
     size?: number;
   }>;
@@ -94,6 +95,7 @@ export class GithubClient implements SourceClient {
       return data.tree.map((item) => ({
         path: item.path,
         type: item.type,
+        ...(item.mode ? { mode: item.mode } : {}),
         sha: item.sha,
         size: item.size
       }));
@@ -212,7 +214,7 @@ export class GithubClient implements SourceClient {
     };
     if (this.settings.githubToken) headers.Authorization = `Bearer ${this.settings.githubToken}`;
     const response = await fetchWithTimeout(url, { headers }, 30_000);
-    if (!response.ok) throw new Error(`GitHub API ${response.status}: ${await safeResponseText(response)}`);
+    if (!response.ok) throw await githubResponseError(response, "GitHub API");
 
     if (response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
       const data = await readJsonResponse<GithubContentResponse>(response, MAX_SOURCE_FILE_JSON_BYTES);
@@ -239,7 +241,7 @@ export class GithubClient implements SourceClient {
     }
 
     if (!response.ok) {
-      throw new Error(`GitHub API ${response.status}: ${await safeResponseText(response)}`);
+      throw await githubResponseError(response, "GitHub API");
     }
     return readJsonResponse<T>(response, jsonLimit);
   }
@@ -257,8 +259,7 @@ export class GithubClient implements SourceClient {
       return undefined;
     }
     if (!response.ok) {
-      const body = await safeResponseText(response);
-      throw new Error(`GitHub request failed ${response.status}: ${body || response.statusText}`);
+      throw await githubResponseError(response, "GitHub request failed");
     }
     return readJsonResponse<T>(response, jsonLimit);
   }
@@ -276,8 +277,7 @@ export class GithubClient implements SourceClient {
       return undefined;
     }
     if (!response.ok) {
-      const body = await safeResponseText(response);
-      throw new Error(`GitHub request failed ${response.status}: ${body || response.statusText}`);
+      throw await githubResponseError(response, "GitHub request failed");
     }
     const contentType = response.headers.get("content-type")?.toLowerCase();
     await discardResponse(response);
@@ -332,6 +332,16 @@ export class GithubClient implements SourceClient {
 
 function uniqueCandidates(candidates: Array<{ refName: string; path: string }>): Array<{ refName: string; path: string }> {
   return Array.from(new Map(candidates.map((candidate) => [`${candidate.refName}\0${candidate.path}`, candidate])).values());
+}
+
+async function githubResponseError(response: Response, prefix: string): Promise<Error> {
+  let detail = response.statusText;
+  try {
+    detail = (await safeResponseText(response)) || detail;
+  } catch (error) {
+    detail = `response body unavailable: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return new Error(`${prefix} ${response.status}: ${detail || "request failed"}`);
 }
 
 function repoApiBase(owner: string, repo: string): string {
