@@ -102,3 +102,10 @@ test("dev self reload is marker-driven and gated to development installs", () =>
   assert.match(background, /DEV_RELOAD_MARKER_PATH/);
   assert.match(background, /chrome\.runtime\.reload\(\)/);
 });
+
+test("Edge deployment validates canonical targets and promotes a staged directory", () => {
+  const deploy = read("scripts/deploy-edge.mjs");
+  assert.match(deploy, /validateDeployTarget/);
+  assert.match(deploy, /replaceDirectoryAtomic/);
+  assert.doesNotMatch(deploy, /rm\(resolvedTargetDir/);
+});

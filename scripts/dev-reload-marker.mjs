@@ -21,3 +21,15 @@ export function createDevReloadMarker(buildId, deployedAt = new Date()) {
     deployedAt: deployedAt.toISOString()
   };
 }
+
+export function parseDevReloadMarker(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.schemaVersion !== DEV_RELOAD_SCHEMA_VERSION) return null;
+  if (typeof value.buildId !== "string" || !value.buildId) return null;
+  if (typeof value.deployedAt !== "string" || !Number.isFinite(Date.parse(value.deployedAt))) return null;
+  return {
+    schemaVersion: value.schemaVersion,
+    buildId: value.buildId,
+    deployedAt: value.deployedAt
+  };
+}

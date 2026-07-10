@@ -1,9 +1,10 @@
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { runVerifiedDeployment } from "./deploy-edge-flow.mjs";
-import { DEV_RELOAD_MARKER_PATH, createDevReloadMarker, extractBuildId } from "./dev-reload-marker.mjs";
+import { replaceDirectoryAtomic, runVerifiedDeployment } from "./deploy-edge-flow.mjs";
+import { validateDeployTarget } from "./deploy-target.mjs";
+import { DEV_RELOAD_MARKER_PATH, createDevReloadMarker, extractBuildId, parseDevReloadMarker } from "./dev-reload-marker.mjs";
 
 const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, ".output", "chrome-mv3");
@@ -12,12 +13,8 @@ const defaultTargetDir =
     ? "D:\\edge下载\\CodePath"
     : "/mnt/d/edge下载/CodePath";
 const targetDir = process.env.CODEPATH_EDGE_EXTENSION_DIR || defaultTargetDir;
-const resolvedTargetDir = path.resolve(targetDir);
 const allowedRoot = path.resolve(process.env.CODEPATH_EDGE_EXTENSION_ROOT || path.dirname(defaultTargetDir));
-
-if (!isSafeExtensionDir(resolvedTargetDir)) {
-  throw new Error(`Refusing to deploy to unsafe extension directory: ${resolvedTargetDir}`);
-}
+const { targetDir: resolvedTargetDir } = await validateDeployTarget({ projectRoot, allowedRoot, targetDir, platform: process.platform });
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -33,11 +30,22 @@ await runVerifiedDeployment({
     const buildId = extractBuildId(contentSource);
     const marker = createDevReloadMarker(buildId);
 
-    await mkdir(resolvedTargetDir, { recursive: true });
-    await rm(resolvedTargetDir, { recursive: true, force: true });
-    await mkdir(resolvedTargetDir, { recursive: true });
-    await cp(outputDir, resolvedTargetDir, { recursive: true });
-    await writeFile(path.join(resolvedTargetDir, DEV_RELOAD_MARKER_PATH), `${JSON.stringify(marker, null, 2)}\n`, "utf8");
+    await replaceDirectoryAtomic({
+      sourceDir: outputDir,
+      targetDir: resolvedTargetDir,
+      prepareStaging: (stagingDir) =>
+        writeFile(path.join(stagingDir, DEV_RELOAD_MARKER_PATH), `${JSON.stringify(marker, null, 2)}\n`, "utf8"),
+      verifyStaging: async (stagingDir) => {
+        const manifest = JSON.parse(await readFile(path.join(stagingDir, "manifest.json"), "utf8"));
+        if (!manifest || typeof manifest !== "object" || manifest.manifest_version !== 3) {
+          throw new Error("Staged extension manifest is missing or invalid.");
+        }
+        const stagedMarker = parseDevReloadMarker(JSON.parse(await readFile(path.join(stagingDir, DEV_RELOAD_MARKER_PATH), "utf8")));
+        if (!stagedMarker || stagedMarker.buildId !== buildId) {
+          throw new Error("Staged extension reload marker is missing or invalid.");
+        }
+      }
+    });
 
     console.log(`CodePath Edge build deployed to ${resolvedTargetDir}`);
     console.log(`Dev reload marker written for ${buildId}.`);
@@ -57,27 +65,4 @@ function run(command, args) {
       else reject(new Error(`${command} ${args.join(" ")} failed with exit code ${code}`));
     });
   });
-}
-
-function isSafeExtensionDir(dir) {
-  const parsed = path.parse(dir);
-  if (parsed.root === dir) return false;
-
-  const normalized = path.normalize(dir);
-  const normalizedProjectRoot = path.normalize(projectRoot);
-  if (normalized === normalizedProjectRoot || normalized.startsWith(`${normalizedProjectRoot}${path.sep}`)) return false;
-  const normalizedAllowedRoot = path.normalize(allowedRoot);
-  if (normalized !== normalizedAllowedRoot && !normalized.startsWith(`${normalizedAllowedRoot}${path.sep}`)) return false;
-
-  const parts = normalized
-    .slice(parsed.root.length)
-    .split(path.sep)
-    .filter(Boolean);
-  if (parts.length < 2) return false;
-
-  const basename = path.basename(normalized).toLowerCase();
-  if (!["codepath", "chrome-mv3"].includes(basename)) return false;
-
-  const dangerous = new Set(["users", "windows", "program files", "program files (x86)", "system32", "home"]);
-  return !parts.some((part) => dangerous.has(part.toLowerCase()));
 }
