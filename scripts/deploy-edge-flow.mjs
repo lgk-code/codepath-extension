@@ -1,4 +1,5 @@
 import { cp, link, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const BACKUP_MARKER = ".codepath-deploy-backup.json";
@@ -97,6 +98,8 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
   const startedAt = Date.now();
   const owner = {
     token: `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    pid: process.pid,
+    runtimeId: currentRuntimeId(),
     updatedAt: Date.now()
   };
   const candidatePath = `${lockPath}.candidate-${owner.token}`;
@@ -162,15 +165,18 @@ function createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs) {
     async assertOwned() {
       await heartbeat;
       if (leaseError) throw leaseError;
-      const currentToken = await readLockToken(fsOps, lockPath);
-      const currentHeartbeat = await readHeartbeat(fsOps, heartbeatPath);
-      if (
-        currentToken !== owner.token ||
-        currentHeartbeat?.token !== owner.token ||
-        !Number.isFinite(currentHeartbeat.updatedAt) ||
-        Date.now() - currentHeartbeat.updatedAt > leaseMs
-      ) {
+      let currentToken = await readLockToken(fsOps, lockPath);
+      let currentHeartbeat = await readHeartbeat(fsOps, heartbeatPath);
+      if (currentToken !== owner.token || currentHeartbeat?.token !== owner.token) {
         throw new Error(`Deployment lease was lost: ${lockPath}`);
+      }
+      if (!Number.isFinite(currentHeartbeat.updatedAt) || Date.now() - currentHeartbeat.updatedAt > leaseMs) {
+        await refreshHeartbeat(fsOps, heartbeatPath);
+        currentToken = await readLockToken(fsOps, lockPath);
+        currentHeartbeat = await readHeartbeat(fsOps, heartbeatPath);
+        if (currentToken !== owner.token || currentHeartbeat?.token !== owner.token) {
+          throw new Error(`Deployment lease was lost: ${lockPath}`);
+        }
       }
     },
     async isOwned() {
@@ -214,6 +220,8 @@ async function readLockObservation(fsOps, lockPath) {
     }
     return {
       token: owner?.token,
+      pid: owner?.pid,
+      runtimeId: owner?.runtimeId,
       heartbeatPath: heartbeatFingerprint ? heartbeatPath : undefined,
       updatedAt,
       fingerprint: `${stat.mtimeMs}:${stat.size}:${content}:${heartbeatFingerprint}`
@@ -251,7 +259,12 @@ function parseLockOwner(content) {
   try {
     const owner = JSON.parse(content);
     if (typeof owner?.token !== "string") return undefined;
-    return { token: owner.token, updatedAt: Number.isFinite(owner.updatedAt) ? owner.updatedAt : undefined };
+    return {
+      token: owner.token,
+      pid: Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : undefined,
+      runtimeId: typeof owner.runtimeId === "string" ? owner.runtimeId : undefined,
+      updatedAt: Number.isFinite(owner.updatedAt) ? owner.updatedAt : undefined
+    };
   } catch {
     return undefined;
   }
@@ -274,6 +287,7 @@ async function refreshHeartbeat(fsOps, heartbeatPath) {
 
 async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, leaseMs, retryMs) {
   if (observed.token && observed.heartbeatPath) {
+    if (!isConfirmedExitedOwner(observed)) return false;
     const fencedHeartbeat = `${observed.heartbeatPath}.fenced-${claimantToken}`;
     try {
       await fsOps.rename(observed.heartbeatPath, fencedHeartbeat);
@@ -311,6 +325,8 @@ async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, lease
     }
   }
 
+  if (observed.token && !isConfirmedExitedOwner(observed)) return false;
+
   await delay(Math.min(retryMs, 25));
   const confirmed = await readLockObservation(fsOps, lockPath);
   if (!confirmed || confirmed.fingerprint !== observed.fingerprint || Date.now() - confirmed.updatedAt <= leaseMs) return false;
@@ -322,6 +338,20 @@ async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, lease
   } catch (error) {
     if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") return false;
     throw error;
+  }
+}
+
+function currentRuntimeId() {
+  return `${process.platform}:${os.hostname().toLowerCase()}`;
+}
+
+function isConfirmedExitedOwner(owner) {
+  if (owner.runtimeId !== currentRuntimeId() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
   }
 }
 

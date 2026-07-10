@@ -39,6 +39,7 @@ type GithubTagResponse = {
 };
 
 type GithubRefResponse = {
+  ref?: string;
   object?: {
     sha?: string;
     type?: string;
@@ -61,7 +62,8 @@ type GithubContentResponse = {
   encoding?: string;
 };
 
-const MAX_REF_PATH_CANDIDATES = 8;
+const MAX_EXISTING_REF_CANDIDATES = 8;
+const MAX_MATCHING_REFS_PER_NAMESPACE = 100;
 const MAX_REF_METADATA_BYTES = 512 * 1024;
 
 export class GithubClient implements SourceClient {
@@ -104,20 +106,18 @@ export class GithubClient implements SourceClient {
   async resolveRepoRef(repo: RepoRef): Promise<RepoRef> {
     const candidates = uniqueCandidates(repo.refCandidates ?? []);
     if (candidates.length <= 1) return repo;
-    if (candidates.length > MAX_REF_PATH_CANDIDATES) {
-      throw new Error("Ambiguous GitHub ref/path has too many candidate boundaries to validate safely.");
+
+    const existingCandidates = await this.findExistingRefCandidates(repo.owner, repo.repo, repo.branch, candidates);
+    if (existingCandidates.length > MAX_EXISTING_REF_CANDIDATES) {
+      throw new Error("Ambiguous GitHub ref/path has too many existing ref boundaries to validate safely.");
     }
 
     const viable: Array<{ refName: string; path: string }> = [];
-    for (const candidate of candidates) {
+    for (const candidate of existingCandidates) {
       try {
-        if (!candidate.path && repo.pageType === "directory") {
-          await this.getBranchSnapshot(repo.owner, repo.repo, candidate.refName);
-          viable.push(candidate);
-          continue;
-        }
+        const contentPath = candidate.path ? `/contents/${encodePath(candidate.path)}` : "/contents";
         const metadata = await this.requestOptional<GithubContentResponse | unknown[]>(
-          `${repoApiBase(repo.owner, repo.repo)}/contents/${encodePath(candidate.path)}?ref=${encodeURIComponent(candidate.refName)}`,
+          `${repoApiBase(repo.owner, repo.repo)}${contentPath}?ref=${encodeURIComponent(candidate.refName)}`,
           MAX_REF_METADATA_BYTES
         );
         const matchesFile = repo.pageType === "file" && !Array.isArray(metadata) && ["file", "symlink", "submodule"].includes(metadata?.type ?? "");
@@ -137,6 +137,47 @@ export class GithubClient implements SourceClient {
       throw new Error(`Ambiguous GitHub ref/path: ${reason}. Open an immutable commit URL or analyze the repository root.`);
     }
     return { ...repo, branch: viable[0]!.refName, path: viable[0]!.path, refCandidates: viable };
+  }
+
+  private async findExistingRefCandidates(
+    owner: string,
+    repo: string,
+    selectedRef: string | undefined,
+    candidates: Array<{ refName: string; path: string }>
+  ): Promise<Array<{ refName: string; path: string }>> {
+    if (selectedRef && /^[0-9a-f]{40}$/i.test(selectedRef)) {
+      const commit = await this.getRepoCommit(owner, repo, selectedRef);
+      return commit?.sha ? candidates.filter((candidate) => candidate.refName === selectedRef) : [];
+    }
+
+    const prefix = candidates[0]?.refName.split("/")[0] ?? "";
+    if (!prefix || prefix === "." || prefix === ".." || prefix.includes("\\")) {
+      throw new Error("Ambiguous GitHub ref/path contains an unsafe ref prefix.");
+    }
+    const [heads, tags, abbreviatedCommit] = await Promise.all([
+      this.requestOptional<GithubRefResponse[]>(
+        `${repoApiBase(owner, repo)}/git/matching-refs/${encodePath(`heads/${prefix}`)}?per_page=${MAX_MATCHING_REFS_PER_NAMESPACE}`,
+        MAX_REF_METADATA_BYTES
+      ),
+      this.requestOptional<GithubRefResponse[]>(
+        `${repoApiBase(owner, repo)}/git/matching-refs/${encodePath(`tags/${prefix}`)}?per_page=${MAX_MATCHING_REFS_PER_NAMESPACE}`,
+        MAX_REF_METADATA_BYTES
+      ),
+      selectedRef && /^[0-9a-f]{7,39}$/i.test(selectedRef) ? this.getRepoCommit(owner, repo, selectedRef) : Promise.resolve(undefined)
+    ]);
+    if ((heads?.length ?? 0) >= MAX_MATCHING_REFS_PER_NAMESPACE || (tags?.length ?? 0) >= MAX_MATCHING_REFS_PER_NAMESPACE) {
+      throw new Error("Ambiguous GitHub ref/path matched too many repository refs to validate safely.");
+    }
+
+    const existingNames = new Set<string>();
+    for (const item of heads ?? []) {
+      if (item.ref?.startsWith("refs/heads/")) existingNames.add(item.ref.slice("refs/heads/".length));
+    }
+    for (const item of tags ?? []) {
+      if (item.ref?.startsWith("refs/tags/")) existingNames.add(item.ref.slice("refs/tags/".length));
+    }
+    if (selectedRef && abbreviatedCommit?.sha) existingNames.add(selectedRef);
+    return candidates.filter((candidate) => existingNames.has(candidate.refName));
   }
 
   private async loadBranchSnapshot(owner: string, repo: string, branch: string): Promise<RepoSnapshot> {

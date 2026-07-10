@@ -1,11 +1,18 @@
 import type { RepoRef } from "../types";
 
+const MAX_GITHUB_PATH_CHARACTERS = 8_192;
+const MAX_GITHUB_PATH_SEGMENTS = 128;
+
 export function parseGithubUrl(urlText: string): RepoRef | null {
   const url = new URL(urlText);
   if (url.hostname !== "github.com") return null;
+  if (url.pathname.length > MAX_GITHUB_PATH_CHARACTERS) return null;
+
+  const rawParts = url.pathname.split("/").filter(Boolean);
+  if (rawParts.length > MAX_GITHUB_PATH_SEGMENTS) return null;
 
   const parts: string[] = [];
-  for (const rawPart of url.pathname.split("/").filter(Boolean)) {
+  for (const rawPart of rawParts) {
     const part = decodePathPart(rawPart);
     if (part === "." || part === ".." || part.includes("/") || part.includes("\\")) return null;
     parts.push(part);

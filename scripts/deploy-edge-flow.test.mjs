@@ -159,7 +159,10 @@ test("replaceDirectoryAtomic recovers an expired deployment lease", async () => 
   await writeFile(path.join(sourceDir, "manifest.json"), "new");
   await writeFile(path.join(targetDir, "manifest.json"), "old");
   const lockPath = `${targetDir}.deploy-lock`;
-  await writeFile(lockPath, JSON.stringify({ token: "expired", updatedAt: Date.now() - 5_000 }));
+  await writeFile(
+    lockPath,
+    JSON.stringify({ token: "expired", pid: 2_147_483_647, runtimeId: `${process.platform}:${os.hostname().toLowerCase()}`, updatedAt: Date.now() - 5_000 })
+  );
   const staleTime = new Date(Date.now() - 5_000);
   await utimes(lockPath, staleTime, staleTime);
 
@@ -460,6 +463,66 @@ test("a heartbeat refreshed during stale takeover cannot be fenced as expired", 
     assert.equal(bEntered, false);
   } finally {
     releaseA?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a live owner paused after its lease check cannot mutate a replacement deployment", async () => {
+  const root = await temporaryRoot();
+  const sourceA = path.join(root, "source-a");
+  const sourceB = path.join(root, "source-b");
+  const targetDir = path.join(root, "CodePath");
+  await mkdir(sourceA, { recursive: true });
+  await mkdir(sourceB, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceA, "manifest.json"), "a");
+  await writeFile(path.join(sourceB, "manifest.json"), "b");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+
+  let markAAtMutation;
+  let releaseA;
+  const aAtMutation = new Promise((resolve) => {
+    markAAtMutation = resolve;
+  });
+  const holdA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  let deploymentA;
+
+  try {
+    deploymentA = replaceDirectoryAtomic({
+      sourceDir: sourceA,
+      targetDir,
+      lockOptions: { timeoutMs: 500, retryMs: 5, leaseMs: 40, heartbeatMs: 200 },
+      fsOps: {
+        async writeFile(file, data, options) {
+          if (path.basename(String(file)) === ".codepath-deploy-backup.json") {
+            markAAtMutation?.();
+            await holdA;
+          }
+          return writeFile(file, data, options);
+        }
+      }
+    });
+    await aAtMutation;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await assert.rejects(
+      () =>
+        replaceDirectoryAtomic({
+          sourceDir: sourceB,
+          targetDir,
+          lockOptions: { timeoutMs: 80, retryMs: 5, leaseMs: 40, heartbeatMs: 10 }
+        }),
+      /timed out waiting for the deployment lock/i
+    );
+
+    releaseA?.();
+    await deploymentA;
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "a");
+  } finally {
+    releaseA?.();
+    await deploymentA?.catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });

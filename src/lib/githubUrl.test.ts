@@ -108,6 +108,12 @@ test("parseGithubUrl preserves every possible slash ref and file path boundary",
   ]);
 });
 
+test("parseGithubUrl rejects oversized paths before materializing quadratic ref candidates", () => {
+  const oversizedPath = Array.from({ length: 1_200 }, () => "segment").join("/");
+
+  assert.equal(parseGithubUrl(`https://github.com/acme/demo/blob/main/${oversizedPath}/app.ts`), null);
+});
+
 type RepoRefWithCandidates = NonNullable<ReturnType<typeof parseGithubUrl>> & {
   refCandidates: Array<{ refName: string; path: string }>;
 };

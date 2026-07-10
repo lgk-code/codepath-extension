@@ -291,6 +291,10 @@ test("explainFile validates slash ref candidates before selecting the file", asy
   globalThis.fetch = (async (request: RequestInfo | URL) => {
     const url = String(request);
     if (url === "https://api.github.com/repos/acme/demo") return jsonResponse({ default_branch: "main" });
+    if (url === "https://api.github.com/repos/acme/demo/git/matching-refs/heads/release?per_page=100") {
+      return jsonResponse([{ ref: "refs/heads/release/v2", object: { type: "commit", sha: "head-v2" } }]);
+    }
+    if (url === "https://api.github.com/repos/acme/demo/git/matching-refs/tags/release?per_page=100") return jsonResponse([]);
     if (url === "https://api.github.com/repos/acme/demo/git/ref/heads/release/v2") {
       return jsonResponse({ object: { type: "commit", sha: "head-v2" } });
     }
