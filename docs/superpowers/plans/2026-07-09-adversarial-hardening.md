@@ -53,7 +53,7 @@ assert.throws(() => resolveMcpSettings({ OPENAI_API_KEY: "sk-openai", CODEPATH_B
 assert.equal(resolveProvider({ ...settings, provider: "anthropic", baseUrl: "https://proxy.example/v1" }), "anthropic");
 ```
 
-Add behavioral scanner fixtures for `ASIAABCDEFGHIJKLMNOP`, `c:\\Users\\alice`, GitHub tokens, and safe text. Add a hygiene assertion that `public/secret-input.js` uses exactly `codepath-settings` and the manifest exposes only `secret-input.html`, JS, and CSS to `https://github.com/*`.
+Add behavioral scanner fixtures assembled at runtime, such as `"AS" + "IA" + "A".repeat(16)` and a lowercase Windows user path, plus GitHub tokens and safe text. Add a hygiene assertion that `public/secret-input.js` uses exactly `codepath-settings` and the manifest exposes only `secret-input.html`, JS, and CSS to `https://github.com/*`.
 
 - [ ] **Step 2: Verify RED**
 
