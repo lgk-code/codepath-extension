@@ -19,11 +19,12 @@
     "quality": "npm run test && npm run compile && npm run build && npm run verify:build-version && npm run verify:mcp-tools && npm run scan:secrets",
     "mcp": "tsx scripts/codepath-mcp.ts",
     "verify:mcp-tools": "node scripts/verify-mcp-tools.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "scan:secrets": "node scripts/scan-secrets.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@vitejs/plugin-react": "^5.0.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "@wxt-dev/module-react": "^1.2.2",
     "fflate": "^0.8.2",
     "lucide-react": "^1.14.0",
@@ -31,8 +32,19 @@
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "wxt": "^0.20.25",
+    "wxt": "^0.20.27",
     "zod": "^4.4.3"
+  },
+  "overrides": {
+    "@babel/core": "8.0.1",
+    "esbuild": "0.28.1",
+    "fx-runner": "1.5.0",
+    "hono": "4.12.28",
+    "qs": "6.15.3",
+    "shell-quote": "1.9.0",
+    "tmp": "0.2.7",
+    "uuid": "14.0.1",
+    "vite": "8.0.16"
   },
   "devDependencies": {
     "@types/node": "^25.6.2",
