@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { chat, chatAuto, inferProviderFromBaseUrl, listModels, normalizeBaseUrl, normalizeProvider } from "./aiClient";
+import { chat, chatAuto, inferProviderFromBaseUrl, listModels, normalizeBaseUrl, normalizeProvider, resolveProvider } from "./aiClient";
 
 const originalFetch = globalThis.fetch;
 
@@ -30,6 +30,11 @@ test("inferProviderFromBaseUrl selects the API format from the endpoint", () => 
   assert.equal(inferProviderFromBaseUrl("https://api.deepseek.com/anthropic/messages"), "anthropic");
   assert.equal(inferProviderFromBaseUrl("https://api.anthropic.com/v1"), "anthropic");
   assert.equal(inferProviderFromBaseUrl("https://example.com/v1/chat/completions"), "openai");
+});
+
+test("resolveProvider preserves an explicit provider and infers migrated values", () => {
+  assert.equal(resolveProvider({ provider: "anthropic", baseUrl: "https://models.example/v1" }), "anthropic");
+  assert.equal(resolveProvider({ provider: "legacy", baseUrl: "https://api.anthropic.com/v1" }), "anthropic");
 });
 
 test("listModels calls the normalized models endpoint and returns valid model ids", async () => {
@@ -130,6 +135,35 @@ test("chat sends Anthropic messages requests with system prompt and joins text b
   assert.equal(body.system, "只用中文回答。");
   assert.deepEqual(body.messages, [{ role: "user", content: "解释这个项目。" }]);
   assert.equal(content, "第一段第二段");
+});
+
+test("chat honors an explicit Anthropic provider on a neutral proxy", async () => {
+  let requestedUrl = "";
+  let apiKey = "";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requestedUrl = String(input);
+    const headers = init?.headers as Record<string, string>;
+    apiKey = String(headers?.["x-api-key"] ?? "");
+    return new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  const content = await chat(
+    {
+      provider: "anthropic",
+      apiKey: "anthropic-test-key",
+      baseUrl: "https://models.example/v1",
+      model: "claude-example",
+      githubToken: ""
+    },
+    [{ role: "user", content: "Say OK." }]
+  );
+
+  assert.equal(requestedUrl, "https://models.example/v1/messages");
+  assert.equal(apiKey, "anthropic-test-key");
+  assert.equal(content, "ok");
 });
 
 test("chat sends OpenAI-compatible requests with a bounded output token limit", async () => {

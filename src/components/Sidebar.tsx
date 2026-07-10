@@ -27,7 +27,7 @@ import type {
 } from "../types";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
-import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl } from "../lib/aiClient";
+import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl, resolveProvider } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "settings";
@@ -896,7 +896,7 @@ function SettingsPanel(props: {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelListStatus, setModelListStatus] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
-  const provider = inferProviderFromBaseUrl(draft.baseUrl || DEFAULT_SETTINGS.baseUrl);
+  const provider = resolveProvider({ provider: draft.provider, baseUrl: draft.baseUrl || DEFAULT_SETTINGS.baseUrl });
   const baseUrlPlaceholder = provider === "anthropic" ? "https://api.deepseek.com/anthropic" : DEFAULT_SETTINGS.baseUrl;
   const modelPlaceholder = DEFAULT_SETTINGS.model;
 
@@ -961,7 +961,15 @@ function SettingsPanel(props: {
       </label>
       <label className="cp-label">
         Base URL
-        <input className="cp-input" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder={baseUrlPlaceholder} />
+        <input
+          className="cp-input"
+          value={draft.baseUrl}
+          onChange={(event) => {
+            const baseUrl = event.target.value;
+            setDraft({ ...draft, baseUrl, provider: inferProviderFromBaseUrl(baseUrl) });
+          }}
+          placeholder={baseUrlPlaceholder}
+        />
       </label>
       <button className="cp-secondary" disabled={fetchingModels} onClick={fetchAvailableModels}>
         {fetchingModels ? "正在获取模型..." : "获取模型"}
@@ -1614,7 +1622,7 @@ function normalizeSettingsDraft(settings: Settings): Settings {
   const baseUrl = normalizeBaseUrl(settings.baseUrl || DEFAULT_SETTINGS.baseUrl);
   return {
     ...settings,
-    provider: inferProviderFromBaseUrl(baseUrl),
+    provider: resolveProvider({ provider: settings.provider, baseUrl }),
     apiKey: settings.apiKey.trim(),
     baseUrl,
     model: settings.model.trim() || DEFAULT_SETTINGS.model,

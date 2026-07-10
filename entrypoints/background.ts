@@ -12,7 +12,7 @@ import {
   generateSkillBlueprint,
   getAnalysisCacheStats
 } from "../src/lib/analyzer";
-import { chat, inferProviderFromBaseUrl, listModels, normalizeBaseUrl, probeStreamingSupport } from "../src/lib/aiClient";
+import { chat, listModels, normalizeBaseUrl, probeStreamingSupport, resolveProvider } from "../src/lib/aiClient";
 import { DEV_RELOAD_MARKER_PATH, checkDevSelfReloadOnce, parseDevReloadMarker, type ExtensionInstallType } from "../src/lib/devSelfReload";
 import { GithubClient } from "../src/lib/githubClient";
 
@@ -245,7 +245,7 @@ function normalizeSettings(settings: Settings): Settings {
   const baseUrl = normalizeBaseUrl(settings.baseUrl || DEFAULT_SETTINGS.baseUrl);
   return {
     ...settings,
-    provider: inferProviderFromBaseUrl(baseUrl),
+    provider: resolveProvider({ provider: settings.provider, baseUrl }),
     apiKey: settings.apiKey.trim(),
     baseUrl,
     model: settings.model.trim() || DEFAULT_SETTINGS.model,

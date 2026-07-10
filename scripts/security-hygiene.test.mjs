@@ -17,6 +17,16 @@ test("GitHub page sidebar does not render secret input values", () => {
   assert.doesNotMatch(sidebar, /apiKeyDraft|githubTokenDraft/);
 });
 
+test("secret editor writes the canonical settings key and is restricted to GitHub pages", () => {
+  const editor = read("public/secret-input.js");
+  const config = read("wxt.config.ts");
+
+  assert.match(editor, /const SETTINGS_KEY = "codepath-settings"/);
+  assert.match(config, /web_accessible_resources/);
+  assert.match(config, /resources:\s*\["secret-input\.html",\s*"secret-input\.js",\s*"secret-input\.css"\]/);
+  assert.match(config, /matches:\s*\["https:\/\/github\.com\/\*"\]/);
+});
+
 test("streaming UI updates are scoped to the active repository run", () => {
   const sidebar = read("src/components/Sidebar.tsx");
   assert.match(sidebar, /runIdRef/);
@@ -52,11 +62,9 @@ test("MCP tools do not expose GitHub token as a tool argument", () => {
   }
 });
 
-test("secret scanner covers GitHub token variants and WSL/private drive paths", () => {
+test("secret scanner uses the shared behavioral pattern module without a size bypass", () => {
   const scanner = read("scripts/scan-secrets.mjs");
-  assert.match(scanner, /gh\[osru\]_/);
-  assert.match(scanner, /mnt\\\/c\\\/Users/);
-  assert.match(scanner, /[A-Z]:\\\\/);
+  assert.match(scanner, /secret-patterns\.mjs/);
   assert.doesNotMatch(scanner, /stat\.size\s*>\s*1_000_000/);
 });
 

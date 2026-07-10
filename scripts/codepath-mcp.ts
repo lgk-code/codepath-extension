@@ -3,10 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 import { analyzeFeature, analyzeProject, generateSkillBlueprint } from "../src/lib/analyzer";
-import { inferProviderFromBaseUrl, normalizeBaseUrl } from "../src/lib/aiClient";
-import { DEFAULT_SETTINGS } from "../src/lib/defaults";
 import { parseGithubUrl } from "../src/lib/githubUrl";
-import type { BlueprintMode, RepoRef, Settings, SourceRef, TimingBreakdown } from "../src/types";
+import { resolveMcpSettings } from "../src/lib/settingsResolution";
+import type { BlueprintMode, RepoRef, SourceRef, TimingBreakdown } from "../src/types";
 
 const server = new McpServer({
   name: "codepath-mcp",
@@ -114,20 +113,8 @@ function parseRepoUrl(url: string): RepoRef {
   return repo;
 }
 
-function settingsFromEnv(): Settings {
-  const apiKey = process.env.CODEPATH_API_KEY || process.env.OPENAI_API_KEY || "";
-  const baseUrl = normalizeBaseUrl(process.env.CODEPATH_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_SETTINGS.baseUrl);
-  const model = (process.env.CODEPATH_MODEL || process.env.OPENAI_MODEL || DEFAULT_SETTINGS.model).trim() || DEFAULT_SETTINGS.model;
-  const provider = process.env.CODEPATH_PROVIDER === "anthropic" || process.env.CODEPATH_PROVIDER === "openai" ? process.env.CODEPATH_PROVIDER : inferProviderFromBaseUrl(baseUrl);
-  const githubToken = process.env.CODEPATH_GITHUB_TOKEN || process.env.GITHUB_TOKEN || DEFAULT_SETTINGS.githubToken;
-  return {
-    ...DEFAULT_SETTINGS,
-    provider,
-    apiKey,
-    baseUrl,
-    model,
-    githubToken
-  };
+function settingsFromEnv() {
+  return resolveMcpSettings(process.env);
 }
 
 function textResult(value: unknown) {

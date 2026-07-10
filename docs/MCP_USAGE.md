@@ -55,11 +55,13 @@ $env:GITHUB_TOKEN="your-github-token"
 
 `OPENAI_*` 兼容变量只表示 OpenAI 兼容接口；Anthropic 兼容接口请使用 `CODEPATH_PROVIDER="anthropic"` 搭配 `CODEPATH_API_KEY`、`CODEPATH_BASE_URL` 和 `CODEPATH_MODEL`。
 
-优先级为：
+模型配置必须完整使用其中一组命名空间，不能混用 `CODEPATH_*` 与 `OPENAI_*`。检测到混用时 MCP Server 会拒绝启动分析，避免把一个供应商的密钥发送到另一个供应商的端点。
 
-1. `CODEPATH_PROVIDER`（未设置时按 Base URL 自动推断）
-2. `CODEPATH_API_KEY` / `CODEPATH_BASE_URL` / `CODEPATH_MODEL`
-3. `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`
+配置规则为：
+
+1. `CODEPATH_API_KEY` / `CODEPATH_BASE_URL` / `CODEPATH_MODEL`，可搭配 `CODEPATH_PROVIDER`；未设置 provider 时按 Base URL 推断。
+2. 或使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`，该组固定按 OpenAI 兼容格式处理。
+3. 只设置 `OPENAI_API_KEY` 时，默认端点为 `https://api.openai.com/v1`，默认模型为 `gpt-4.1-mini`。
 
 GitHub Token 优先级为：
 

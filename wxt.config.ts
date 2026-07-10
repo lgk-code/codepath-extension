@@ -19,6 +19,12 @@ export default defineConfig({
       "http://127.0.0.1/*"
     ],
     optional_host_permissions: ["https://*/*"],
+    web_accessible_resources: [
+      {
+        resources: ["secret-input.html", "secret-input.js", "secret-input.css"],
+        matches: ["https://github.com/*"]
+      }
+    ],
     action: {
       default_title: "CodePath"
     }

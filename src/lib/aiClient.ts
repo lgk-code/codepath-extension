@@ -56,7 +56,7 @@ class StreamingUnsupportedError extends Error {
 }
 
 export async function chat(settings: Settings, messages: ChatMessage[]): Promise<string> {
-  const provider = inferProviderFromBaseUrl(settings.baseUrl);
+  const provider = resolveProvider(settings);
   return provider === "anthropic" ? chatAnthropic(settings, messages) : chatOpenAi(settings, messages);
 }
 
@@ -79,6 +79,11 @@ export function inferProviderFromBaseUrl(input: string): Settings["provider"] {
   }
 
   return "openai";
+}
+
+export function resolveProvider(settings: { provider?: unknown; baseUrl: string }): Settings["provider"] {
+  if (settings.provider === "anthropic" || settings.provider === "openai") return settings.provider;
+  return inferProviderFromBaseUrl(settings.baseUrl);
 }
 
 async function chatOpenAi(settings: Settings, messages: ChatMessage[]): Promise<string> {
@@ -166,7 +171,7 @@ export async function listModels(settings: Pick<Settings, "provider" | "apiKey" 
   try {
     response = await fetchWithTimeout(endpoint, {
       method: "GET",
-      headers: inferProviderFromBaseUrl(baseUrl) === "anthropic" ? anthropicHeaders(settings.apiKey) : openAiHeaders(settings.apiKey)
+      headers: resolveProvider(settings) === "anthropic" ? anthropicHeaders(settings.apiKey) : openAiHeaders(settings.apiKey)
     }, MODEL_LIST_TIMEOUT_MS);
   } catch (error) {
     throw new Error(`Unable to reach model list URL: ${error instanceof Error ? error.message : String(error)}`);
@@ -240,7 +245,7 @@ async function chatStream(settings: Settings, messages: ChatMessage[], onDelta: 
 }
 
 async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], onDelta: (text: string) => void): Promise<StreamResult> {
-  const provider = inferProviderFromBaseUrl(settings.baseUrl);
+  const provider = resolveProvider(settings);
   if (!settings.apiKey) {
     throw new Error("请先在 Settings 中填写模型 API Key。");
   }

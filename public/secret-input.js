@@ -1,4 +1,4 @@
-const SETTINGS_KEY = "codepath.settings";
+const SETTINGS_KEY = "codepath-settings";
 const fields = {
   apiKey: {
     title: "模型 API Key",
