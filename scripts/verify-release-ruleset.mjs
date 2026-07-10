@@ -15,7 +15,7 @@ export function assertImmutableReleaseTagRuleset(rulesets, tag) {
       (ruleset.bypass_actors ?? []).length === 0 &&
       ruleset.current_user_can_bypass === "never" &&
       includes.some((pattern) => releaseRefPatternMatches(pattern, ref)) &&
-      !excludes.some((pattern) => releaseRefPatternMatches(pattern, ref)) &&
+      excludes.length === 0 &&
       ruleTypes.has("update") &&
       ruleTypes.has("deletion")
     );

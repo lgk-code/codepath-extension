@@ -110,7 +110,7 @@ const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
 const PERSISTENT_CACHE_V2_PREFIX = "codepath-cache-v2:";
 const PERSISTENT_CACHE_V2_ENCODED_PREFIX = "codepath-cache-v2:e:";
 const CACHE_SCHEMA_VERSION = 2;
-export const ANALYZER_VERSION = "2026-07-10-adversarial-v4";
+export const ANALYZER_VERSION = "2026-07-10-adversarial-v5";
 export const PROMPT_VERSION = createPromptVersion();
 const MAX_PERSISTENT_CACHE_ENTRIES = 240;
 const MAX_PERSISTENT_CACHE_REPO_ENTRIES = 80;
@@ -1072,7 +1072,7 @@ async function modelFingerprint(settings: Settings): Promise<string> {
 }
 
 function createPromptVersion(): string {
-  return `${ANALYZER_VERSION}:${stringHash(
+  return `${ANALYZER_VERSION}:${stringHash64(
     [
       analyzeProject.toString(),
       analyzeProjectAttempt.toString(),
@@ -1085,6 +1085,21 @@ function createPromptVersion(): string {
       answerQuestion.toString(),
       answerQuestionAttempt.toString(),
       generateSuggestedQuestions.toString(),
+      needsSourceLookup.toString(),
+      detectProjectProfile.toString(),
+      summarizeTree.toString(),
+      buildStructuralContext.toString(),
+      pickEntryCandidates.toString(),
+      summarizeImportantDirs.toString(),
+      buildImportRelations.toString(),
+      formatImportRelation.toString(),
+      resolveImportPath.toString(),
+      normalizePath.toString(),
+      formatSnippets.toString(),
+      systemPrompt.toString(),
+      projectPrompt.toString(),
+      fullSourceProjectPrompt.toString(),
+      skillBlueprintPrompt.toString(),
       FEATURE_KEYWORDS_FINGERPRINT,
       FILE_RULES_FINGERPRINT,
       IMPORTS_FINGERPRINT,
@@ -1152,7 +1167,112 @@ function cacheRecord<T>(kind: CacheRecordKind, value: T, basis: AnalysisBasis): 
 function isCacheRecord<T>(value: unknown, kind: CacheRecordKind): value is CacheRecord<T> {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<CacheRecord<T>>;
-  return record.schemaVersion === CACHE_SCHEMA_VERSION && record.kind === kind && isAnalysisBasis(record.basis) && "value" in record;
+  return (
+    record.schemaVersion === CACHE_SCHEMA_VERSION &&
+    record.kind === kind &&
+    isAnalysisBasis(record.basis) &&
+    "value" in record &&
+    isCacheValueForKind(record.value, kind)
+  );
+}
+
+function isCacheValueForKind(value: unknown, kind: CacheRecordKind): boolean {
+  if (kind === "tree") return isRepoAnalysisContext(value);
+  if (kind === "overview" || kind === "question") return isAnalysisResult(value);
+  if (kind === "feature") return isAnalysisResult(value) && typeof value.feature === "string";
+  if (kind === "blueprint") {
+    return (
+      isAnalysisResult(value) &&
+      typeof value.feature === "string" &&
+      (value.mode === "human" || value.mode === "openclaw-skill" || value.mode === "new-project")
+    );
+  }
+  return typeof value === "string" || (isAnalysisResult(value) && typeof value.path === "string");
+}
+
+function isAnalysisResult(value: unknown): value is Record<string, unknown> & { summary: string; sources: Array<{ path: string }> } {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Record<string, unknown>;
+  return (
+    typeof result.summary === "string" &&
+    Array.isArray(result.sources) &&
+    result.sources.every(isSourceRef) &&
+    (result.branch === undefined || typeof result.branch === "string") &&
+    (result.basis === undefined || isAnalysisBasis(result.basis))
+  );
+}
+
+function isSourceRef(value: unknown): value is { path: string; reason?: string; blobSha?: string } {
+  if (!value || typeof value !== "object") return false;
+  const source = value as { path?: unknown; reason?: unknown; blobSha?: unknown };
+  return (
+    typeof source.path === "string" &&
+    (source.reason === undefined || typeof source.reason === "string") &&
+    (source.blobSha === undefined || typeof source.blobSha === "string")
+  );
+}
+
+function isRepoAnalysisContext(value: unknown): value is RepoAnalysisContext {
+  if (!value || typeof value !== "object") return false;
+  const context = value as Partial<RepoAnalysisContext>;
+  return (
+    isRepoRef(context.resolvedRepo) &&
+    typeof context.branch === "string" &&
+    isRepoSnapshot(context.snapshot) &&
+    Array.isArray(context.files) &&
+    context.files.every(isTreeFile) &&
+    Array.isArray(context.usefulFiles) &&
+    context.usefulFiles.every(isTreeFile) &&
+    isProjectProfile(context.profile) &&
+    typeof context.treeSummary === "string"
+  );
+}
+
+function isRepoRef(value: unknown): value is RepoRef {
+  if (!value || typeof value !== "object") return false;
+  const repo = value as Partial<RepoRef>;
+  return (
+    typeof repo.owner === "string" &&
+    typeof repo.repo === "string" &&
+    (repo.branch === undefined || typeof repo.branch === "string") &&
+    (repo.path === undefined || typeof repo.path === "string") &&
+    (repo.pageType === "repo" || repo.pageType === "file" || repo.pageType === "directory" || repo.pageType === "pull" || repo.pageType === "unknown") &&
+    (repo.refCandidates === undefined ||
+      (Array.isArray(repo.refCandidates) &&
+        repo.refCandidates.every(
+          (candidate) => Boolean(candidate) && typeof candidate.refName === "string" && typeof candidate.path === "string"
+        )))
+  );
+}
+
+function isTreeFile(value: unknown): value is TreeFile {
+  if (!value || typeof value !== "object") return false;
+  const file = value as Partial<TreeFile>;
+  return (
+    typeof file.path === "string" &&
+    (file.type === "blob" || file.type === "tree") &&
+    (file.mode === undefined || typeof file.mode === "string") &&
+    (file.sha === undefined || typeof file.sha === "string") &&
+    (file.size === undefined || (typeof file.size === "number" && Number.isFinite(file.size) && file.size >= 0))
+  );
+}
+
+function isProjectProfile(value: unknown): value is ProjectProfile {
+  if (!value || typeof value !== "object") return false;
+  const profile = value as Partial<ProjectProfile>;
+  return (
+    (profile.kind === "python-ml" ||
+      profile.kind === "browser-extension" ||
+      profile.kind === "frontend" ||
+      profile.kind === "node-backend" ||
+      profile.kind === "python-app" ||
+      profile.kind === "library" ||
+      profile.kind === "generic") &&
+    typeof profile.label === "string" &&
+    (profile.confidence === "high" || profile.confidence === "medium" || profile.confidence === "low") &&
+    Array.isArray(profile.reasons) &&
+    profile.reasons.every((reason) => typeof reason === "string")
+  );
 }
 
 function isAnalysisBasis(value: unknown): value is AnalysisBasis {
@@ -1714,6 +1834,15 @@ function stringHash(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+}
+
+function stringHash64(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, "0");
 }
 
 function needsSourceLookup(question: string): boolean {

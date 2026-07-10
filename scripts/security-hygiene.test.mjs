@@ -42,10 +42,26 @@ test("prompt version fingerprints every source-backed analysis prompt", () => {
     "analyzeFeatureAttempt",
     "generateSkillBlueprintAttempt",
     "explainFileAttempt",
-    "answerQuestionAttempt"
+    "answerQuestionAttempt",
+    "needsSourceLookup",
+    "detectProjectProfile",
+    "summarizeTree",
+    "buildStructuralContext",
+    "pickEntryCandidates",
+    "summarizeImportantDirs",
+    "buildImportRelations",
+    "formatImportRelation",
+    "resolveImportPath",
+    "normalizePath",
+    "formatSnippets",
+    "systemPrompt",
+    "projectPrompt",
+    "fullSourceProjectPrompt",
+    "skillBlueprintPrompt"
   ]) {
     assert.match(fingerprint, new RegExp(`${name}\\.toString\\(\\)`));
   }
+  assert.match(fingerprint, /stringHash64/);
 });
 
 test("streaming UI updates are scoped to the active repository run", () => {

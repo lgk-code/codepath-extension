@@ -582,6 +582,42 @@ test("analyzeProject treats corrupt v2 CacheRecord snapshots as cache misses", a
   assert.match(result.summary, /当前分析结果/);
 });
 
+test("analyzeProject treats a structurally invalid cached overview payload as a miss", async () => {
+  const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
+  const key = await persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  installChromeStorageMock({
+    [key]: {
+      schemaVersion: 2,
+      kind: "overview",
+      value: 42,
+      basis: {
+        snapshot: snapshotForTest("head-current", "tree-current"),
+        files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
+        inputDigest: await persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
+        promptVersion: PROMPT_VERSION,
+        analyzerVersion: ANALYZER_VERSION
+      }
+    }
+  });
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree,
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => "源码确认\n- 当前分析结果。"
+  });
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.match(result.summary, /当前分析结果/);
+  assert.equal(result.timing?.resultCacheHit, undefined);
+});
+
 test("analyzeProject does not reuse v2 CacheRecords from another repository scope", async () => {
   const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
   const key = await persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);

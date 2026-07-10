@@ -263,18 +263,11 @@ test("chatAuto stops at a terminal event without waiting for the connection to c
   assert.ok(Date.now() - startedAt < 100, "terminal event should end the request immediately");
 });
 
-test("chatAuto bounds an unterminated SSE line and cancels the reader before fallback", async () => {
+test("chatAuto bounds an unterminated SSE line without replaying the model request", async () => {
   let fetchCount = 0;
   let cancelled = false;
   globalThis.fetch = (async () => {
     fetchCount += 1;
-    if (fetchCount > 1) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: "fallback" } }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
     return new Response(
       new ReadableStream<Uint8Array>({
@@ -291,10 +284,12 @@ test("chatAuto bounds an unterminated SSE line and cancels the reader before fal
     );
   }) as typeof fetch;
 
-  const content = await chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {});
+  await assert.rejects(
+    () => chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {}),
+    /pending SSE line is too large/
+  );
 
-  assert.equal(content, "fallback");
-  assert.equal(fetchCount, 2);
+  assert.equal(fetchCount, 1);
   assert.equal(cancelled, true);
 });
 
@@ -303,13 +298,6 @@ test("chatAuto bounds total raw stream bytes even when lines stay small", async 
   let cancelled = false;
   globalThis.fetch = (async () => {
     fetchCount += 1;
-    if (fetchCount > 1) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: "fallback" } }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
     const keepAliveLines = (": " + "x".repeat(1_020) + "\n").repeat(2_060);
     return new Response(
       new ReadableStream<Uint8Array>({
@@ -324,11 +312,33 @@ test("chatAuto bounds total raw stream bytes even when lines stay small", async 
     );
   }) as typeof fetch;
 
-  const content = await chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {});
+  await assert.rejects(
+    () => chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {}),
+    /raw streaming response is too large/
+  );
 
-  assert.equal(content, "fallback");
-  assert.equal(fetchCount, 2);
+  assert.equal(fetchCount, 1);
   assert.equal(cancelled, true);
+});
+
+test("chatAuto rejects a stream that closes without a terminal event", async () => {
+  let fetchCount = 0;
+  const deltas: string[] = [];
+  globalThis.fetch = (async () => {
+    fetchCount += 1;
+    return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" }
+    });
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () => chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], (delta) => deltas.push(delta)),
+    /without a terminal event/
+  );
+
+  assert.deepEqual(deltas, ["partial"]);
+  assert.equal(fetchCount, 1);
 });
 
 test("chatAuto never replays a model request after emitting a stream delta", async () => {

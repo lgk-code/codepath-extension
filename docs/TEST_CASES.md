@@ -141,8 +141,8 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - Git tree mode 为 `120000` 的符号链接必须按当前源码快照隔离文件内容缓存；链接 blob 不变但目标内容随 tree 更新时，模型只能看到新目标内容。
 - 403/429 错误响应正文读取失败时，错误仍必须保留 GitHub 状态码并触发 ZIP fallback。
 - 只有 GitHub client 抛出的 typed 403/429 才能触发 ZIP fallback；模型接口错误即使正文包含 `GitHub`、`403` 或 `429`，也不得重放模型请求或降级源码来源。
-- prompt cache fingerprint 必须包含五个实际承载 inline prompt 的 analysis attempt；只修改任一分析指令时，旧模型结果必须自然失效。
-- `basis.files` 缺失或类型错误的持久化记录必须按 cache miss 处理，不能让文件分析因本地存储损坏而崩溃。
+- prompt cache fingerprint 必须使用 64 位摘要，并包含五个实际承载 inline prompt 的 analysis attempt 以及决定 prompt 内容/路径的 helper；只修改任一分析指令时，旧模型结果必须自然失效。
+- `basis.files` 缺失、类型错误、file payload 非字符串，或任一结果 kind 的 payload 不符合公开结果结构时，持久化记录必须按 cache miss 处理，不能让分析因本地存储损坏而崩溃。
 
 ## 传输、流式与安全窗口
 
@@ -157,7 +157,8 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 同一 repo/target 的新任务启动后，旧任务的 fallback 必须因 runId 不同而被拒绝，不能修改新任务的 stream 状态。
 - OpenAI `[DONE]` 和 Anthropic `message_stop` 到达后应立即完成，不等待服务端关闭连接。
 - 大量流式 delta 应按批次刷新 Markdown；最终文本不能丢字、重复或跨仓库显示。
-- 模型流在发出首个 delta 后发生解析或读取错误时不得自动发送第二次非流请求；只有首段输出前明确识别的 streaming-unsupported 错误可回退。
+- 任一流式模型 POST 一旦发出，不论首个 delta 是否到达，解析、大小、读取或协议错误都不得自动发送第二次非流请求。
+- OpenAI 流必须以 `[DONE]`、Anthropic 流必须以 `message_stop` 完成；连接在 terminal event 前 EOF 时必须报错，不能把部分输出当成功结果缓存。
 - background 必须比较 sender 当前完整 owner/repo/branch/page/path，而不只比较仓库名；同仓库 SPA 导航后的旧请求也必须拒绝。
 - 模型 Markdown 只能把当前仓库、40 位 immutable commit 下的源码路径渲染为链接；unchecked ZIP 路径、外部链接和图片必须渲染为不发请求的普通文本。
 
@@ -176,9 +177,11 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
 - Release workflow 必须从默认分支 `repository_dispatch` 运行；候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
+- 用户仓库的两个 release job 都必须要求 `github.actor == github.repository_owner`；非 owner 的 write collaborator 不能通过 dispatch 获得发布权限。
 - `release` environment 审批完成后，写权限 job 必须从 `github.workflow_sha` checkout verifier，不能执行浮动 `main` 上后来出现的脚本。
 - 写权限 job 必须重新 fetch 远端 annotated tag，同时确认 tag object SHA 和 peel 后 commit SHA 与只读构建输出完全一致后才能发布。
 - `refs/tags/v*` 必须由 active tag ruleset 同时限制 update 和 deletion；写权限 job 在发布前必须通过 Rulesets API 验证策略仍存在，避免 tag 校验与发布之间被移动。
+- ruleset verifier 对任何 ref exclusion 或无法完整解释的 include pattern 必须 fail closed，不能把未保护的 release tag 误判为受保护。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
 - `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应同时拒绝脆弱版本和不满足上游 semver/Node engine 的强制 override。
 - esbuild 必须同时满足 WXT/tsx 的 `0.27.x` 范围并避开 `>=0.27.3 <0.28.1` 公告区间；当前固定为 `0.27.2`，不得用不兼容的 `0.28.x` override。

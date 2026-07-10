@@ -28,7 +28,8 @@ test("release publication is orchestrated by the trusted default-branch workflow
   const release = fs.readFileSync(".github/workflows/release.yml", "utf8");
   assert.match(release, /repository_dispatch:/);
   assert.doesNotMatch(release, /push:\s*[\s\S]*tags:/);
-  assert.match(release, /if:\s*github\.ref == 'refs\/heads\/main'/);
+  assert.match(release, /if:\s*github\.ref == 'refs\/heads\/main' && github\.actor == github\.repository_owner/);
+  assert.equal((release.match(/github\.actor == github\.repository_owner/g) ?? []).length, 2);
   assert.match(release, /permissions:\s*\n\s*contents:\s*read/);
   assert.equal((release.match(/contents:\s*write/g) ?? []).length, 1);
   assert.match(release, /environment:\s*release/);

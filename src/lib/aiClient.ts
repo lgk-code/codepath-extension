@@ -195,23 +195,12 @@ export async function chatAuto(
   settings: Settings,
   messages: ChatMessage[],
   onDelta?: (text: string) => void,
-  onFallback?: (reason: string) => void
+  _onFallback?: (reason: string) => void
 ): Promise<string> {
   if (!onDelta || settings.supportsStreaming !== true) {
     return chat(settings, messages);
   }
-
-  let emittedDelta = false;
-  try {
-    return await chatStream(settings, messages, (text) => {
-      emittedDelta = true;
-      onDelta(text);
-    });
-  } catch (error) {
-    if (!(error instanceof StreamingUnsupportedError) || emittedDelta) throw error;
-    onFallback?.(formatStreamingProbeError(error));
-    return chat(settings, messages);
-  }
+  return chatStream(settings, messages, onDelta);
 }
 
 export async function probeStreamingSupport(settings: Settings): Promise<StreamProbeResult> {
@@ -336,7 +325,10 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
         throw new StreamingUnsupportedError("pending SSE line is too large");
       }
       for (const line of buffer.split(/\r?\n/)) {
-        if (processLine(line)) break;
+        if (processLine(line)) {
+          terminalReached = true;
+          break;
+        }
       }
     }
   } finally {
@@ -345,6 +337,7 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
     clearResponseTimeout(response);
   }
 
+  if (!terminalReached) throw new StreamingUnsupportedError("stream ended without a terminal event");
   if (!content) throw new StreamingUnsupportedError("no streaming delta content");
   return { content, firstDeltaMs, deltaCount };
 }

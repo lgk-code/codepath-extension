@@ -51,3 +51,14 @@ test("release ruleset verification rejects bypass actors and nonmatching refs", 
     /immutable active tag ruleset/i
   );
 });
+
+test("release ruleset verification fails closed when any ref exclusion is configured", () => {
+  assert.throws(
+    () =>
+      assertImmutableReleaseTagRuleset(
+        [{ ...immutableRuleset, conditions: { ref_name: { include: ["~ALL"], exclude: ["refs/tags/v0.*"] } } }],
+        "v0.1.3"
+      ),
+    /immutable active tag ruleset/i
+  );
+});

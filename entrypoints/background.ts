@@ -18,7 +18,7 @@ import { GithubClient } from "../src/lib/githubClient";
 import { validateRequestLocation } from "../src/lib/runtimeBoundary";
 import { createSettingsStore } from "../src/lib/settingsStore";
 
-const BACKGROUND_BUILD = "dev-2026-07-10-adversarial-review-fixes-v12";
+const BACKGROUND_BUILD = "dev-2026-07-10-adversarial-review-fixes-v13";
 const DEV_RELOAD_ALARM_NAME = "codepath-dev-self-reload";
 const DEV_RELOAD_ALARM_PERIOD_MINUTES = 0.5;
 const DEV_RELOAD_ACTIVE_INTERVAL_MS = 5_000;
