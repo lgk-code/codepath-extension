@@ -140,7 +140,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - API 文件读取统一使用 raw media type 并限制为 2 MiB；1-2 MiB 文件不能被 JSON `encoding: none` 静默当作空源码，超限必须明确失败。
 - Git tree mode 为 `120000` 的符号链接必须按当前源码快照隔离文件内容缓存；链接 blob 不变但目标内容随 tree 更新时，模型只能看到新目标内容。
 - 403/429 错误响应正文读取失败时，错误仍必须保留 GitHub 状态码并触发 ZIP fallback。
-- 只有 GitHub client 抛出的 typed 403/429 才能触发 ZIP fallback；模型接口错误即使正文包含 `GitHub`、`403` 或 `429`，也不得重放模型请求或降级源码来源。
+- 只有 GitHub client 确认的 typed 限流错误才能触发 ZIP fallback：429，或带 `x-ratelimit-remaining: 0`、`retry-after`、明确 rate-limit 正文的 403。权限不足的 403 即使来自 GitHub 也不得降级；模型接口错误即使正文包含 `GitHub`、`403` 或 `429`，同样不得重放模型请求或降级源码来源。
 - prompt cache fingerprint 必须使用 64 位摘要，并包含五个实际承载 inline prompt 的 analysis attempt 以及决定 prompt 内容/路径的 helper；只修改任一分析指令时，旧模型结果必须自然失效。
 - `basis.files` 缺失、类型错误、file payload 非字符串，或任一结果 kind 的 payload 不符合公开结果结构时，持久化记录必须按 cache miss 处理，不能让分析因本地存储损坏而崩溃。
 
@@ -149,6 +149,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 安全窗口保存 API Key 和 GitHub Token 后，设置页重新读取的值掩码应立即变化；清除后也应同步生效。
 - 密钥编辑页不得出现在 `web_accessible_resources`，扩展页 CSP 必须禁止 framing；Sidebar 只能请求 background 以扩展身份打开该窗口，密钥页只能向 background 发送 allowlisted 单字段更新。
 - 所有设置写入必须由 background 串行处理；非密钥表单不得携带或覆盖密钥，模型探测期间连接配置变化时不得写入旧探测元数据。
+- 密钥窗口关闭后的状态轮询只能刷新密钥掩码；用户已经编辑 Base URL、provider 或模型草稿时，轮询不得每秒用已保存设置覆盖未保存输入。
 - 中性代理 URL 配置为 Anthropic provider 时，应发送 `/messages` 与 `x-api-key`，不得退回 OpenAI 格式。
 - 长时间模型请求期间后台每 20 秒发送 heartbeat；前端不得因端口超时通过 `sendMessage` 重放分析。
 - `list-models` 只有在 port 请求尚未成功投递时才允许本地 fallback；投递后的超时、断连或流错误不得切换 transport 重放。

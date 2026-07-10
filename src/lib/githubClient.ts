@@ -352,7 +352,15 @@ async function githubResponseError(response: Response, prefix: string): Promise<
     detail = `response body unavailable: ${error instanceof Error ? error.message : String(error)}`;
   }
   const message = `${prefix} ${response.status}: ${detail || "request failed"}`;
-  return response.status === 403 || response.status === 429 ? new GithubRateLimitError(response.status, message) : new Error(message);
+  return isGithubRateLimitResponse(response, detail) ? new GithubRateLimitError(response.status, message) : new Error(message);
+}
+
+function isGithubRateLimitResponse(response: Response, detail: string): boolean {
+  if (response.status === 429) return true;
+  if (response.status !== 403) return false;
+  if (response.headers.get("x-ratelimit-remaining")?.trim() === "0") return true;
+  if (response.headers.has("retry-after")) return true;
+  return /\b(?:primary\s+|secondary\s+|api\s+)?rate limit\b|abuse detection/i.test(detail);
 }
 
 function repoApiBase(owner: string, repo: string): string {

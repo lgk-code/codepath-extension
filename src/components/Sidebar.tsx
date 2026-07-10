@@ -87,7 +87,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v13";
+const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v14";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -898,6 +898,7 @@ function SettingsPanel(props: {
   hasRepo: boolean;
 }) {
   const [draft, setDraft] = useState(() => settingsDraftWithoutSecrets(props.settings));
+  const [draftDirty, setDraftDirty] = useState(false);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelListStatus, setModelListStatus] = useState("");
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -906,10 +907,16 @@ function SettingsPanel(props: {
   const modelPlaceholder = DEFAULT_SETTINGS.model;
 
   useEffect(() => {
+    if (draftDirty) return;
     setDraft(settingsDraftWithoutSecrets(props.settings));
     setModelOptions(props.settings.model ? [{ id: props.settings.model }] : []);
     setModelListStatus("");
-  }, [props.settings]);
+  }, [draftDirty, props.settings]);
+
+  function updateDraft(next: Settings) {
+    setDraft(next);
+    setDraftDirty(true);
+  }
 
   async function fetchAvailableModels() {
     const normalized = buildSettingsForSave(draft, props.settings);
@@ -923,11 +930,11 @@ function SettingsPanel(props: {
     try {
       const result = await send<ModelListResult>({ type: "list-models", settings: normalized });
       setModelOptions(result.models);
-      setDraft(settingsDraftWithoutSecrets({ ...normalized, baseUrl: result.baseUrl, model: result.selectedModel || normalized.model }));
+      updateDraft(settingsDraftWithoutSecrets({ ...normalized, baseUrl: result.baseUrl, model: result.selectedModel || normalized.model }));
       setModelListStatus(result.message || `已获取 ${result.models.length} 个模型。`);
     } catch (error) {
       setModelOptions([]);
-      setDraft(settingsDraftWithoutSecrets(normalized));
+      updateDraft(settingsDraftWithoutSecrets(normalized));
       setModelListStatus(`模型列表获取失败：${humanizeError(error)}。可以手动填写模型名称后保存。`);
     } finally {
       setFetchingModels(false);
@@ -976,7 +983,7 @@ function SettingsPanel(props: {
           value={draft.baseUrl}
           onChange={(event) => {
             const baseUrl = event.target.value;
-            setDraft({ ...draft, baseUrl, provider: inferProviderFromBaseUrl(baseUrl) });
+            updateDraft({ ...draft, baseUrl, provider: inferProviderFromBaseUrl(baseUrl) });
           }}
           placeholder={baseUrlPlaceholder}
         />
@@ -988,7 +995,7 @@ function SettingsPanel(props: {
       {selectedOptions.length > 0 && (
         <label className="cp-label">
           可用模型
-          <select className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })}>
+          <select className="cp-input" value={draft.model} onChange={(event) => updateDraft({ ...draft, model: event.target.value })}>
             {selectedOptions.map((model) => (
               <option value={model.id} key={model.id}>
                 {model.id}
@@ -999,7 +1006,7 @@ function SettingsPanel(props: {
       )}
       <label className="cp-label">
         模型名称（可手动填写）
-        <input className="cp-input" value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder={modelPlaceholder} />
+        <input className="cp-input" value={draft.model} onChange={(event) => updateDraft({ ...draft, model: event.target.value })} placeholder={modelPlaceholder} />
       </label>
       <label className="cp-label">
         GitHub Token（可选）
@@ -1011,7 +1018,13 @@ function SettingsPanel(props: {
           </button>
         </div>
       </label>
-      <button className="cp-primary" onClick={() => props.onChange(buildSettingsForSave(draft, props.settings))}>
+      <button
+        className="cp-primary"
+        onClick={() => {
+          setDraftDirty(false);
+          props.onChange(buildSettingsForSave(draft, props.settings));
+        }}
+      >
         保存并校验设置
       </button>
       <button className="cp-secondary" onClick={props.onTest}>

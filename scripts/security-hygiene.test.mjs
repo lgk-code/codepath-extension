@@ -21,6 +21,7 @@ test("secret editor is opened and mutated only through the background", () => {
   const editor = read("public/secret-input.js");
   const config = read("wxt.config.ts");
   const background = read("entrypoints/background.ts");
+  const sidebar = read("src/components/Sidebar.tsx");
 
   assert.doesNotMatch(config, /web_accessible_resources/);
   assert.match(config, /frame-ancestors 'none'/);
@@ -31,6 +32,9 @@ test("secret editor is opened and mutated only through the background", () => {
   assert.match(background, /settingsStore\.updateSecret/);
   assert.match(background, /settingsStore\.saveNonSecret/);
   assert.match(background, /updateStreamingMetadataIfCurrent/);
+  assert.match(sidebar, /const \[draftDirty, setDraftDirty\] = useState\(false\)/);
+  assert.match(sidebar, /if \(draftDirty\) return;[\s\S]{0,180}settingsDraftWithoutSecrets\(props\.settings\)/);
+  assert.match(sidebar, /function updateDraft\(next: Settings\)[\s\S]{0,100}setDraftDirty\(true\)/);
 });
 
 test("prompt version fingerprints every source-backed analysis prompt", () => {

@@ -972,7 +972,7 @@ test("analyzeProject marks zip fallback snapshots as unchecked and does not reus
   globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
     if (url === "https://api.github.com/repos/acme/demo") {
-      return new Response("rate limited", { status: 403 });
+      return new Response("rate limited", { status: 403, headers: { "x-ratelimit-remaining": "0" } });
     }
     if (url === "https://codeload.github.com/acme/demo/zip/HEAD") {
       return zipResponse({ "demo-main/README.md": "# Demo" });
@@ -1002,12 +1002,36 @@ test("analyzeProject marks zip fallback snapshots as unchecked and does not reus
   assert.match(first.timing?.headSha ?? "", /^unchecked:/);
 });
 
+test("GitHub permission failures never trigger public ZIP fallback", async () => {
+  let codeloadCalls = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo") {
+      return new Response("Resource not accessible by personal access token", {
+        status: 403,
+        headers: { "x-ratelimit-remaining": "42" }
+      });
+    }
+    if (url.startsWith("https://codeload.github.com/")) {
+      codeloadCalls += 1;
+      return zipResponse({ "demo-main/README.md": "# ZIP content" });
+    }
+    return new Response(`unexpected URL: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  await assert.rejects(() => analyzeProject(repo, settings), /Resource not accessible by personal access token/);
+
+  assert.equal(codeloadCalls, 0);
+});
+
 test("analyzeProject restarts entirely with ZIP when a later GitHub API request is rate limited", async () => {
   let codeloadCalls = 0;
   globalThis.fetch = (async (request: RequestInfo | URL) => {
     const url = String(request);
     if (url === "https://api.github.com/repos/acme/demo") return jsonResponse({ default_branch: "main" });
-    if (url === "https://api.github.com/repos/acme/demo/branches/main") return new Response("rate limited", { status: 403 });
+    if (url === "https://api.github.com/repos/acme/demo/branches/main") {
+      return new Response("rate limited", { status: 403, headers: { "x-ratelimit-remaining": "0" } });
+    }
     if (url === "https://codeload.github.com/acme/demo/zip/HEAD") {
       codeloadCalls += 1;
       return zipResponse({ "demo-main/README.md": "# Demo" });
@@ -1034,7 +1058,7 @@ test("focused analysis propagates file rate limits into the full ZIP retry", asy
   globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
     if (url === "https://api.github.com/repos/acme/demo/contents/README.md?ref=head-main") {
-      return new Response("rate limited", { status: 403 });
+      return new Response("rate limited", { status: 403, headers: { "x-ratelimit-remaining": "0" } });
     }
     if (url === "https://codeload.github.com/acme/demo/zip/main") {
       codeloadCalls += 1;
@@ -1072,7 +1096,7 @@ test("repository clearing invalidates every rate-limit fallback attempt in the s
         markApiFileStarted?.();
         await apiFileGate;
       }
-      return new Response("rate limited", { status: 403 });
+      return new Response("rate limited", { status: 403, headers: { "x-ratelimit-remaining": "0" } });
     }
     if (url === "https://codeload.github.com/acme/demo/zip/main") {
       return zipResponse({ "demo-main/README.md": "# ZIP content" });
