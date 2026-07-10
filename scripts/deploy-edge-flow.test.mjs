@@ -4,7 +4,7 @@ import { cp, mkdir, open as fsOpen, readFile, rename, rm, utimes, writeFile } fr
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { replaceDirectoryAtomic, runVerifiedDeployment, withDeploymentMutationMutex } from "./deploy-edge-flow.mjs";
+import { DEPLOY_LOCK_DEFAULTS, replaceDirectoryAtomic, runVerifiedDeployment, withDeploymentMutationMutex } from "./deploy-edge-flow.mjs";
 
 test("runVerifiedDeployment stops before build and sync when version verification fails", async () => {
   const events = [];
@@ -49,6 +49,10 @@ test("runVerifiedDeployment serializes verification, build, and sync under one d
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("default deployment wait covers stale lease recovery", () => {
+  assert.equal(DEPLOY_LOCK_DEFAULTS.timeoutMs > DEPLOY_LOCK_DEFAULTS.leaseMs, true);
 });
 
 test("replaceDirectoryAtomic preserves the old target when staging copy fails", async () => {
@@ -115,6 +119,40 @@ test("replaceDirectoryAtomic rolls back when staging promotion fails", async () 
     );
     assert.equal(await readFile(path.join(targetDir, "sentinel.txt"), "utf8"), "old");
     assert.deepEqual((await listSiblingArtifacts(root)).filter((name) => name.includes("staging") || name.includes("backup")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("backup recovery preserves its marker when rename fails", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  const transactionId = "123-456-abc";
+  const backupDir = `${targetDir}.backup-${transactionId}`;
+  const markerPath = path.join(backupDir, ".codepath-deploy-backup.json");
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(backupDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(backupDir, "manifest.json"), "old");
+  await writeFile(markerPath, JSON.stringify({ schemaVersion: 1, transactionId }));
+
+  try {
+    await assert.rejects(
+      () =>
+        replaceDirectoryAtomic({
+          sourceDir,
+          targetDir,
+          fsOps: {
+            async rename(from, to) {
+              if (from === backupDir && to === targetDir) throw new Error("restore rename failed");
+              return rename(from, to);
+            }
+          }
+        }),
+      /restore rename failed/
+    );
+    assert.equal(JSON.parse(await readFile(markerPath, "utf8")).transactionId, transactionId);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

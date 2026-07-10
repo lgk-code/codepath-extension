@@ -4,35 +4,68 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
-  push:
-    tags:
-      - "v*"
+  repository_dispatch:
+    types:
+      - release
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release-extension:
-    name: Release Chrome/Edge extension
+  build-extension:
+    name: Build trusted release candidate
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.provenance.outputs.tag }}
+      commit: ${{ steps.provenance.outputs.commit }}
 
     steps:
-      - name: Checkout
+      - name: Checkout trusted release workflow
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: main
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify annotated tag provenance from trusted main
+        id: provenance
+        env:
+          RELEASE_TAG: ${{ github.event.client_payload.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin main:refs/remotes/origin/main
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
+            echo "Release tag must be annotated: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          RELEASE_COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$RELEASE_COMMIT" refs/remotes/origin/main
+          PACKAGE_VERSION="$(git show "$RELEASE_COMMIT:package.json" | node -e 'let source=""; process.stdin.on("data", chunk => source += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(source).version));')"
+          if [[ "$RELEASE_TAG" != "v$PACKAGE_VERSION" ]]; then
+            echo "Tag $RELEASE_TAG does not match package version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout verified release commit
+        env:
+          RELEASE_COMMIT: ${{ steps.provenance.outputs.commit }}
+        run: git checkout --detach "$RELEASE_COMMIT"
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
-
-      - name: Fetch main for provenance verification
-        run: git fetch --no-tags origin main:refs/remotes/origin/main
-
-      - name: Verify release provenance
-        run: npm run verify:release
 
       - name: Install dependencies
         run: npm ci
@@ -63,9 +96,34 @@ jobs:
           fs.copyFileSync(path.join(outputDir, assets[0]), "CodePath.zip");
           NODE
 
+      - name: Upload verified release asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codepath-release-${{ steps.provenance.outputs.tag }}
+          path: CodePath.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-release:
+    name: Publish approved GitHub Release
+    if: github.ref == 'refs/heads/main'
+    needs: build-extension
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified release asset
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: codepath-release-${{ needs.build-extension.outputs.tag }}
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
+          tag_name: ${{ needs.build-extension.outputs.tag }}
+          target_commitish: ${{ needs.build-extension.outputs.commit }}
           files: CodePath.zip
           fail_on_unmatched_files: true
           generate_release_notes: true

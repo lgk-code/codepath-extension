@@ -928,6 +928,29 @@ test("analyzeProject marks zip fallback snapshots as unchecked and does not reus
   assert.match(first.timing?.headSha ?? "", /^unchecked:/);
 });
 
+test("analyzeProject restarts entirely with ZIP when a later GitHub API request is rate limited", async () => {
+  let codeloadCalls = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo") return jsonResponse({ default_branch: "main" });
+    if (url === "https://api.github.com/repos/acme/demo/branches/main") return new Response("rate limited", { status: 403 });
+    if (url === "https://codeload.github.com/acme/demo/zip/HEAD") {
+      codeloadCalls += 1;
+      return zipResponse({ "demo-main/README.md": "# Demo" });
+    }
+    if (url === "https://models.example/v1/chat/completions") {
+      return jsonResponse({ choices: [{ message: { content: "源码确认\n- late fallback complete。" } }] });
+    }
+    return new Response(`unexpected URL: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  const result = await analyzeProject({ owner: "acme", repo: "demo", pageType: "repo" }, settings);
+
+  assert.equal(codeloadCalls, 1);
+  assert.equal(result.timing?.cacheStatus, "unchecked");
+  assert.match(result.summary, /late fallback/);
+});
+
 test("analyzeProject reuses the successful API repository probe", async () => {
   let repoRequests = 0;
   const baseFetch = mockAnalyzeProjectFetch({

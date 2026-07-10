@@ -146,6 +146,30 @@ test("ZipGithubClient resolves an ordinary file candidate after API rate limitin
   ]);
 });
 
+test("ZipGithubClient retains a filtered current file separately from project snippets", async () => {
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (init?.method === "HEAD" && url.endsWith("/zip/main")) return new Response(null, { status: 200 });
+    if (init?.method === "HEAD" && url.endsWith("/zip/main%2Fassets")) return new Response(null, { status: 404 });
+    if (url.endsWith("/zip/main")) return zipResponse({ "demo-main/assets/logo.svg": "<svg>logo</svg>" });
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const client = new ZipGithubClient("acme", "demo", "main");
+  const repo = await client.resolveRepoRef({
+    owner: "acme",
+    repo: "demo",
+    branch: "main",
+    path: "assets/logo.svg",
+    pageType: "file",
+    refCandidates: [
+      { refName: "main", path: "assets/logo.svg" },
+      { refName: "main/assets", path: "logo.svg" }
+    ]
+  });
+
+  assert.equal(await client.getFile("acme", "demo", repo.path ?? "", repo.branch ?? ""), "<svg>logo</svg>");
+});
+
 function zipResponse(files: Record<string, string>): Response {
   const entries = Object.fromEntries(Object.entries(files).map(([path, content]) => [path, strToU8(content)]));
   const bytes = zipSync(entries);

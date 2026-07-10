@@ -106,7 +106,7 @@ GitHub Actions 分为 CI 和 Release 两条流水线。CI 会在 `main` 的 push
 - 打包 `.output/chrome-mv3` 为 `codepath-chrome-mv3-<commit>.zip`
 - 上传 Chrome/Edge 扩展 artifact，保留 14 天，供 PR 和 main 推送后人工下载验证
 
-Release 会在推送 `v*` tag 时执行质量门禁、运行 `npx wxt zip -b chrome`，并把 WXT 生成的 zip 复制为用户下载资产 `CodePath.zip` 上传到 GitHub Release。README 的用户下载链接必须指向这个固定资产名。
+Release 由默认分支上的 `repository_dispatch`（event type `release`）启动。请求中的 annotated `v*` tag 必须匹配 package 版本且指向 `origin/main` 历史；只读 job 构建 `CodePath.zip`，随后 `release` environment 中的独立写权限 job 发布资产。README 的用户下载链接必须指向这个固定资产名。
 
 CI 不运行 `deploy:edge`，因为它依赖本机 Windows 的 Edge 未打包扩展目录。CI 也不使用模型 API Key 或 GitHub Token，因此不能替代真实模型分析、私有仓库权限测试和浏览器 UI 手测。CI artifact 是开发验证包；正式用户下载包来自 GitHub Release 的 `CodePath.zip`。
 
@@ -130,4 +130,4 @@ Codex / GitHub Actions 工具用于查看 GitHub 上的 workflow 状态、失败
   - 确认绿色构建版本变化
 - 提交前确认 `git status` 和 `git diff --stat`，确保只提交本次任务相关文件。
 - 不提交 `.output/`、本机 Edge 加载目录、浏览器 profile、API Key、GitHub Token、本机私人路径。
-- 功能稳定后再合并到 `main`；需要发布给用户下载时推送 `v*` tag，让 Release workflow 生成 `CodePath.zip`。
+- 功能稳定后再合并到 `main`；正式发布时创建并推送 annotated `v*` tag，再从默认分支发送 `release` repository dispatch，让受控 Release workflow 生成 `CodePath.zip`。

@@ -5,6 +5,7 @@ import path from "node:path";
 
 const BACKUP_MARKER = ".codepath-deploy-backup.json";
 const inProcessMutationLocks = new Map();
+export const DEPLOY_LOCK_DEFAULTS = Object.freeze({ timeoutMs: 30_000, leaseMs: 5_000 });
 
 export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTarget, withDeploymentLock = (action) => action(undefined) }) {
   return withDeploymentLock(async (mutationMutex) => {
@@ -70,8 +71,8 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
       if (targetMoved && !promoted && (await mutationMutex.isOwned()) && (await lease.isOwned())) {
         if (await pathExists(ops, targetDir)) await ops.rm(targetDir, { recursive: true, force: true });
         if (await pathExists(ops, backupDir)) {
-          await ops.rm(path.join(backupDir, BACKUP_MARKER), { force: true });
           await ops.rename(backupDir, targetDir);
+          await ops.rm(path.join(targetDir, BACKUP_MARKER), { force: true });
         }
       }
       throw error;
@@ -114,14 +115,17 @@ async function reconcileBackupArtifacts(fsOps, targetDir) {
   if (backups.length === 0) return;
   if (!(await pathExists(fsOps, targetDir))) {
     if (backups.length !== 1) throw new Error(`Cannot recover deployment: found ${backups.length} backup directories for ${targetDir}.`);
-    await fsOps.rm(path.join(backups[0], BACKUP_MARKER), { force: true });
     await fsOps.rename(backups[0], targetDir);
+    await fsOps.rm(path.join(targetDir, BACKUP_MARKER), { force: true });
     return;
   }
   for (const backup of backups) await fsOps.rm(backup, { recursive: true, force: true });
 }
 
-async function acquireDeploymentMutationMutex(targetDir, { timeoutMs = 30_000, helperStartupTimeoutMs = 10_000 } = {}) {
+async function acquireDeploymentMutationMutex(
+  targetDir,
+  { timeoutMs = DEPLOY_LOCK_DEFAULTS.timeoutMs, helperStartupTimeoutMs = 10_000 } = {}
+) {
   const name = deploymentMutexName(targetDir);
   const local = await acquireInProcessMutex(name, timeoutMs);
   let system;
@@ -316,7 +320,16 @@ function createPowerShellMutexHandle(child, name) {
   };
 }
 
-async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retryMs = 25, leaseMs = 120_000, heartbeatMs = Math.min(10_000, leaseMs / 3) } = {}) {
+async function acquireDeploymentLock(
+  fsOps,
+  lockPath,
+  {
+    timeoutMs = DEPLOY_LOCK_DEFAULTS.timeoutMs,
+    retryMs = 25,
+    leaseMs = DEPLOY_LOCK_DEFAULTS.leaseMs,
+    heartbeatMs = Math.min(10_000, leaseMs / 3)
+  } = {}
+) {
   const startedAt = Date.now();
   const owner = {
     token: `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,

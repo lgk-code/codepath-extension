@@ -26,7 +26,7 @@ GitHub Actions 会在 `main` 的 push 和 pull request 上自动执行基础 CI�
 - 扫描常见密钥、Token 和本机私人路径。
 - 打包并上传 `codepath-chrome-mv3-<commit>` artifact，供开发验证。
 
-CI artifact 用于开发验证，不是正式发布包。面向用户的正式下载包由 `v*` tag 触发 Release workflow 生成，资产名固定为 `CodePath.zip`。
+CI artifact 用于开发验证，不是正式发布包。面向用户的正式下载包由默认分支 `release` repository dispatch 验证已推送的 annotated `v*` tag 后生成，资产名固定为 `CodePath.zip`。
 
 ## 人工浏览器检查
 
@@ -51,7 +51,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 自动 CI 门禁：保证代码能在 GitHub runner 上安装、类型检查、构建、基础扫描，并产出可下载 artifact。
 - 本地质量门禁：保证当前工作区通过 `npm.cmd run quality` 和 `git diff --check`。
 - 人工浏览器门禁：保证 Edge 实际加载的是新构建，真实 GitHub 页面、真实模型配置和真实 UI 交互没有回退。
-- Release 门禁：推送 `v*` tag 后应产出 GitHub Release 资产 `CodePath.zip`，README 下载链接应能直接下载该文件。
+- Release 门禁：推送 annotated `v*` tag 并发送默认分支 `release` repository dispatch 后，应经 `release` environment 发布 `CodePath.zip`；单独 tag push 不得直接获得写权限。
 
 ## 文档展示检查
 
@@ -161,7 +161,8 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 目标变更必须持有按规范化目标路径命名的 Windows system Mutex；Windows 与 WSL 使用同一个 Mutex，owner 进程退出时 helper 必须自动释放。文件 lease 仅用于恢复状态，不得依赖跨 runtime PID 或 PID 未复用假设。
 - 同一个 system Mutex 必须覆盖构建版本校验、`.output` 构建和目标发布整个事务；PowerShell helper 的启动超时与 Mutex 等待超时必须分开，配置的锁等待不能被固定启动计时提前截断。
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
-- Release 必须使用与 `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须等于 checkout `HEAD` 且是 `origin/main` 的祖先，否则 workflow 在发布前失败。
+- Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
+- Release workflow 必须从默认分支 `repository_dispatch` 运行；候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
 - `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应同时拒绝脆弱版本和不满足上游 semver/Node engine 的强制 override。
 - esbuild 必须同时满足 WXT/tsx 的 `0.27.x` 范围并避开 `>=0.27.3 <0.28.1` 公告区间；当前固定为 `0.27.2`，不得用不兼容的 `0.28.x` override。

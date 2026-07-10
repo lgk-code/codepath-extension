@@ -20,6 +20,8 @@ export class ZipGithubClient implements SourceClient {
   readonly kind = "github-zip" as const;
 
   private entries: ZipEntry[] | null = null;
+  private archivePaths = new Set<string>();
+  private requestedPath = "";
   private resolvedBranch: string;
   private snapshotIdentity = "";
 
@@ -72,7 +74,10 @@ export class ZipGithubClient implements SourceClient {
     const candidates = Array.from(
       new Map((repo.refCandidates ?? []).map((candidate) => [`${candidate.refName}\0${candidate.path}`, candidate])).values()
     );
-    if (candidates.length <= 1) return repo;
+    if (candidates.length <= 1) {
+      this.setRequestedPath(repo.path ?? "");
+      return repo;
+    }
     if (candidates.length > MAX_ZIP_REF_CANDIDATES) {
       throw new Error("Ambiguous GitHub ref/path has too many candidates for ZIP fallback validation.");
     }
@@ -98,15 +103,25 @@ export class ZipGithubClient implements SourceClient {
     if (!selected) throw new Error("ZIP fallback did not retain the validated ref candidate.");
     this.requestedBranch = selected.refName;
     this.resolvedBranch = selected.refName;
+    this.setRequestedPath(selected.path);
     this.entries = null;
+    this.archivePaths.clear();
     this.snapshotIdentity = "";
     const entries = await this.ensureEntries();
     const pathExists =
       repo.pageType === "file"
-        ? entries.some((entry) => entry.path === selected.path)
-        : !selected.path || entries.some((entry) => entry.path.startsWith(`${selected.path}/`));
+        ? this.archivePaths.has(selected.path)
+        : !selected.path || [...this.archivePaths].some((entryPath) => entryPath.startsWith(`${selected.path}/`));
     if (!pathExists) throw new Error(`ZIP ref ${selected.refName} did not contain the requested ${repo.pageType} path ${selected.path}.`);
     return { ...repo, branch: selected.refName, path: selected.path, refCandidates: [selected] };
+  }
+
+  private setRequestedPath(path: string) {
+    if (this.requestedPath === path) return;
+    this.requestedPath = path;
+    this.entries = null;
+    this.archivePaths.clear();
+    this.snapshotIdentity = "";
   }
 
   private async ensureEntries(): Promise<ZipEntry[]> {
@@ -135,6 +150,8 @@ export class ZipGithubClient implements SourceClient {
 
         const buffer = await readResponseBytesLimited(response, MAX_ZIP_BYTES);
         const selectedPaths = new Set<string>();
+        const archivePaths = new Set<string>();
+        const requestedPath = this.requestedPath;
         let rawEntryCount = 0;
         let selectedBytes = 0;
         let limitError = "";
@@ -147,7 +164,9 @@ export class ZipGithubClient implements SourceClient {
             }
             if (file.name.endsWith("/")) return false;
             const path = stripRoot(file.name);
-            if (!path || !isUsefulPath(path)) return false;
+            if (!path) return false;
+            archivePaths.add(path);
+            if (!isUsefulPath(path) && path !== requestedPath) return false;
             if (file.originalSize > MAX_ZIP_ENTRY_BYTES) {
               limitError = `zip entry is too large (${path}, ${file.originalSize} bytes)`;
               return false;
@@ -175,6 +194,7 @@ export class ZipGithubClient implements SourceClient {
           .filter((entry) => entry.path.length > 0);
 
         this.entries = entries;
+        this.archivePaths = archivePaths;
         this.resolvedBranch = branch;
         this.snapshotIdentity = `${branch}:${await digestZipEntries(entries)}`;
         return entries;

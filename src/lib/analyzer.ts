@@ -73,6 +73,7 @@ type AnalysisRunOptions = {
   onModelDelta?: (text: string) => void;
   onModelDone?: () => void;
   onModelFallback?: (reason: string) => void;
+  sourceMode?: "zip";
 };
 
 type SuggestedQuestionsInput = {
@@ -129,10 +130,14 @@ const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
 };
 
 export async function analyzeProject(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
+  return runWithGithubRateLimitFallback(options, (attemptOptions) => analyzeProjectAttempt(repo, settings, attemptOptions));
+}
+
+async function analyzeProjectAttempt(repo: RepoRef, settings: Settings, options: AnalysisRunOptions): Promise<ProjectOverview> {
   const mode = options.mode ?? "focused";
   const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
-  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
   const selectedFiles = mode === "full-source" ? context.usefulFiles : pickImportantFiles(context.usefulFiles, context.profile);
@@ -190,10 +195,14 @@ ${formatSnippets(snippets)}`
 }
 
 export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions = {}): Promise<FeaturePath> {
+  return runWithGithubRateLimitFallback(options, (attemptOptions) => analyzeFeatureAttempt(repo, settings, feature, attemptOptions));
+}
+
+async function analyzeFeatureAttempt(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions): Promise<FeaturePath> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
   const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
-  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
 
@@ -263,10 +272,20 @@ ${formatSnippets(withImports)}`
 }
 
 export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode, options: AnalysisRunOptions = {}): Promise<SkillBlueprint> {
+  return runWithGithubRateLimitFallback(options, (attemptOptions) => generateSkillBlueprintAttempt(repo, settings, feature, mode, attemptOptions));
+}
+
+async function generateSkillBlueprintAttempt(
+  repo: RepoRef,
+  settings: Settings,
+  feature: string,
+  mode: BlueprintMode,
+  options: AnalysisRunOptions
+): Promise<SkillBlueprint> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
   const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
-  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
 
@@ -334,10 +353,14 @@ ${formatSnippets(withImports)}`
 }
 
 export async function explainFile(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<FileExplanation> {
+  return runWithGithubRateLimitFallback(options, (attemptOptions) => explainFileAttempt(repo, settings, attemptOptions));
+}
+
+async function explainFileAttempt(repo: RepoRef, settings: Settings, options: AnalysisRunOptions): Promise<FileExplanation> {
   const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
   if (!repo.path) throw new Error("The current page is not a GitHub file page.");
-  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+  const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
   const resolvedRepo = context.resolvedRepo;
@@ -403,6 +426,19 @@ export async function answerQuestion(
   options: AnalysisRunOptions = {},
   contextBasis?: AnalysisBasis
 ): Promise<ProjectOverview> {
+  return runWithGithubRateLimitFallback(options, (attemptOptions) =>
+    answerQuestionAttempt(repo, settings, question, context, attemptOptions, contextBasis)
+  );
+}
+
+async function answerQuestionAttempt(
+  repo: RepoRef,
+  settings: Settings,
+  question: string,
+  context: string | undefined,
+  options: AnalysisRunOptions,
+  contextBasis: AnalysisBasis | undefined
+): Promise<ProjectOverview> {
   const normalizedQuestion = validateTextInput(question, "追问", MAX_QUESTION_LENGTH);
   const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
@@ -410,7 +446,7 @@ export async function answerQuestion(
   let gh: SourceClient | undefined;
   if (context && context.trim().length > 500 && contextBasis) {
     assertCurrentAnalysisBasis(contextBasis);
-    gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+    gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
     const { snapshot } = await resolveRepoSnapshot(gh, repo, timing);
     const status = cacheStatusFor(contextBasis.snapshot, snapshot);
     if (status === "stale") {
@@ -447,7 +483,7 @@ ${normalizedQuestion}`
     }
   }
 
-  gh ??= await measure(timing, "githubMs", () => createSourceClient(repo, settings));
+  gh ??= await measure(timing, "githubMs", () => createSourceClient(repo, settings, options.sourceMode === "zip"));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
   const repoContext = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
   if (context && contextBasis && !validatedContext) {
@@ -685,7 +721,25 @@ function withTiming<T extends object>(
   };
 }
 
-async function createSourceClient(repo: RepoRef, settings: Settings): Promise<SourceClient> {
+async function runWithGithubRateLimitFallback<T>(
+  options: AnalysisRunOptions,
+  run: (attemptOptions: AnalysisRunOptions) => Promise<T>
+): Promise<T> {
+  try {
+    return await run(options);
+  } catch (error) {
+    if (options.sourceMode === "zip" || !isGithubRateLimitError(error)) throw error;
+    return run({ ...options, sourceMode: "zip" });
+  }
+}
+
+function isGithubRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /github/i.test(message) && (/rate limit/i.test(message) || /\b(?:403|429)\b/.test(message));
+}
+
+async function createSourceClient(repo: RepoRef, settings: Settings, forceZip = false): Promise<SourceClient> {
+  if (forceZip) return createZipSourceClient(repo);
   const apiClient = new GithubClient(settings);
   try {
     await apiClient.getRepo(repo.owner, repo.repo);
@@ -693,16 +747,20 @@ async function createSourceClient(repo: RepoRef, settings: Settings): Promise<So
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("403") && !message.toLowerCase().includes("rate limit")) throw error;
-    const zipClient = new ZipGithubClient(repo.owner, repo.repo, repo.branch);
-    return {
-      kind: zipClient.kind,
-      getRepo: () => zipClient.getRepo(),
-      getBranchSnapshot: (_owner, _repo, branch) => zipClient.getBranchSnapshot(repo.owner, repo.repo, branch),
-      getTree: (_owner, _repo, branch) => zipClient.getTree(repo.owner, repo.repo, branch),
-      getFile: (_owner, _repo, path, ref) => zipClient.getFile(repo.owner, repo.repo, path, ref),
-      resolveRepoRef: (candidateRepo) => zipClient.resolveRepoRef(candidateRepo)
-    };
+    return createZipSourceClient(repo);
   }
+}
+
+function createZipSourceClient(repo: RepoRef): SourceClient {
+  const zipClient = new ZipGithubClient(repo.owner, repo.repo, repo.branch);
+  return {
+    kind: zipClient.kind,
+    getRepo: () => zipClient.getRepo(),
+    getBranchSnapshot: (_owner, _repo, branch) => zipClient.getBranchSnapshot(repo.owner, repo.repo, branch),
+    getTree: (_owner, _repo, branch) => zipClient.getTree(repo.owner, repo.repo, branch),
+    getFile: (_owner, _repo, path, ref) => zipClient.getFile(repo.owner, repo.repo, path, ref),
+    resolveRepoRef: (candidateRepo) => zipClient.resolveRepoRef(candidateRepo)
+  };
 }
 
 async function resolveRepoSnapshot(
@@ -732,7 +790,7 @@ async function resolveRepoSnapshot(
 }
 
 async function resolveSourceRepoRef(gh: SourceClient, repo: RepoRef): Promise<RepoRef> {
-  if (!repo.refCandidates || repo.refCandidates.length <= 1) return repo;
+  if (!repo.refCandidates || repo.refCandidates.length <= 1) return gh.resolveRepoRef ? gh.resolveRepoRef(repo) : repo;
   if (!gh.resolveRepoRef) {
     throw new Error("Ambiguous GitHub ref/path cannot be validated by the current source connection. Open an immutable commit URL or analyze the repository root.");
   }

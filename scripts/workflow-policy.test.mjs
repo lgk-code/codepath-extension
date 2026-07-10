@@ -18,6 +18,19 @@ test("GitHub Actions references are pinned to immutable commit SHAs", () => {
 test("release workflow verifies tag provenance against full main history", () => {
   const release = fs.readFileSync(".github/workflows/release.yml", "utf8");
   assert.match(release, /fetch-depth:\s*0/);
-  assert.match(release, /npm run verify:release/);
   assert.match(release, /refs\/remotes\/origin\/main/);
+  assert.match(release, /git cat-file -t/);
+  assert.match(release, /git merge-base --is-ancestor/);
+  assert.match(release, /package\.json/);
+});
+
+test("release publication is orchestrated by the trusted default-branch workflow", () => {
+  const release = fs.readFileSync(".github/workflows/release.yml", "utf8");
+  assert.match(release, /repository_dispatch:/);
+  assert.doesNotMatch(release, /push:\s*[\s\S]*tags:/);
+  assert.match(release, /if:\s*github\.ref == 'refs\/heads\/main'/);
+  assert.match(release, /permissions:\s*\n\s*contents:\s*read/);
+  assert.equal((release.match(/contents:\s*write/g) ?? []).length, 1);
+  assert.match(release, /environment:\s*release/);
+  assert.match(release, /needs:\s*build-extension/);
 });
