@@ -56,9 +56,13 @@ type GithubTreeResponse = {
 };
 
 type GithubContentResponse = {
+  type?: string;
   content?: string;
   encoding?: string;
 };
+
+const MAX_REF_PATH_CANDIDATES = 8;
+const MAX_REF_METADATA_BYTES = 512 * 1024;
 
 export class GithubClient implements SourceClient {
   readonly kind = "github-api" as const;
@@ -100,15 +104,25 @@ export class GithubClient implements SourceClient {
   async resolveRepoRef(repo: RepoRef): Promise<RepoRef> {
     const candidates = uniqueCandidates(repo.refCandidates ?? []);
     if (candidates.length <= 1) return repo;
-    if (candidates.length > 20) throw new Error("Ambiguous GitHub ref/path has too many candidate boundaries to validate safely.");
+    if (candidates.length > MAX_REF_PATH_CANDIDATES) {
+      throw new Error("Ambiguous GitHub ref/path has too many candidate boundaries to validate safely.");
+    }
 
     const viable: Array<{ refName: string; path: string }> = [];
     for (const candidate of candidates) {
       try {
-        const snapshot = await this.getBranchSnapshot(repo.owner, repo.repo, candidate.refName);
-        const tree = await this.getTree(repo.owner, repo.repo, snapshot.treeSha);
-        const expectedType = repo.pageType === "file" ? "blob" : "tree";
-        if ((!candidate.path && repo.pageType === "directory") || tree.some((item) => item.path === candidate.path && item.type === expectedType)) {
+        if (!candidate.path && repo.pageType === "directory") {
+          await this.getBranchSnapshot(repo.owner, repo.repo, candidate.refName);
+          viable.push(candidate);
+          continue;
+        }
+        const metadata = await this.requestOptional<GithubContentResponse | unknown[]>(
+          `${repoApiBase(repo.owner, repo.repo)}/contents/${encodePath(candidate.path)}?ref=${encodeURIComponent(candidate.refName)}`,
+          MAX_REF_METADATA_BYTES
+        );
+        const matchesFile = repo.pageType === "file" && !Array.isArray(metadata) && ["file", "symlink", "submodule"].includes(metadata?.type ?? "");
+        const matchesDirectory = repo.pageType === "directory" && Array.isArray(metadata);
+        if (matchesFile || matchesDirectory) {
           viable.push(candidate);
         }
       } catch (error) {
@@ -176,7 +190,7 @@ export class GithubClient implements SourceClient {
     return readJsonResponse<T>(response, jsonLimit);
   }
 
-  private async requestOptional<T>(url: string): Promise<T | undefined> {
+  private async requestOptional<T>(url: string, jsonLimit?: number): Promise<T | undefined> {
     const headers: Record<string, string> = {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28"
@@ -192,7 +206,7 @@ export class GithubClient implements SourceClient {
       const body = await safeResponseText(response);
       throw new Error(`GitHub request failed ${response.status}: ${body || response.statusText}`);
     }
-    return readJsonResponse<T>(response);
+    return readJsonResponse<T>(response, jsonLimit);
   }
 
   private async getRepoCommit(owner: string, repo: string, ref: string): Promise<GithubCommitResponse | undefined> {

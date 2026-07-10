@@ -87,10 +87,38 @@ test("GithubClient rejects non-unique slash-branch candidates", async () => {
   await assert.rejects(() => client.resolveRepoRef(candidateRepo), /ambiguous GitHub ref\/path/i);
 });
 
+test("GithubClient bounds aggregate requests for adversarial ref candidate lists", async () => {
+  let fetchCalls = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    fetchCalls += 1;
+    const url = String(request);
+    if (url.includes("/git/ref/heads/")) return jsonResponse({ object: { type: "commit", sha: `head-${fetchCalls}` } });
+    if (url.includes("/git/commits/")) return jsonResponse({ tree: { sha: `tree-${fetchCalls}` } });
+    if (url.includes("/git/trees/")) return jsonResponse({ tree: [], truncated: false });
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const candidateRepo = {
+    owner: "acme",
+    repo: "demo",
+    branch: "r0",
+    path: "app.ts",
+    pageType: "file",
+    refCandidates: Array.from({ length: 20 }, (_item, index) => ({ refName: `r${index}`, path: `p${index}/app.ts` }))
+  } as RepoRef & { refCandidates: Array<{ refName: string; path: string }> };
+  const client = new GithubClient({ githubToken: "" }) as GithubClient & { resolveRepoRef(repo: RepoRef): Promise<RepoRef> };
+
+  await assert.rejects(() => client.resolveRepoRef(candidateRepo), /too many candidate boundaries|no candidate matched/i);
+  assert.equal(fetchCalls <= 8, true);
+});
+
 function candidateFetch(candidates: Record<string, { headSha: string; treeSha: string; path: string }>): typeof fetch {
   return (async (request: RequestInfo | URL) => {
     const url = String(request);
     for (const [branch, candidate] of Object.entries(candidates)) {
+      const parsed = new URL(url);
+      if (parsed.pathname.includes(`/contents/${candidate.path}`) && parsed.searchParams.get("ref") === branch) {
+        return jsonResponse({ type: "file" });
+      }
       const encodedBranch = branch.split("/").map(encodeURIComponent).join("/");
       if (url.endsWith(`/git/ref/heads/${encodedBranch}`)) {
         return jsonResponse({ object: { type: "commit", sha: candidate.headSha } });

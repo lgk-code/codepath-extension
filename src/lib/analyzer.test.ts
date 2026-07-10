@@ -300,8 +300,11 @@ test("explainFile validates slash ref candidates before selecting the file", asy
     if (url === "https://api.github.com/repos/acme/demo/git/trees/tree-v2?recursive=1") {
       return jsonResponse({ tree: [{ path: "src/app.ts", type: "blob", sha: "blob-app", size: 24 }], truncated: false });
     }
+    if (url === "https://api.github.com/repos/acme/demo/contents/src/app.ts?ref=release%2Fv2") {
+      return jsonResponse({ type: "file" });
+    }
     if (url === "https://api.github.com/repos/acme/demo/contents/src/app.ts?ref=head-v2") {
-      return jsonResponse({ encoding: "base64", content: Buffer.from("export const app = true;").toString("base64") });
+      return jsonResponse({ type: "file", encoding: "base64", content: Buffer.from("export const app = true;").toString("base64") });
     }
     if (url === "https://models.example/v1/chat/completions") {
       return jsonResponse({ choices: [{ message: { content: "源码确认\n- 已解析目标文件。" } }] });
@@ -1319,6 +1322,7 @@ function mockAnalyzeProjectFetch(input: {
       const content = input.files[path];
       if (content === undefined) return new Response("not found", { status: 404 });
       return jsonResponse({
+        type: "file",
         encoding: "base64",
         content: Buffer.from(content, "utf8").toString("base64")
       });

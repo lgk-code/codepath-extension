@@ -394,6 +394,76 @@ test("deployment publishes complete lock metadata atomically", async () => {
   }
 });
 
+test("a heartbeat refreshed during stale takeover cannot be fenced as expired", async () => {
+  const root = await temporaryRoot();
+  const sourceA = path.join(root, "source-a");
+  const sourceB = path.join(root, "source-b");
+  const targetDir = path.join(root, "CodePath");
+  await mkdir(sourceA, { recursive: true });
+  await mkdir(sourceB, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceA, "manifest.json"), "a");
+  await writeFile(path.join(sourceB, "manifest.json"), "b");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+
+  let markAEntered;
+  let releaseA;
+  const aEntered = new Promise((resolve) => {
+    markAEntered = resolve;
+  });
+  const holdA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  let bEntered = false;
+
+  try {
+    const deploymentA = replaceDirectoryAtomic({
+      sourceDir: sourceA,
+      targetDir,
+      lockOptions: { timeoutMs: 500, retryMs: 5, leaseMs: 40, heartbeatMs: 200 },
+      prepareStaging: async () => {
+        markAEntered?.();
+        await holdA;
+      }
+    });
+    await aEntered;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const deploymentB = replaceDirectoryAtomic({
+      sourceDir: sourceB,
+      targetDir,
+      lockOptions: { timeoutMs: 60, retryMs: 5, leaseMs: 40, heartbeatMs: 10 },
+      fsOps: {
+        async rename(from, to) {
+          if (String(from).includes(".heartbeat-") && String(to).includes(".fenced-")) {
+            const now = new Date();
+            await utimes(from, now, now);
+          }
+          return rename(from, to);
+        }
+      },
+      prepareStaging: async () => {
+        bEntered = true;
+      }
+    });
+
+    let bTimedOut = false;
+    try {
+      await deploymentB;
+    } catch (error) {
+      bTimedOut = /timed out waiting for the deployment lock/i.test(String(error));
+    }
+    releaseA?.();
+    await deploymentA.catch(() => undefined);
+
+    assert.equal(bTimedOut, true);
+    assert.equal(bEntered, false);
+  } finally {
+    releaseA?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function temporaryRoot() {
   const root = path.join(os.tmpdir(), `codepath-deploy-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   await mkdir(root, { recursive: true });

@@ -113,7 +113,7 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
       await fsOps.link(candidatePath, lockPath);
       published = true;
       await fsOps.rm(candidatePath, { force: true });
-      await writeHeartbeat(fsOps, heartbeatPathFor(lockPath, owner.token), owner);
+      await createHeartbeat(fsOps, heartbeatPathFor(lockPath, owner.token), owner);
       return createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs);
     } catch (error) {
       await handle?.close().catch(() => undefined);
@@ -129,20 +129,7 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
     const observed = await readLockObservation(fsOps, lockPath);
     if (!observed) continue;
     if (Date.now() - observed.updatedAt > leaseMs) {
-      await delay(Math.min(retryMs, 25));
-      const confirmed = await readLockObservation(fsOps, lockPath);
-      if (!confirmed) continue;
-      if (confirmed.fingerprint !== observed.fingerprint || Date.now() - confirmed.updatedAt <= leaseMs) continue;
-      const abandonedPath = `${lockPath}.abandoned-${owner.token}`;
-      try {
-        await fsOps.rename(lockPath, abandonedPath);
-        await fsOps.rm(abandonedPath, { force: true });
-        if (confirmed.token) await removeHeartbeatArtifacts(fsOps, lockPath, confirmed.token);
-        continue;
-      } catch (error) {
-        if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") continue;
-        throw error;
-      }
+      if (await tryFenceStaleLock(fsOps, lockPath, observed, owner.token, leaseMs, retryMs)) continue;
     }
 
     if (Date.now() - startedAt >= timeoutMs) {
@@ -163,7 +150,7 @@ function createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs) {
         if (stopped) return;
         const currentToken = await readLockToken(fsOps, lockPath);
         if (currentToken !== owner.token) throw new Error(`Deployment lease was lost: ${lockPath}`);
-        await writeHeartbeat(fsOps, heartbeatPath, owner);
+        await refreshHeartbeat(fsOps, heartbeatPath);
       })
       .catch((error) => {
         leaseError = error;
@@ -212,8 +199,9 @@ async function readLockObservation(fsOps, lockPath) {
     const owner = parseLockOwner(content);
     let updatedAt = owner?.updatedAt ?? stat.mtimeMs;
     let heartbeatFingerprint = "";
+    let heartbeatPath;
     if (owner?.token) {
-      const heartbeatPath = heartbeatPathFor(lockPath, owner.token);
+      heartbeatPath = heartbeatPathFor(lockPath, owner.token);
       try {
         const heartbeatContent = await fsOps.readFile(heartbeatPath, "utf8");
         const heartbeatStat = await fsOps.lstat(heartbeatPath);
@@ -226,6 +214,7 @@ async function readLockObservation(fsOps, lockPath) {
     }
     return {
       token: owner?.token,
+      heartbeatPath: heartbeatFingerprint ? heartbeatPath : undefined,
       updatedAt,
       fingerprint: `${stat.mtimeMs}:${stat.size}:${content}:${heartbeatFingerprint}`
     };
@@ -268,20 +257,72 @@ function parseLockOwner(content) {
   }
 }
 
-async function writeHeartbeat(fsOps, heartbeatPath, owner) {
-  let handle;
+async function createHeartbeat(fsOps, heartbeatPath, owner) {
+  const handle = await fsOps.open(heartbeatPath, "wx");
   try {
-    handle = await fsOps.open(heartbeatPath, "wx");
     await handle.writeFile(JSON.stringify({ token: owner.token }), "utf8");
     await handle.sync();
+  } finally {
     await handle.close();
-    return;
-  } catch (error) {
-    await handle?.close().catch(() => undefined);
-    if (error?.code !== "EEXIST") throw error;
   }
+}
+
+async function refreshHeartbeat(fsOps, heartbeatPath) {
   const now = new Date();
   await fsOps.utimes(heartbeatPath, now, now);
+}
+
+async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, leaseMs, retryMs) {
+  if (observed.token && observed.heartbeatPath) {
+    const fencedHeartbeat = `${observed.heartbeatPath}.fenced-${claimantToken}`;
+    try {
+      await fsOps.rename(observed.heartbeatPath, fencedHeartbeat);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") return false;
+      throw error;
+    }
+
+    try {
+      const heartbeatContent = await fsOps.readFile(fencedHeartbeat, "utf8");
+      const heartbeatStat = await fsOps.lstat(fencedHeartbeat);
+      const heartbeatOwner = parseLockOwner(heartbeatContent);
+      const refreshed = heartbeatOwner?.token !== observed.token || Date.now() - heartbeatStat.mtimeMs <= leaseMs;
+      if (refreshed || (await readLockToken(fsOps, lockPath)) !== observed.token) {
+        if ((await readLockToken(fsOps, lockPath)) === observed.token && !(await pathExists(fsOps, observed.heartbeatPath))) {
+          await fsOps.rename(fencedHeartbeat, observed.heartbeatPath);
+        }
+        return false;
+      }
+
+      const abandonedPath = `${lockPath}.abandoned-${claimantToken}`;
+      try {
+        await fsOps.rename(lockPath, abandonedPath);
+      } catch (error) {
+        if (error?.code !== "ENOENT" && error?.code !== "EACCES" && error?.code !== "EPERM") throw error;
+        if ((await readLockToken(fsOps, lockPath)) === observed.token && !(await pathExists(fsOps, observed.heartbeatPath))) {
+          await fsOps.rename(fencedHeartbeat, observed.heartbeatPath);
+        }
+        return false;
+      }
+      await fsOps.rm(abandonedPath, { force: true });
+      return true;
+    } finally {
+      await fsOps.rm(fencedHeartbeat, { force: true });
+    }
+  }
+
+  await delay(Math.min(retryMs, 25));
+  const confirmed = await readLockObservation(fsOps, lockPath);
+  if (!confirmed || confirmed.fingerprint !== observed.fingerprint || Date.now() - confirmed.updatedAt <= leaseMs) return false;
+  const abandonedPath = `${lockPath}.abandoned-${claimantToken}`;
+  try {
+    await fsOps.rename(lockPath, abandonedPath);
+    await fsOps.rm(abandonedPath, { force: true });
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") return false;
+    throw error;
+  }
 }
 
 function heartbeatPathFor(lockPath, token) {
