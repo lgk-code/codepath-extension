@@ -34,6 +34,24 @@ test("streaming UI updates are scoped to the active repository run", () => {
   assert.match(sidebar, /current\.runId === runId/);
 });
 
+test("navigation events are signals and repository requests are sender-scoped", () => {
+  const content = read("entrypoints/content.tsx");
+  const sidebar = read("src/components/Sidebar.tsx");
+  const background = read("entrypoints/background.ts");
+
+  assert.match(content, /new CustomEvent\("codepath:url-change"\)/);
+  assert.doesNotMatch(content, /codepath:url-change[\s\S]{0,80}detail:/);
+  assert.match(sidebar, /parseGithubUrl\(location\.href\)/);
+  assert.match(background, /port\.sender/);
+  assert.match(background, /sender\?\.tab\?\.url/);
+  assert.match(background, /validateRepoRequestScope/);
+});
+
+test("repository operations are not replayed through sendMessage after a port attempt", () => {
+  const sidebar = read("src/components/Sidebar.tsx");
+  assert.match(sidebar, /isSettingsTransportRequest\(request\)/);
+});
+
 test("manifest does not request arbitrary HTTPS host access", () => {
   const config = read("wxt.config.ts");
   const hostPermissions = config.match(/host_permissions:\s*\[([\s\S]*?)\]/)?.[1] ?? "";

@@ -29,6 +29,8 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
 import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl, resolveProvider } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
+import { isSettingsTransportRequest, repoStateKey } from "../lib/runtimeBoundary";
+import { createStreamBatcher } from "../lib/streamBatcher";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "settings";
 
@@ -144,10 +146,10 @@ export function Sidebar() {
 
   useEffect(() => {
     send<Settings>({ type: "get-settings" }).then(setSettings).catch((err) => setError(err.message));
-    const listener = (event: Event) => {
-      const detail = (event as CustomEvent<RepoRef>).detail;
-      setRepo(detail);
-      if (detail.pageType === "file") switchTab("file");
+    const listener = () => {
+      const nextRepo = parseGithubUrl(location.href);
+      setRepo(nextRepo);
+      if (nextRepo?.pageType === "file") switchTab("file");
     };
     window.addEventListener("codepath:url-change", listener);
     return () => window.removeEventListener("codepath:url-change", listener);
@@ -205,19 +207,22 @@ export function Sidebar() {
     });
     setNow(startedAt);
     setError("");
+    const streamBatcher = createStreamBatcher((text) =>
+      setActiveStream((current) =>
+        current && current.runId === runId && current.target === target && current.repoKey === startedRepoKey && startedRepoKey === repoStateKey(repoRef.current)
+          ? { ...current, text: current.text + text, receivedDelta: true }
+          : current
+      )
+    );
     try {
-      const value = await action((text) =>
-        setActiveStream((current) =>
-          current && current.runId === runId && current.target === target && current.repoKey === startedRepoKey && startedRepoKey === repoStateKey(repoRef.current)
-            ? { ...current, text: current.text + text, receivedDelta: true }
-            : current
-        )
-      );
+      const value = await action(streamBatcher.push);
+      streamBatcher.flush();
       if (!isCurrentRun(runId, startedRepoKey)) return;
       onDone(value, Date.now() - startedAt);
     } catch (err) {
       if (isCurrentRun(runId, startedRepoKey)) setError(formatRunError(label, repoRef.current, Date.now() - startedAt, err));
     } finally {
+      streamBatcher.flush();
       if (isCurrentRun(runId, startedRepoKey)) {
         setLoading("");
         setLoadingStartedAt(null);
@@ -1531,6 +1536,10 @@ async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text:
   });
   if (portResponse) return portResponse;
 
+  if (!isSettingsTransportRequest(request)) {
+    return fail<T>(backgroundUnavailableMessage(portError.message || "No background response."));
+  }
+
   const messageError: { message?: string } = {};
   const messageResponse = await sendViaMessage<T>(request).catch((error) => {
     messageError.message = error instanceof Error ? error.message : String(error);
@@ -1701,11 +1710,6 @@ function sharedAskContextBasis(bases: AnalysisBasis[], expectedCount: number): A
     : undefined;
 }
 
-function repoStateKey(repo: RepoRef | null): string {
-  if (!repo) return "none";
-  return [repo.owner, repo.repo, repo.branch || "", repo.pageType, repo.path || ""].join("/");
-}
-
 function sendViaMessage<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(request, (response: unknown) => {
@@ -1728,6 +1732,13 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const port = chrome.runtime.connect({ name: "codepath" });
     let settled = false;
+    let timeout: number;
+    const resetTimeout = () => {
+      window.clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        settle(() => reject(new Error("Background response timed out.")));
+      }, 30_000);
+    };
     const settle = (action: () => void) => {
       if (settled) return;
       settled = true;
@@ -1739,14 +1750,14 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
       }
       action();
     };
-    const timeout = window.setTimeout(() => {
-      settle(() => reject(new Error("Background response timed out.")));
-    }, 120000);
+    resetTimeout();
 
     port.onMessage.addListener((message: unknown) => {
       const envelope = message as Exclude<PortMessage, { request: RuntimeRequest }>;
       if (envelope.id !== id) return;
+      resetTimeout();
       if ("event" in envelope) {
+        if (envelope.event === "heartbeat") return;
         if (envelope.event === "stream-delta" && envelope.text) onStreamDelta?.(envelope.text);
         if (envelope.event === "stream-fallback") onStreamFallback?.(envelope.text || "未知原因");
         if (envelope.event === "stream-error") settle(() => reject(new Error(envelope.error || "Streaming failed.")));

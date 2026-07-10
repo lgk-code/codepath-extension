@@ -9,7 +9,7 @@ declare const chrome: {
       addListener(
         callback: (
           request: unknown,
-          sender: unknown,
+          sender: ChromeMessageSender,
           sendResponse: (response?: unknown) => void
         ) => boolean | void
       ): void;
@@ -45,6 +45,7 @@ declare const chrome: {
 
 type ChromePort = {
   name: string;
+  sender?: ChromeMessageSender;
   onMessage: {
     addListener(callback: (message: unknown) => void): void;
   };
@@ -53,4 +54,11 @@ type ChromePort = {
   };
   disconnect(): void;
   postMessage(message: unknown): void;
+};
+
+type ChromeMessageSender = {
+  url?: string;
+  tab?: {
+    url?: string;
+  };
 };

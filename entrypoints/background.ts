@@ -15,11 +15,13 @@ import {
 import { chat, listModels, normalizeBaseUrl, probeStreamingSupport, resolveProvider } from "../src/lib/aiClient";
 import { DEV_RELOAD_MARKER_PATH, checkDevSelfReloadOnce, parseDevReloadMarker, type ExtensionInstallType } from "../src/lib/devSelfReload";
 import { GithubClient } from "../src/lib/githubClient";
+import { validateRepoRequestScope } from "../src/lib/runtimeBoundary";
 
 const BACKGROUND_BUILD = "dev-2026-07-09-self-reload-v1";
 const DEV_RELOAD_ALARM_NAME = "codepath-dev-self-reload";
 const DEV_RELOAD_ALARM_PERIOD_MINUTES = 0.5;
 const DEV_RELOAD_ACTIVE_INTERVAL_MS = 5_000;
+const PORT_HEARTBEAT_INTERVAL_MS = 20_000;
 
 type StreamHandlers = {
   onModelStart?: () => void;
@@ -46,22 +48,48 @@ export default defineBackground(() => {
     if (port.name !== "codepath") return;
     port.onMessage.addListener((message: unknown) => {
       const envelope = message as Extract<PortMessage, { request: RuntimeRequest }>;
-      handleRequest(envelope.request, {
-        onModelStart: () => port.postMessage({ id: envelope.id, event: "stream-start" } satisfies PortMessage),
-        onModelDelta: (text) => port.postMessage({ id: envelope.id, event: "stream-delta", text } satisfies PortMessage),
-        onModelDone: () => port.postMessage({ id: envelope.id, event: "stream-done" } satisfies PortMessage),
-        onModelFallback: (reason) => port.postMessage({ id: envelope.id, event: "stream-fallback", text: reason } satisfies PortMessage)
-      }).then((response) => {
-        port.postMessage({ id: envelope.id, response } satisfies PortMessage);
-      });
+      void handlePortRequest(port, envelope);
     });
   });
 
-  chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-    handleRequest(request as RuntimeRequest).then(sendResponse);
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    handleRequest(request as RuntimeRequest, {}, senderUrl(sender)).then(sendResponse);
     return true;
   });
 });
+
+async function handlePortRequest(port: ChromePort, envelope: Extract<PortMessage, { request: RuntimeRequest }>) {
+  const post = (message: PortMessage) => {
+    try {
+      port.postMessage(message);
+    } catch {
+      // The caller may navigate or close the tab while analysis is running.
+    }
+  };
+  const heartbeat = globalThis.setInterval(
+    () => post({ id: envelope.id, event: "heartbeat" }),
+    PORT_HEARTBEAT_INTERVAL_MS
+  );
+  try {
+    const response = await handleRequest(
+      envelope.request,
+      {
+        onModelStart: () => post({ id: envelope.id, event: "stream-start" }),
+        onModelDelta: (text) => post({ id: envelope.id, event: "stream-delta", text }),
+        onModelDone: () => post({ id: envelope.id, event: "stream-done" }),
+        onModelFallback: (reason) => post({ id: envelope.id, event: "stream-fallback", text: reason })
+      },
+      senderUrl(port.sender)
+    );
+    post({ id: envelope.id, response });
+  } finally {
+    globalThis.clearInterval(heartbeat);
+  }
+}
+
+function senderUrl(sender: ChromeMessageSender | undefined): string | undefined {
+  return sender?.tab?.url ?? sender?.url;
+}
 
 async function startDevSelfReload() {
   if (devReloadStarted) return;
@@ -127,8 +155,11 @@ async function readDevReloadMarker() {
   return parseDevReloadMarker(await response.json());
 }
 
-async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHandlers = {}): Promise<RuntimeResponse<unknown>> {
+async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHandlers = {}, requestSenderUrl?: string): Promise<RuntimeResponse<unknown>> {
   try {
+    if (!validateRepoRequestScope(request, requestSenderUrl)) {
+      return fail("Repository request does not match the sender GitHub tab.");
+    }
     const validationError = validateRuntimeRequest(request);
     if (validationError) return fail(validationError);
 

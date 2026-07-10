@@ -63,7 +63,7 @@ function mount() {
     reactRoot.render(<Sidebar />);
   }
 
-  window.dispatchEvent(new CustomEvent("codepath:url-change", { detail: repo }));
+  window.dispatchEvent(new CustomEvent("codepath:url-change"));
 }
 
 function getOwnedHost(): HTMLElement | null {
