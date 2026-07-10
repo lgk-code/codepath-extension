@@ -32,9 +32,14 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
     await lease.assertOwned();
 
     if (await pathExists(ops, targetDir)) {
-      await ops.rename(targetDir, backupDir);
+      await ops.writeFile(path.join(targetDir, BACKUP_MARKER), JSON.stringify({ schemaVersion: 1, transactionId: suffix }), "utf8");
+      try {
+        await ops.rename(targetDir, backupDir);
+      } catch (error) {
+        await ops.rm(path.join(targetDir, BACKUP_MARKER), { force: true });
+        throw error;
+      }
       targetMoved = true;
-      await ops.writeFile(path.join(backupDir, BACKUP_MARKER), JSON.stringify({ schemaVersion: 1, transactionId: suffix }), "utf8");
     }
     await lease.assertOwned();
     await ops.rename(stagingDir, targetDir);
