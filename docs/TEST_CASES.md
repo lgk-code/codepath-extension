@@ -41,6 +41,7 @@ npm.cmd run deploy:edge
 - CodePath 在 development install 中读取 `codepath-dev-reload.json` 后自行重载。首次升级到带 self reload 的版本时仍需要在 `edge://extensions` 手动重新加载一次。
 - 已打开的 GitHub 仓库页自动刷新；如果没有自动刷新，手动刷新目标 GitHub 仓库页面。
 - 设置页绿色构建版本已变化。
+- 本轮安全加固版本应显示为 `dev-2026-07-09-adversarial-hardening-v2`。
 - 设置页保存并测试后，确认流式输出模式能显示为实时流式、疑似缓冲、不支持流式或连接失败未测试之一。
 
 CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不代表真实模型 API、GitHub Token 权限、流式输出和 UI 手感已经验证。
@@ -116,6 +117,31 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 不支持流式或接口缓冲：提示将使用普通一次性返回，或提示接口/代理可能缓冲 SSE。
 - 未填写 GitHub Token 且触发 rate limit：提示填写 GitHub Token。
 - 私有仓库或无权限仓库：提示仓库不存在、私有或 Token 权限不足。
+
+## 缓存新鲜度与来源边界
+
+- 对一个仓库完成分析后再次分析：HEAD 和 tree 均未变化时允许命中结果缓存，并显示原始 commit 与最近校验时间。
+- 推送修改源码的 commit 后再次分析：tree SHA 变化，旧模型结果不得直接显示，必须重新读取源码并调用模型。
+- 创建空提交后再次分析：HEAD 变化但 tree SHA 不变，允许复用结果，并显示“提交已更新，源码树未变”。
+- 打开含 `/` 的分支文件 URL：只有 GitHub ref 与文件路径能唯一校验时才分析；多解、限流或无法校验时必须明确报错。
+- GitHub API 触发 rate limit 且当前是仓库根页面：ZIP fallback 应读取 codeload `HEAD`，状态显示为 `unchecked`，结果不得长期复用。
+- GitHub API 触发 rate limit 且当前文件 URL 存在 ref/path 歧义：不得用 ZIP 猜测分支，应提示改用 immutable commit URL 或仓库根页面。
+
+## 传输、流式与安全窗口
+
+- 安全窗口保存 API Key 和 GitHub Token 后，设置页重新读取的值掩码应立即变化；清除后也应同步生效。
+- 中性代理 URL 配置为 Anthropic provider 时，应发送 `/messages` 与 `x-api-key`，不得退回 OpenAI 格式。
+- 长时间模型请求期间后台每 20 秒发送 heartbeat；前端不得因端口超时通过 `sendMessage` 重放分析。
+- OpenAI `[DONE]` 和 Anthropic `message_stop` 到达后应立即完成，不等待服务端关闭连接。
+- 大量流式 delta 应按批次刷新 Markdown；最终文本不能丢字、重复或跨仓库显示。
+
+## 部署与发布门禁
+
+- 临时允许根目录部署时，staging 复制或提升失败必须保留原目标内容并清理 staging/backup。
+- 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
+- Release tag 必须与 `package.json` 版本完全一致，且 tag commit 是 `origin/main` 的祖先；否则 workflow 在发布前失败。
+- `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
+- `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应拒绝回退到已审查的 Vite、esbuild 及相关脆弱版本。
 
 ## 回归关注点
 

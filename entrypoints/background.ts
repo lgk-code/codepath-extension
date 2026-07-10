@@ -17,7 +17,7 @@ import { DEV_RELOAD_MARKER_PATH, checkDevSelfReloadOnce, parseDevReloadMarker, t
 import { GithubClient } from "../src/lib/githubClient";
 import { validateRepoRequestScope } from "../src/lib/runtimeBoundary";
 
-const BACKGROUND_BUILD = "dev-2026-07-09-self-reload-v1";
+const BACKGROUND_BUILD = "dev-2026-07-09-adversarial-hardening-v2";
 const DEV_RELOAD_ALARM_NAME = "codepath-dev-self-reload";
 const DEV_RELOAD_ALARM_PERIOD_MINUTES = 0.5;
 const DEV_RELOAD_ACTIVE_INTERVAL_MS = 5_000;

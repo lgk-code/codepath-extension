@@ -94,6 +94,40 @@ Three options were considered:
 - `npm.cmd run quality`, `git diff --check`, dependency policy, and `npm.cmd run deploy:edge` pass on Windows.
 - Two fresh independent subagents review the complete remediation diff adversarially. Both must report no open Critical or Important findings and approve specification compliance and code quality.
 
+## Remediation Closure
+
+Implementation baseline: `8c5e9e37130955ac98c4f7da608f7e514c0d2314`. The following dispositions were verified on `codex/adversarial-hardening-v2` before the final two independent reviews.
+
+| ID | Disposition | Fix evidence | Regression evidence |
+| --- | --- | --- | --- |
+| CP-ADV-001 | Fixed | `e528ebc` resolves one coherent `CODEPATH_*` or `OPENAI_*` tuple and rejects mixing. | `settingsResolution.test.ts` covers OpenAI defaults, CodePath defaults, mixed namespaces, and explicit Anthropic. |
+| CP-ADV-002 | Fixed | `e70453d` canonicalizes real paths with Windows case folding and rejects project/root/out-of-root/reparse targets. | `deploy-target.test.mjs` covers case variants, descendants, roots, sibling-prefix escapes, junction resolution, and a valid target. |
+| CP-ADV-003 | Fixed | `e528ebc` writes `codepath-settings` and limits secret editor web resources to GitHub matches. | `security-hygiene.test.mjs` verifies the exact key and resource declaration. |
+| CP-ADV-004 | Fixed | `e528ebc` makes valid explicit provider metadata authoritative for chat, model listing, and streaming. | `aiClient.test.ts` covers an Anthropic provider on a neutral proxy. |
+| CP-ADV-005 | Fixed | `c0b8af6` reparses browser location and compares repo-bearing requests with the runtime sender. | `runtimeBoundary.test.ts` and hygiene guards cover same-repo acceptance and cross-repo rejection. |
+| CP-ADV-006 | Fixed | `c0b8af6` serializes repository UI identity as a structured tuple. | `runtimeBoundary.test.ts` reproduces the slash boundary collision. |
+| CP-ADV-007 | Fixed | `5fbbeaa` bounds raw SSE and pending lines, handles terminal records, and cancels abnormal reads. | `sse.test.ts` and `aiClient.test.ts` cover terminal, malformed, raw-byte, line, and cancellation paths. |
+| CP-ADV-008 | Fixed | `c0b8af6` removes non-settings transport replay and adds 20-second port heartbeat events. | Runtime boundary and hygiene tests enforce the at-most-once fallback policy. |
+| CP-ADV-009 | Fixed | `c40c5eb` gives recursive Git trees an explicit 8 MiB JSON bound while retaining the 2 MiB default elsewhere. | `githubClient.test.ts` accepts a bounded response above 2 MiB; truncated-tree regression remains green. |
+| CP-ADV-010 | Fixed | `c40c5eb` memoizes successful repository metadata within each API client. | Direct client and analyzer tests assert one repository metadata request. |
+| CP-ADV-011 | Fixed | `c40c5eb` uses codeload `/zip/HEAD` for an unspecified ref and exact heads for explicit branches. | `zipGithubClient.test.ts` covers both behaviors. |
+| CP-ADV-012 | Fixed | `c40c5eb` replaces FNV entry identity with length-framed SHA-256 and discards rejected responses. | `sourceIdentity.test.ts`, ZIP rejection tests, and `discardResponse` tests cover collisions and cancellation. |
+| CP-ADV-013 | Fixed | `c20cbcd` uses length-framed SHA-256 over provider, endpoint, model, output limit, and a SHA-256 credential fingerprint. | Analyzer tests reproduce a legacy FNV collision and cross-credential cache reuse. |
+| CP-ADV-014 | Fixed | `c20cbcd` checks owner, repo, and ref before SHA freshness. | Follow-up test rejects another repository with identical SHAs. |
+| CP-ADV-015 | Fixed | `c20cbcd` adds global/repository generations, serialized persistent mutations, visible clear failures, and pending-size preflight. | Deferred analysis, remove failure, and 1.6 MiB pending-record regressions pass. |
+| CP-ADV-016 | Fixed | `e70453d` copies to sibling staging, validates, promotes by rename, and restores backup on failure. | Atomic flow tests inject copy and promotion failures; a real temporary Windows deployment passed. |
+| CP-ADV-017 | Fixed | `f9dfc83` upgrades WXT/Vite and pins patched transitive overrides; current `npm audit` reports zero vulnerabilities. | `dependency-policy.test.mjs` enforces reviewed minimum versions; full build succeeds with Vite 8.0.16/esbuild 0.28.1. |
+| CP-ADV-018 | Fixed | `f9dfc83` pins every Action to a full SHA and verifies tag/version/main ancestry before publishing. | `verify-release.test.mjs` and `workflow-policy.test.mjs` cover mismatch, unmerged commit, full history, and immutable refs. |
+| CP-ADV-019 | Fixed | `e528ebc` extracts a behavioral scanner with `ASIA` and case-insensitive private-path patterns. | `secret-patterns.test.mjs` covers AWS, GitHub, Windows, and safe input. |
+| CP-ADV-020 | Fixed | `c0b8af6` batches stream deltas at a bounded interval and flushes on completion. | `streamBatcher.test.ts` preserves 1,000 deltas with bounded flushes. |
+| CP-ADV-021 | Fixed conservatively | `c40c5eb` preserves every ref/path boundary, validates candidates against snapshots and trees, and rejects zero/multiple/unavailable resolutions. | URL, client, and analyzer tests cover unique resolution and multiple-match rejection. |
+
+No confirmed Critical or Important finding remains open. The non-blocking trust-boundary decisions and structural debt listed above remain unchanged.
+
+## Final Independent Reviews
+
+Pending two fresh reviews of the complete diff from `8c5e9e3` through the final remediation commit. Their exact verdicts and any follow-up commits will be recorded here before this report is closed.
+
 ## Initial Positive Findings
 
 - GitHub API snapshots pin trees/files to immutable identities and reject truncated trees.

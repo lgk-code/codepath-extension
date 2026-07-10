@@ -87,7 +87,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-09-self-reload-v1";
+const UI_VERSION = "dev-2026-07-09-adversarial-hardening-v2";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
