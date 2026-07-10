@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RepoRef, RuntimeRequest } from "../types";
-import { canFallbackLocallyBeforeDispatch, repoStateKey, validateRepoRequestScope, validateRequestLocation } from "./runtimeBoundary";
+import { canFallbackLocallyBeforeDispatch, isRepoStateCurrent, repoStateKey, validateRepoRequestScope, validateRequestLocation } from "./runtimeBoundary";
 
 test("repoStateKey cannot collide when branch and path contain slashes", () => {
   const first: RepoRef = {
@@ -29,6 +29,14 @@ test("validateRepoRequestScope rejects a repository different from the sender ta
   };
 
   assert.equal(validateRepoRequestScope(request, "https://github.com/owner/current"), false);
+  assert.equal(validateRepoRequestScope(request, "https://github.com/other/..%2Fowner%2Frepo"), false);
+});
+
+test("isRepoStateCurrent rejects an old run immediately after SPA navigation", () => {
+  const oldRepo: RepoRef = { owner: "owner", repo: "repo", branch: "main", pageType: "file", path: "src/old.ts" };
+
+  assert.equal(isRepoStateCurrent(repoStateKey(oldRepo), "https://github.com/owner/repo/blob/main/src/old.ts"), true);
+  assert.equal(isRepoStateCurrent(repoStateKey(oldRepo), "https://github.com/owner/repo/blob/main/src/new.ts"), false);
 });
 
 test("validateRepoRequestScope accepts the sender repository and non-repository settings requests", () => {

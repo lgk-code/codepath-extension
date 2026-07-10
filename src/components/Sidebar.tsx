@@ -29,7 +29,7 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
 import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl, resolveProvider } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
-import { canFallbackLocallyBeforeDispatch, repoStateKey, validateRequestLocation } from "../lib/runtimeBoundary";
+import { canFallbackLocallyBeforeDispatch, isRepoStateCurrent, repoStateKey, validateRequestLocation } from "../lib/runtimeBoundary";
 import { createStreamBatcher } from "../lib/streamBatcher";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "settings";
@@ -87,7 +87,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v1";
+const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v2";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -209,7 +209,7 @@ export function Sidebar() {
     setError("");
     const streamBatcher = createStreamBatcher((text) =>
       setActiveStream((current) =>
-        current && current.runId === runId && current.target === target && current.repoKey === startedRepoKey && startedRepoKey === repoStateKey(repoRef.current)
+        current && current.runId === runId && current.target === target && current.repoKey === startedRepoKey && isCurrentRun(runId, startedRepoKey)
           ? { ...current, text: current.text + text, receivedDelta: true }
           : current
       )
@@ -232,7 +232,7 @@ export function Sidebar() {
   }
 
   function isCurrentRun(runId: number, repoKey: string) {
-    return runIdRef.current === runId && repoKey === repoStateKey(repoRef.current);
+    return runIdRef.current === runId && repoKey === repoStateKey(repoRef.current) && isRepoStateCurrent(repoKey, location.href);
   }
 
   function isContentNearBottom() {
@@ -277,7 +277,7 @@ export function Sidebar() {
 
   function markStreamFallback(target: StreamTarget, reason: string) {
     setActiveStream((current) =>
-      current && current.target === target && current.repoKey === repoStateKey(repoRef.current)
+      current && current.target === target && current.repoKey === repoStateKey(repoRef.current) && isRepoStateCurrent(current.repoKey, location.href)
         ? { ...current, fallbackReason: reason, expectsStreaming: false, mode: "unsupported" }
         : current
     );

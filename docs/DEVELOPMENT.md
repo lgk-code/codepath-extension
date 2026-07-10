@@ -7,7 +7,7 @@ CodePath 的权威工作副本位于 `E:\projects\CodePath`，后续开发使用
 要求：
 
 - Git for Windows。
-- Node.js 20.19 或更高版本；推荐与 CI 一致使用 Node.js 24。
+- Node.js 22.13 或更高版本；推荐与 CI 一致使用 Node.js 24。
 - npm 10 或更高版本。
 - Edge 或 Chrome，并开启扩展开发人员模式。
 

@@ -731,6 +731,30 @@ test("repository cache identity and repository clearing are case-insensitive", a
   assert.equal(modelCalls, 2);
 });
 
+test("repository cache parsing preserves an at-sign inside a legal branch name", async () => {
+  const store = installChromeStorageMock({});
+  let modelCalls = 0;
+  const atBranchRepo: RepoRef = { ...repo, branch: "feature@x" };
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    branchName: "feature@x",
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    }
+  });
+
+  await analyzeProject(atBranchRepo, settings);
+  const cleared = await clearAnalysisCaches("repo", atBranchRepo);
+  await analyzeProject(atBranchRepo, settings);
+
+  assert.equal(cleared.persistentKeysCleared > 0, true);
+  assert.equal(modelCalls, 2);
+  assert.equal(Object.keys(store).some((key) => key.includes("@feature%40x:")), true);
+});
+
 test("clearing a repository prevents an in-flight analysis from repopulating caches", async () => {
   let modelCalls = 0;
   let releaseFirstModel: (() => void) | undefined;

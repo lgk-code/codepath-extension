@@ -39,6 +39,18 @@ test("GithubClient memoizes successful repository metadata", async () => {
   assert.equal(repoRequests, 1);
 });
 
+test("GithubClient encodes owner and repository as individual API path segments", async () => {
+  let requestedUrl = "";
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    requestedUrl = String(request);
+    return jsonResponse({ default_branch: "main" });
+  }) as typeof fetch;
+
+  await new GithubClient({ githubToken: "" }).getRepo("visible", "../secret-owner/secret-repo");
+
+  assert.equal(requestedUrl, "https://api.github.com/repos/visible/..%2Fsecret-owner%2Fsecret-repo");
+});
+
 test("GithubClient rejects non-unique slash-branch candidates", async () => {
   globalThis.fetch = candidateFetch({
     "release": { headSha: "head-release", treeSha: "tree-release", path: "v2/src/app.ts" },

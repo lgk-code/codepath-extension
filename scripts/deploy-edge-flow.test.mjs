@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -118,6 +118,7 @@ test("replaceDirectoryAtomic serializes concurrent deployments to the same targe
     const deploymentA = replaceDirectoryAtomic({
       sourceDir: sourceA,
       targetDir,
+      lockOptions: { timeoutMs: 500, retryMs: 5, leaseMs: 30, heartbeatMs: 5 },
       prepareStaging: async () => {
         events.push("a-enter");
         markAEntered();
@@ -129,6 +130,7 @@ test("replaceDirectoryAtomic serializes concurrent deployments to the same targe
     const deploymentB = replaceDirectoryAtomic({
       sourceDir: sourceB,
       targetDir,
+      lockOptions: { timeoutMs: 500, retryMs: 5, leaseMs: 30, heartbeatMs: 5 },
       prepareStaging: async () => {
         events.push("b-enter");
       }
@@ -148,7 +150,7 @@ test("replaceDirectoryAtomic serializes concurrent deployments to the same targe
   }
 });
 
-test("replaceDirectoryAtomic recovers a deployment lock owned by a dead process", async () => {
+test("replaceDirectoryAtomic recovers an expired deployment lease", async () => {
   const root = await temporaryRoot();
   const sourceDir = path.join(root, "source");
   const targetDir = path.join(root, "CodePath");
@@ -156,10 +158,57 @@ test("replaceDirectoryAtomic recovers a deployment lock owned by a dead process"
   await mkdir(targetDir, { recursive: true });
   await writeFile(path.join(sourceDir, "manifest.json"), "new");
   await writeFile(path.join(targetDir, "manifest.json"), "old");
-  await writeFile(`${targetDir}.deploy-lock`, JSON.stringify({ pid: 2_147_483_647, token: "dead" }));
+  const lockPath = `${targetDir}.deploy-lock`;
+  await writeFile(lockPath, JSON.stringify({ token: "expired", updatedAt: Date.now() - 5_000 }));
+  const staleTime = new Date(Date.now() - 5_000);
+  await utimes(lockPath, staleTime, staleTime);
 
   try {
-    await replaceDirectoryAtomic({ sourceDir, targetDir });
+    await replaceDirectoryAtomic({ sourceDir, targetDir, lockOptions: { timeoutMs: 200, retryMs: 5, leaseMs: 20 } });
+
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "new");
+    assert.deepEqual((await listSiblingArtifacts(root)).filter((name) => name.includes("deploy-lock")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replaceDirectoryAtomic does not reclaim a fresh lock based on a foreign PID namespace", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+  await writeFile(`${targetDir}.deploy-lock`, JSON.stringify({ pid: 2_147_483_647, token: "foreign-runtime" }));
+
+  try {
+    await assert.rejects(
+      () => replaceDirectoryAtomic({ sourceDir, targetDir, lockOptions: { timeoutMs: 40, retryMs: 5, leaseMs: 1_000 } }),
+      /timed out waiting for the deployment lock/i
+    );
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "old");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replaceDirectoryAtomic recovers an empty lock left by a crashed creator", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  const lockPath = `${targetDir}.deploy-lock`;
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+  await writeFile(lockPath, "");
+  const staleTime = new Date(Date.now() - 5_000);
+  await utimes(lockPath, staleTime, staleTime);
+
+  try {
+    await replaceDirectoryAtomic({ sourceDir, targetDir, lockOptions: { timeoutMs: 200, retryMs: 5, leaseMs: 20 } });
 
     assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "new");
     assert.deepEqual((await listSiblingArtifacts(root)).filter((name) => name.includes("deploy-lock")), []);

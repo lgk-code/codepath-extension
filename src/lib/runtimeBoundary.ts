@@ -6,6 +6,14 @@ export function repoStateKey(repo: RepoRef | null): string {
   return JSON.stringify([repo.owner, repo.repo, repo.branch ?? "", repo.pageType, repo.path ?? ""]);
 }
 
+export function isRepoStateCurrent(repoKey: string, currentUrl: string): boolean {
+  try {
+    return repoKey === repoStateKey(parseGithubUrl(currentUrl));
+  } catch {
+    return false;
+  }
+}
+
 export function validateRepoRequestScope(request: RuntimeRequest, senderUrl: string | undefined): boolean {
   if (!("repo" in request) || !request.repo) return true;
   if (!senderUrl) return false;

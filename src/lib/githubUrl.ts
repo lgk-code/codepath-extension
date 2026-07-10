@@ -6,7 +6,7 @@ export function parseGithubUrl(urlText: string): RepoRef | null {
 
   const parts = url.pathname.split("/").filter(Boolean).map(decodePathPart);
   const [owner, repo, marker] = parts;
-  if (!owner || !repo) return null;
+  if (!owner || !repo || !isValidGithubOwner(owner) || !isValidGithubRepo(repo)) return null;
 
   if (marker === "blob") {
     const selection = splitBranchAndPath(parts.slice(3), "file");
@@ -25,6 +25,14 @@ export function parseGithubUrl(urlText: string): RepoRef | null {
   if (!marker) return { owner, repo, pageType: "repo" };
 
   return { owner, repo, pageType: "unknown" };
+}
+
+function isValidGithubOwner(value: string): boolean {
+  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(value);
+}
+
+function isValidGithubRepo(value: string): boolean {
+  return value !== "." && value !== ".." && /^[A-Za-z0-9._-]{1,100}$/.test(value);
 }
 
 const COMMON_PATH_ROOTS = new Set([

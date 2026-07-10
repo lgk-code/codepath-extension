@@ -69,14 +69,14 @@ export class GithubClient implements SourceClient {
 
   async getRepo(owner: string, repo: string): Promise<GithubRepo> {
     const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
-    return this.memoize(this.repoRequests, key, () => this.request<GithubRepo>(`https://api.github.com/repos/${owner}/${repo}`));
+    return this.memoize(this.repoRequests, key, () => this.request<GithubRepo>(repoApiBase(owner, repo)));
   }
 
   async getTree(owner: string, repo: string, branch: string): Promise<TreeFile[]> {
     const key = `${owner.toLowerCase()}/${repo.toLowerCase()}@${branch}`;
     return this.memoize(this.treeRequests, key, async () => {
       const data = await this.request<GithubTreeResponse>(
-        `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+        `${repoApiBase(owner, repo)}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
         8 * 1024 * 1024
       );
       if (data.truncated) {
@@ -128,7 +128,7 @@ export class GithubClient implements SourceClient {
     const capturedAt = new Date().toISOString();
     const branchData = branch.includes("/")
       ? undefined
-      : await this.requestOptional<GithubBranchResponse>(`https://api.github.com/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`);
+      : await this.requestOptional<GithubBranchResponse>(`${repoApiBase(owner, repo)}/branches/${encodeURIComponent(branch)}`);
     const branchHeadSha = branchData ? "" : await this.getBranchHeadSha(owner, repo, branch);
     const commitData = branchData || branchHeadSha ? undefined : await this.getRepoCommit(owner, repo, branch);
     const tagCommitSha = branchData || commitData || branchHeadSha ? "" : await this.getTagCommitSha(owner, repo, branch);
@@ -148,7 +148,7 @@ export class GithubClient implements SourceClient {
   }
 
   async getFile(owner: string, repo: string, path: string, ref: string): Promise<string> {
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`;
+    const url = `${repoApiBase(owner, repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`;
     const data = await this.request<GithubContentResponse>(url);
     if (!data.content) return "";
     if (data.encoding !== "base64") return data.content;
@@ -195,16 +195,16 @@ export class GithubClient implements SourceClient {
   }
 
   private async getRepoCommit(owner: string, repo: string, ref: string): Promise<GithubCommitResponse | undefined> {
-    return this.requestOptional<GithubCommitResponse>(`https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`);
+    return this.requestOptional<GithubCommitResponse>(`${repoApiBase(owner, repo)}/commits/${encodeURIComponent(ref)}`);
   }
 
   private async getCommitTreeSha(owner: string, repo: string, sha: string): Promise<string> {
-    const data = await this.request<GithubCommitResponse>(`https://api.github.com/repos/${owner}/${repo}/git/commits/${encodeURIComponent(sha)}`);
+    const data = await this.request<GithubCommitResponse>(`${repoApiBase(owner, repo)}/git/commits/${encodeURIComponent(sha)}`);
     return data.tree?.sha?.trim() ?? "";
   }
 
   private async getBranchHeadSha(owner: string, repo: string, branch: string): Promise<string | undefined> {
-    const data = await this.requestOptional<GithubRefResponse>(`https://api.github.com/repos/${owner}/${repo}/git/ref/${encodePath(`heads/${branch}`)}`);
+    const data = await this.requestOptional<GithubRefResponse>(`${repoApiBase(owner, repo)}/git/ref/${encodePath(`heads/${branch}`)}`);
     if (!data) return undefined;
     if (data.object?.type && data.object.type !== "commit") {
       throw new Error(`GitHub ref heads/${branch} points to ${data.object.type}, not a commit.`);
@@ -213,13 +213,13 @@ export class GithubClient implements SourceClient {
   }
 
   private async getTagCommitSha(owner: string, repo: string, tag: string): Promise<string> {
-    const data = await this.requestOptional<GithubRefResponse>(`https://api.github.com/repos/${owner}/${repo}/git/ref/${encodePath(`tags/${tag}`)}`);
+    const data = await this.requestOptional<GithubRefResponse>(`${repoApiBase(owner, repo)}/git/ref/${encodePath(`tags/${tag}`)}`);
     const object = data?.object;
     if (!object?.sha) return "";
     if (!object.type || object.type === "commit") return object.sha.trim();
     if (object.type !== "tag") throw new Error(`GitHub ref tags/${tag} points to ${object.type}, not a commit or tag.`);
 
-    const annotated = await this.requestOptional<GithubTagResponse>(`https://api.github.com/repos/${owner}/${repo}/git/tags/${encodeURIComponent(object.sha)}`);
+    const annotated = await this.requestOptional<GithubTagResponse>(`${repoApiBase(owner, repo)}/git/tags/${encodeURIComponent(object.sha)}`);
     if (annotated?.object?.type && annotated.object.type !== "commit") {
       throw new Error(`GitHub tag ${tag} points to ${annotated.object.type}, not a commit.`);
     }
@@ -242,6 +242,10 @@ export class GithubClient implements SourceClient {
 
 function uniqueCandidates(candidates: Array<{ refName: string; path: string }>): Array<{ refName: string; path: string }> {
   return Array.from(new Map(candidates.map((candidate) => [`${candidate.refName}\0${candidate.path}`, candidate])).values());
+}
+
+function repoApiBase(owner: string, repo: string): string {
+  return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
 function encodePath(path: string): string {

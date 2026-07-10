@@ -76,8 +76,8 @@ export class ZipGithubClient implements SourceClient {
       try {
         const archiveUrl =
           branch === "HEAD"
-            ? `https://codeload.github.com/${this.owner}/${this.repo}/zip/HEAD`
-            : `https://codeload.github.com/${this.owner}/${this.repo}/zip/${encodeURIComponent(branch)}`;
+            ? `https://codeload.github.com/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/zip/HEAD`
+            : `https://codeload.github.com/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/zip/${encodeURIComponent(branch)}`;
         const response = await fetchWithTimeout(archiveUrl, {}, 45_000);
         if (!response.ok) {
           lastError = `${response.status} ${response.statusText}`;

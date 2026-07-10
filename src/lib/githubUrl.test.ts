@@ -46,6 +46,12 @@ test("parseGithubUrl decodes file path segments", () => {
   });
 });
 
+test("parseGithubUrl rejects encoded repository separators and traversal segments", () => {
+  assert.equal(parseGithubUrl("https://github.com/visible/..%2Fsecret-owner%2Fsecret-repo"), null);
+  assert.equal(parseGithubUrl("https://github.com/visible/secret%5Crepo"), null);
+  assert.equal(parseGithubUrl("https://github.com/visible/%2E%2E"), null);
+});
+
 test("parseGithubUrl keeps commit permalink refs separate from file paths", () => {
   const commit = "1234567890abcdef1234567890abcdef12345678";
   assert.deepEqual(parseGithubUrl(`https://github.com/acme/demo/blob/${commit}/foo/bar.ts`), {

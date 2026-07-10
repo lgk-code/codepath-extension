@@ -11,7 +11,7 @@ CodePath 可以作为 MCP Server 运行，把 GitHub 源码分析能力提供给
 
 ## 前置要求
 
-- Node.js 20.19 或更高版本；推荐与 CI 一致使用 Node.js 24。
+- Node.js 22.13 或更高版本；推荐与 CI 一致使用 Node.js 24。
 - 已在 Windows 工作副本中执行 `npm.cmd ci`。
 - 一个 OpenAI 兼容接口或 Anthropic 兼容接口的模型 API Key。
 - 私有仓库需要额外准备 GitHub Token。

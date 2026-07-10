@@ -31,6 +31,7 @@ test("streaming UI updates are scoped to the active repository run", () => {
   const sidebar = read("src/components/Sidebar.tsx");
   assert.match(sidebar, /runIdRef/);
   assert.match(sidebar, /repoKey === repoStateKey\(repoRef\.current\)/);
+  assert.match(sidebar, /isRepoStateCurrent\(repoKey, location\.href\)/);
   assert.match(sidebar, /current\.runId === runId/);
 });
 

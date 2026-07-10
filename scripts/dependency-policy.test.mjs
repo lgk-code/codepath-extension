@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { test } from "node:test";
-import { satisfies } from "semver";
+import { minVersion, satisfies } from "semver";
 
 const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const projectNodeFloor = minVersion(pkg.engines?.node ?? "");
 
 test("lockfile excludes reviewed vulnerable development dependency ranges", () => {
   assertVersionAtLeast("node_modules/vite", "8.0.16");
@@ -16,13 +18,24 @@ test("lockfile excludes reviewed vulnerable development dependency ranges", () =
   assertVersionAtLeast("node_modules/qs", "6.15.2");
 });
 
+test("the project Node engine floor satisfies every installed package engine", () => {
+  assert.ok(projectNodeFloor, "package.json should declare a valid Node engine floor");
+  for (const [packagePath, installed] of Object.entries(lock.packages ?? {})) {
+    if (!installed.engines?.node) continue;
+    assert.ok(
+      satisfies(projectNodeFloor, installed.engines.node),
+      `${packagePath || "project"} requires Node ${installed.engines.node}, outside project floor ${projectNodeFloor}`
+    );
+  }
+});
+
 test("React tooling uses a Babel version compatible with its declared range and the project Node floor", () => {
   const babel = lock.packages?.["node_modules/@babel/core"];
   const reactPlugin = lock.packages?.["node_modules/@vitejs/plugin-react"];
   assert.ok(babel?.version, "@babel/core should exist in package-lock.json");
   assert.ok(reactPlugin?.dependencies?.["@babel/core"], "@vitejs/plugin-react should declare @babel/core");
   assert.ok(satisfies(babel.version, reactPlugin.dependencies["@babel/core"]), `${babel.version} must satisfy ${reactPlugin.dependencies["@babel/core"]}`);
-  assert.ok(satisfies("20.19.0", babel.engines?.node ?? "*"), `@babel/core ${babel.version} must support the project Node 20.19 floor`);
+  assert.ok(satisfies(projectNodeFloor, babel.engines?.node ?? "*"), `@babel/core ${babel.version} must support the project Node floor ${projectNodeFloor}`);
 });
 
 function assertVersionAtLeast(packagePath, minimum) {

@@ -614,7 +614,7 @@ export async function deletePersistentCacheEntry(key: string): Promise<CacheDele
   const entry = parsePersistentCacheKey(key);
   if (entry) {
     invalidateCacheGeneration({ owner: entry.owner, repo: entry.repo });
-    clearMemoryCaches(`${canonicalRepoIdentity(entry.owner, entry.repo)}@${entry.branch}:`);
+    clearMemoryCaches(`${canonicalRepoIdentity(entry.owner, entry.repo)}@${encodeURIComponent(entry.branch)}:`);
   }
   const persistentKeysCleared = await runPersistentMutation(async () => {
     const existing = await storageGet(storage, key);
@@ -633,7 +633,7 @@ export async function deletePersistentCacheRepo(repoKey: string): Promise<CacheD
   const parsedRepo = parseCacheRepoKey(repoKey);
   if (!parsedRepo) return { target: "repo", memoryCleared: false, persistentKeysCleared: 0 };
   invalidateCacheGeneration(parsedRepo);
-  clearMemoryCaches(`${canonicalRepoIdentity(parsedRepo.owner, parsedRepo.repo)}@${parsedRepo.branch}:`);
+  clearMemoryCaches(`${canonicalRepoIdentity(parsedRepo.owner, parsedRepo.repo)}@${encodeURIComponent(parsedRepo.branch)}:`);
   const persistentKeysCleared = await persistentClearRepository(parsedRepo.owner, parsedRepo.repo, parsedRepo.branch);
   return { target: "repo", memoryCleared: true, persistentKeysCleared };
 }
@@ -916,7 +916,7 @@ async function loadFileCached(
 }
 
 function repoCacheKey(repo: RepoRef, branch: string): string {
-  return `${canonicalRepoIdentity(repo.owner, repo.repo)}@${branch}`;
+  return `${canonicalRepoIdentity(repo.owner, repo.repo)}@${encodeURIComponent(branch)}`;
 }
 
 function repoContextCacheKey(repo: RepoRef, branch: string, treeSha: string): string {
@@ -1409,8 +1409,8 @@ function persistentRepoKeyFromCacheKey(key: string): string {
 }
 
 function parseCacheRepoKey(repoKey: string): Pick<RepoRef, "owner" | "repo"> & { branch: string } | undefined {
-  const atIndex = repoKey.lastIndexOf("@");
   const slashIndex = repoKey.indexOf("/");
+  const atIndex = repoKey.indexOf("@", slashIndex + 1);
   if (slashIndex <= 0 || atIndex <= slashIndex + 1) return undefined;
   return {
     owner: repoKey.slice(0, slashIndex),
@@ -1488,15 +1488,23 @@ function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; b
 
   const repoBranch = rest.slice(0, delimiterIndex);
   const suffix = rest.slice(delimiterIndex + 1);
-  const atIndex = repoBranch.lastIndexOf("@");
   const slashIndex = repoBranch.indexOf("/");
+  const atIndex = repoBranch.indexOf("@", slashIndex + 1);
   if (slashIndex <= 0 || atIndex <= slashIndex + 1) return undefined;
 
   const owner = repoBranch.slice(0, slashIndex);
   const repo = repoBranch.slice(slashIndex + 1, atIndex);
-  const branch = repoBranch.slice(atIndex + 1);
+  const branch = decodeCachePart(repoBranch.slice(atIndex + 1));
   const item = prefix === PERSISTENT_CACHE_V2_PREFIX ? parseV2CacheItemSuffix(key, suffix) : parseLegacyCacheItemSuffix(key, suffix);
   return { owner, repo, branch, ...item };
+}
+
+function decodeCachePart(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function parseLegacyCacheItemSuffix(key: string, suffix: string): CacheEntry {
