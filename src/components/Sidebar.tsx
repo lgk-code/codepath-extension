@@ -29,7 +29,7 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
 import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl, resolveProvider } from "../lib/aiClient";
 import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
-import { isSettingsTransportRequest, repoStateKey } from "../lib/runtimeBoundary";
+import { canFallbackLocallyBeforeDispatch, repoStateKey, validateRequestLocation } from "../lib/runtimeBoundary";
 import { createStreamBatcher } from "../lib/streamBatcher";
 
 type Tab = "overview" | "feature" | "file" | "skill" | "settings";
@@ -87,7 +87,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-09-adversarial-hardening-v2";
+const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v1";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -1520,6 +1520,9 @@ function formatElapsedCompact(ms: number): string {
 }
 
 async function send<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<T> {
+  if (!validateRequestLocation(request, location.href)) {
+    throw new Error("GitHub 页面已导航，请在当前页面重新发起分析。");
+  }
   const response = await sendBestEffort<T>(request, onStreamDelta, onStreamFallback);
   if (!response.ok) throw new Error(response.error || "Request failed.");
   return response.data as T;
@@ -1529,29 +1532,16 @@ async function sendBestEffort<T>(request: RuntimeRequest, onStreamDelta?: (text:
   const storageResponse = await sendSettingsViaStorage<T>(request).catch(() => undefined);
   if (storageResponse?.ok) return storageResponse;
 
-  const portError: { message?: string } = {};
+  const portError: { message?: string; dispatched: boolean } = { dispatched: true };
   const portResponse = await sendViaPort<T>(request, onStreamDelta, onStreamFallback).catch((error) => {
     portError.message = error instanceof Error ? error.message : String(error);
+    portError.dispatched = error instanceof PortRequestError ? error.dispatched : true;
     return undefined;
   });
   if (portResponse) return portResponse;
 
-  if (!isSettingsTransportRequest(request)) {
-    return fail<T>(backgroundUnavailableMessage(portError.message || "No background response."));
-  }
-
-  const messageError: { message?: string } = {};
-  const messageResponse = await sendViaMessage<T>(request).catch((error) => {
-    messageError.message = error instanceof Error ? error.message : String(error);
-    return undefined;
-  });
-  if (messageResponse) return messageResponse;
-
-  if (request.type !== "get-settings" && request.type !== "save-settings" && request.type !== "list-models") {
-    return fail<T>(backgroundUnavailableMessage(messageError.message || portError.message || "No background response."));
-  }
-
-  return handleLocally<T>(request);
+  if (canFallbackLocallyBeforeDispatch(request, portError.dispatched)) return handleLocally<T>(request);
+  return fail<T>(backgroundUnavailableMessage(portError.message || "No background response."));
 }
 
 async function sendSettingsViaStorage<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
@@ -1710,33 +1700,33 @@ function sharedAskContextBasis(bases: AnalysisBasis[], expectedCount: number): A
     : undefined;
 }
 
-function sendViaMessage<T>(request: RuntimeRequest): Promise<RuntimeResponse<T>> {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(request, (response: unknown) => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-      if (!response) {
-        reject(new Error("Background returned no response."));
-        return;
-      }
-      resolve(response as RuntimeResponse<T>);
-    });
-  });
+class PortRequestError extends Error {
+  constructor(
+    message: string,
+    readonly dispatched: boolean
+  ) {
+    super(message);
+    this.name = "PortRequestError";
+  }
 }
 
 function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) => void, onStreamFallback?: (reason: string) => void): Promise<RuntimeResponse<T>> {
   return new Promise((resolve, reject) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const port = chrome.runtime.connect({ name: "codepath" });
+    let port: ReturnType<typeof chrome.runtime.connect>;
+    try {
+      port = chrome.runtime.connect({ name: "codepath" });
+    } catch (error) {
+      reject(new PortRequestError(error instanceof Error ? error.message : String(error), false));
+      return;
+    }
     let settled = false;
+    let dispatched = false;
     let timeout: number;
     const resetTimeout = () => {
       window.clearTimeout(timeout);
       timeout = window.setTimeout(() => {
-        settle(() => reject(new Error("Background response timed out.")));
+        settle(() => reject(new PortRequestError("Background response timed out.", dispatched)));
       }, 30_000);
     };
     const settle = (action: () => void) => {
@@ -1760,7 +1750,7 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
         if (envelope.event === "heartbeat") return;
         if (envelope.event === "stream-delta" && envelope.text) onStreamDelta?.(envelope.text);
         if (envelope.event === "stream-fallback") onStreamFallback?.(envelope.text || "未知原因");
-        if (envelope.event === "stream-error") settle(() => reject(new Error(envelope.error || "Streaming failed.")));
+        if (envelope.event === "stream-error") settle(() => reject(new PortRequestError(envelope.error || "Streaming failed.", dispatched)));
         return;
       }
       settle(() => resolve(envelope.response as RuntimeResponse<T>));
@@ -1768,10 +1758,15 @@ function sendViaPort<T>(request: RuntimeRequest, onStreamDelta?: (text: string) 
 
     port.onDisconnect.addListener(() => {
       const error = chrome.runtime.lastError;
-      if (error && !settled) settle(() => reject(new Error(error.message)));
+      if (!settled) settle(() => reject(new PortRequestError(error?.message || "Background port disconnected.", dispatched)));
     });
 
-    port.postMessage({ id, request } satisfies PortMessage);
+    try {
+      port.postMessage({ id, request } satisfies PortMessage);
+      dispatched = true;
+    } catch (error) {
+      settle(() => reject(new PortRequestError(error instanceof Error ? error.message : String(error), false)));
+    }
   });
 }
 

@@ -54,6 +54,20 @@ test("validateDeployTarget rejects project descendants, filesystem roots, and si
   );
 });
 
+test("validateDeployTarget rejects a deployment target that contains the project", async () => {
+  await assert.rejects(
+    () =>
+      validateDeployTarget({
+        projectRoot: "D:\\Extensions\\CodePath\\project",
+        allowedRoot: "D:\\Extensions",
+        targetDir: "D:\\Extensions\\CodePath",
+        platform: "win32",
+        fsOps: fakeWindowsFs()
+      }),
+    /project directory|overlap/i
+  );
+});
+
 test("validateDeployTarget resolves junction targets before containment checks", async () => {
   const target = "D:\\edge\\CodePath";
   await assert.rejects(
@@ -66,6 +80,27 @@ test("validateDeployTarget resolves junction targets before containment checks",
         fsOps: fakeWindowsFs(new Map([[path.win32.normalize(target).toLowerCase(), "D:\\outside\\CodePath"]]))
       }),
     /allowed root/i
+  );
+});
+
+test("validateDeployTarget rejects a junction target that resolves to a project ancestor", async () => {
+  const allowedRoot = "D:\\edge";
+  const target = "D:\\edge\\CodePath";
+  const overrides = new Map([
+    [path.win32.normalize(allowedRoot).toLowerCase(), "C:\\Canonical"],
+    [path.win32.normalize(target).toLowerCase(), "C:\\Canonical\\CodePath"]
+  ]);
+
+  await assert.rejects(
+    () =>
+      validateDeployTarget({
+        projectRoot: "C:\\Canonical\\CodePath\\project",
+        allowedRoot,
+        targetDir: target,
+        platform: "win32",
+        fsOps: fakeWindowsFs(overrides)
+      }),
+    /project directory|overlap/i
   );
 });
 

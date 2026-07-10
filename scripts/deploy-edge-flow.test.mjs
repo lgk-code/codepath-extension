@@ -92,6 +92,82 @@ test("replaceDirectoryAtomic rolls back when staging promotion fails", async () 
   }
 });
 
+test("replaceDirectoryAtomic serializes concurrent deployments to the same target", async () => {
+  const root = await temporaryRoot();
+  const sourceA = path.join(root, "source-a");
+  const sourceB = path.join(root, "source-b");
+  const targetDir = path.join(root, "CodePath");
+  await mkdir(sourceA, { recursive: true });
+  await mkdir(sourceB, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceA, "manifest.json"), "a");
+  await writeFile(path.join(sourceB, "manifest.json"), "b");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+
+  let releaseA;
+  let markAEntered;
+  const aEntered = new Promise((resolve) => {
+    markAEntered = resolve;
+  });
+  const holdA = new Promise((resolve) => {
+    releaseA = resolve;
+  });
+  const events = [];
+
+  try {
+    const deploymentA = replaceDirectoryAtomic({
+      sourceDir: sourceA,
+      targetDir,
+      prepareStaging: async () => {
+        events.push("a-enter");
+        markAEntered();
+        await holdA;
+      }
+    });
+    await aEntered;
+
+    const deploymentB = replaceDirectoryAtomic({
+      sourceDir: sourceB,
+      targetDir,
+      prepareStaging: async () => {
+        events.push("b-enter");
+      }
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(events, ["a-enter"]);
+    releaseA();
+    await Promise.all([deploymentA, deploymentB]);
+
+    assert.deepEqual(events, ["a-enter", "b-enter"]);
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "b");
+    assert.deepEqual((await listSiblingArtifacts(root)).filter((name) => name.includes("staging") || name.includes("backup") || name.includes("deploy-lock")), []);
+  } finally {
+    releaseA?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replaceDirectoryAtomic recovers a deployment lock owned by a dead process", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+  await writeFile(`${targetDir}.deploy-lock`, JSON.stringify({ pid: 2_147_483_647, token: "dead" }));
+
+  try {
+    await replaceDirectoryAtomic({ sourceDir, targetDir });
+
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "new");
+    assert.deepEqual((await listSiblingArtifacts(root)).filter((name) => name.includes("deploy-lock")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function temporaryRoot() {
   const root = path.join(os.tmpdir(), `codepath-deploy-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   await mkdir(root, { recursive: true });

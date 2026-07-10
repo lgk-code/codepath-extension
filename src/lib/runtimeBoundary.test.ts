@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RepoRef, RuntimeRequest } from "../types";
-import { isSettingsTransportRequest, repoStateKey, validateRepoRequestScope } from "./runtimeBoundary";
+import { canFallbackLocallyBeforeDispatch, repoStateKey, validateRepoRequestScope, validateRequestLocation } from "./runtimeBoundary";
 
 test("repoStateKey cannot collide when branch and path contain slashes", () => {
   const first: RepoRef = {
@@ -41,14 +41,26 @@ test("validateRepoRequestScope accepts the sender repository and non-repository 
   assert.equal(validateRepoRequestScope({ type: "get-settings" }, "chrome-extension://extension-id/secret-input.html"), true);
 });
 
-test("only local settings operations may retry through the message transport", () => {
-  assert.equal(isSettingsTransportRequest({ type: "get-settings" }), true);
-  assert.equal(isSettingsTransportRequest({ type: "save-settings", settings: testSettings() }), true);
-  assert.equal(isSettingsTransportRequest({ type: "list-models", settings: testSettings() }), true);
+test("only an undispatched model-list request may fall back to a local call", () => {
+  assert.equal(canFallbackLocallyBeforeDispatch({ type: "get-settings" }, false), false);
+  assert.equal(canFallbackLocallyBeforeDispatch({ type: "save-settings", settings: testSettings() }, false), false);
+  assert.equal(canFallbackLocallyBeforeDispatch({ type: "list-models", settings: testSettings() }, false), true);
+  assert.equal(canFallbackLocallyBeforeDispatch({ type: "list-models", settings: testSettings() }, true), false);
   assert.equal(
-    isSettingsTransportRequest({ type: "analyze-project", repo: { owner: "owner", repo: "repo", pageType: "repo" } }),
+    canFallbackLocallyBeforeDispatch({ type: "analyze-project", repo: { owner: "owner", repo: "repo", pageType: "repo" } }, false),
     false
   );
+});
+
+test("validateRequestLocation rejects a repository request after in-page navigation", () => {
+  const request: RuntimeRequest = {
+    type: "explain-file",
+    repo: { owner: "Owner", repo: "Repo", branch: "main", pageType: "file", path: "src/old.ts" }
+  };
+
+  assert.equal(validateRequestLocation(request, "https://github.com/owner/repo/blob/main/src/old.ts"), true);
+  assert.equal(validateRequestLocation(request, "https://github.com/owner/repo/blob/main/src/new.ts"), false);
+  assert.equal(validateRequestLocation(request, "https://github.com/owner/repo/tree/main"), false);
 });
 
 function testSettings() {

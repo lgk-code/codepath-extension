@@ -125,6 +125,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 创建空提交后再次分析：HEAD 变化但 tree SHA 不变，允许复用结果，并显示“提交已更新，源码树未变”。
 - 打开含 `/` 的分支文件 URL：只有 GitHub ref 与文件路径能唯一校验时才分析；多解、限流或无法校验时必须明确报错。
 - GitHub API 触发 rate limit 且当前是仓库根页面：ZIP fallback 应读取 codeload `HEAD`，状态显示为 `unchecked`，结果不得长期复用。
+- ZIP fallback 收到显式 branch、tag 或 40 位 commit 时，应通过 codeload 通用 exact-ref 路径请求该 ref，不得强制拼接 `refs/heads/`。
 - GitHub API 触发 rate limit 且当前文件 URL 存在 ref/path 歧义：不得用 ZIP 猜测分支，应提示改用 immutable commit URL 或仓库根页面。
 
 ## 传输、流式与安全窗口
@@ -132,16 +133,26 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 安全窗口保存 API Key 和 GitHub Token 后，设置页重新读取的值掩码应立即变化；清除后也应同步生效。
 - 中性代理 URL 配置为 Anthropic provider 时，应发送 `/messages` 与 `x-api-key`，不得退回 OpenAI 格式。
 - 长时间模型请求期间后台每 20 秒发送 heartbeat；前端不得因端口超时通过 `sendMessage` 重放分析。
+- `list-models` 只有在 port 请求尚未成功投递时才允许本地 fallback；投递后的超时、断连或流错误不得切换 transport 重放。
+- GitHub 单页导航后、Sidebar 状态刷新前发起的旧页面请求必须被当前位置校验拒绝，不得发送旧 branch/path。
 - OpenAI `[DONE]` 和 Anthropic `message_stop` 到达后应立即完成，不等待服务端关闭连接。
 - 大量流式 delta 应按批次刷新 Markdown；最终文本不能丢字、重复或跨仓库显示。
 
 ## 部署与发布门禁
 
 - 临时允许根目录部署时，staging 复制或提升失败必须保留原目标内容并清理 staging/backup。
+- 部署目标等于项目、位于项目内、包含项目，或经 junction 解析后与项目树重叠时必须拒绝。
+- 两个进程同时部署到同一目标时必须由独占锁串行提升；后完成的有效部署不得被另一进程的 rollback 恢复为旧版本。
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
-- Release tag 必须与 `package.json` 版本完全一致，且 tag commit 是 `origin/main` 的祖先；否则 workflow 在发布前失败。
+- Release 必须使用与 `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须等于 checkout `HEAD` 且是 `origin/main` 的祖先，否则 workflow 在发布前失败。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
-- `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应拒绝回退到已审查的 Vite、esbuild 及相关脆弱版本。
+- `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应同时拒绝脆弱版本和不满足上游 semver/Node engine 的强制 override。
+
+## 缓存并发与身份边界
+
+- owner/repo 大小写变体必须映射到同一个内存和持久化缓存身份；用任意大小写清理当前仓库后不得复用另一变体留下的结果。
+- persistent cache 配额必须按 UTF-8 字节计算；多字节文本超过单仓库限制时不得写入，也不得为其驱逐有效记录。
+- persistent 删除尚未完成时启动的新分析必须等待删除线性化完成，不得读取即将删除的旧结果。
 
 ## 回归关注点
 

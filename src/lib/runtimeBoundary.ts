@@ -15,8 +15,21 @@ export function validateRepoRequestScope(request: RuntimeRequest, senderUrl: str
   return sameName(senderRepo.owner, request.repo.owner) && sameName(senderRepo.repo, request.repo.repo);
 }
 
-export function isSettingsTransportRequest(request: RuntimeRequest): boolean {
-  return request.type === "get-settings" || request.type === "save-settings" || request.type === "list-models";
+export function validateRequestLocation(request: RuntimeRequest, currentUrl: string): boolean {
+  if (!("repo" in request) || !request.repo) return true;
+  const currentRepo = parseGithubUrl(currentUrl);
+  if (!currentRepo) return false;
+  return (
+    sameName(currentRepo.owner, request.repo.owner) &&
+    sameName(currentRepo.repo, request.repo.repo) &&
+    (currentRepo.branch ?? "") === (request.repo.branch ?? "") &&
+    currentRepo.pageType === request.repo.pageType &&
+    (currentRepo.path ?? "") === (request.repo.path ?? "")
+  );
+}
+
+export function canFallbackLocallyBeforeDispatch(request: RuntimeRequest, dispatched: boolean): boolean {
+  return !dispatched && request.type === "list-models";
 }
 
 function sameName(left: string, right: string): boolean {

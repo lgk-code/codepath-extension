@@ -12,8 +12,8 @@ afterEach(() => {
 test("ZipGithubClient does not fall back to main when an explicit branch zip is unavailable", async () => {
   globalThis.fetch = (async (request: RequestInfo | URL) => {
     const url = String(request);
-    if (url.includes("/zip/refs/heads/feature%2Fmissing")) return new Response("not found", { status: 404 });
-    if (url.includes("/zip/refs/heads/main")) return zipResponse({ "demo-main/README.md": "# Wrong branch" });
+    if (url.includes("/zip/feature%2Fmissing")) return new Response("not found", { status: 404 });
+    if (url.includes("/zip/main")) return zipResponse({ "demo-main/README.md": "# Wrong branch" });
     return new Response(`unexpected URL: ${url}`, { status: 500 });
   }) as typeof fetch;
 
@@ -25,7 +25,7 @@ test("ZipGithubClient does not fall back to main when an explicit branch zip is 
 test("ZipGithubClient uses a stable unchecked snapshot identity for unchanged zip contents", async () => {
   globalThis.fetch = (async (request: RequestInfo | URL) => {
     const url = String(request);
-    if (url.includes("/zip/refs/heads/main")) return zipResponse({ "demo-main/README.md": "# Demo" });
+    if (url.includes("/zip/main")) return zipResponse({ "demo-main/README.md": "# Demo" });
     return new Response(`unexpected URL: ${url}`, { status: 500 });
   }) as typeof fetch;
 
@@ -36,6 +36,33 @@ test("ZipGithubClient uses a stable unchecked snapshot identity for unchanged zi
 
   assert.equal(first.headSha, second.headSha);
   assert.equal(first.treeSha, second.treeSha);
+});
+
+test("ZipGithubClient requests an exact tag through the generic codeload ref route", async () => {
+  const requestedUrls: string[] = [];
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    requestedUrls.push(url);
+    return zipResponse({ "demo-v1/README.md": "# Tagged" });
+  }) as typeof fetch;
+
+  await new ZipGithubClient("acme", "demo", "v1.2.3").getRepo();
+
+  assert.deepEqual(requestedUrls, ["https://codeload.github.com/acme/demo/zip/v1.2.3"]);
+});
+
+test("ZipGithubClient requests an exact commit through the generic codeload ref route", async () => {
+  const commit = "a".repeat(40);
+  const requestedUrls: string[] = [];
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    requestedUrls.push(url);
+    return zipResponse({ "demo-commit/README.md": "# Commit" });
+  }) as typeof fetch;
+
+  await new ZipGithubClient("acme", "demo", commit).getRepo();
+
+  assert.deepEqual(requestedUrls, [`https://codeload.github.com/acme/demo/zip/${commit}`]);
 });
 
 test("ZipGithubClient uses codeload HEAD when no branch was supplied", async () => {

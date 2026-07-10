@@ -682,6 +682,55 @@ test("oversized pending cache records do not evict valid existing records", asyn
   assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:")), false);
 });
 
+test("persistent cache limits count UTF-8 bytes instead of UTF-16 code units", async () => {
+  const existingKey = "codepath-cache-v2:acme/demo@main:overview:existing-tree:focused:existing-digest";
+  const store = installChromeStorageMock({ [existingKey]: cacheRecordForTest("overview", "2026-07-01T00:00:00.000Z") });
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    modelContent: () => `源码确认\n- ${"中".repeat(520_000)}`
+  });
+
+  await analyzeProject(repo, settings);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(store, existingKey), true);
+  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:")), false);
+});
+
+test("repository cache identity and repository clearing are case-insensitive", async () => {
+  const store = installChromeStorageMock({});
+  let modelCalls = 0;
+  const sourceFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => `源码确认\n- 第 ${modelCalls} 次。`
+  });
+  globalThis.fetch = ((request: RequestInfo | URL, init?: RequestInit) => {
+    const normalized = String(request).replace("/repos/Acme/Demo", "/repos/acme/demo");
+    return sourceFetch(normalized, init);
+  }) as typeof fetch;
+  const mixedCaseRepo: RepoRef = { owner: "Acme", repo: "Demo", branch: "main", pageType: "repo" };
+
+  await analyzeProject(mixedCaseRepo, settings);
+  const reused = await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 1);
+  assert.equal(reused.timing?.resultCacheHit, true);
+  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@")), true);
+
+  await clearAnalysisCaches("repo", repo);
+  await analyzeProject(mixedCaseRepo, settings);
+
+  assert.equal(modelCalls, 2);
+});
+
 test("clearing a repository prevents an in-flight analysis from repopulating caches", async () => {
   let modelCalls = 0;
   let releaseFirstModel: (() => void) | undefined;
@@ -718,6 +767,56 @@ test("clearing a repository prevents an in-flight analysis from repopulating cac
   await analyzeProject(repo, settings);
 
   assert.equal(modelCalls, 2);
+});
+
+test("analysis started during persistent repository deletion cannot reuse records being cleared", async () => {
+  let releaseRemove: (() => void) | undefined;
+  let markRemoveStarted: (() => void) | undefined;
+  const removeStarted = new Promise<void>((resolve) => {
+    markRemoveStarted = resolve;
+  });
+  const removeGate = new Promise<void>((resolve) => {
+    releaseRemove = resolve;
+  });
+  installChromeStorageMock(
+    {},
+    {
+      beforeRemove: async () => {
+        markRemoveStarted?.();
+        await removeGate;
+      }
+    }
+  );
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: () => {
+      modelCalls += 1;
+    },
+    modelContent: () => `源码确认\n- 第 ${modelCalls} 次。`
+  });
+
+  await analyzeProject(repo, settings);
+  const clearing = clearAnalysisCaches("repo", repo);
+  await removeStarted;
+  let analysisResolved = false;
+  const analysis = analyzeProject(repo, settings).then((result) => {
+    analysisResolved = true;
+    return result;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const resolvedBeforeDeletionCompleted = analysisResolved;
+  releaseRemove?.();
+  await clearing;
+  const result = await analysis;
+
+  assert.equal(resolvedBeforeDeletionCompleted, false);
+  assert.equal(modelCalls, 2);
+  assert.match(result.summary, /第 2 次/);
 });
 
 test("cache clearing propagates persistent storage removal failures", async () => {
@@ -1194,7 +1293,7 @@ function jsonResponse(value: unknown): Response {
 
 function installChromeStorageMock(
   initial: Record<string, unknown>,
-  options: { failSetCount?: number; failRemoveCount?: number; maxSerializedBytes?: number } = {}
+  options: { failSetCount?: number; failRemoveCount?: number; maxSerializedBytes?: number; beforeRemove?: () => Promise<void> } = {}
 ): Record<string, unknown> {
   const store = { ...initial };
   const runtime: { lastError?: { message?: string } } = {};
@@ -1216,7 +1315,7 @@ function installChromeStorageMock(
             return;
           }
           const nextStore = { ...store, ...items };
-          if (options.maxSerializedBytes !== undefined && JSON.stringify(nextStore).length > options.maxSerializedBytes) {
+          if (options.maxSerializedBytes !== undefined && new TextEncoder().encode(JSON.stringify(nextStore)).byteLength > options.maxSerializedBytes) {
             runtime.lastError = { message: "QUOTA_BYTES quota exceeded" };
             callback();
             delete runtime.lastError;
@@ -1226,15 +1325,22 @@ function installChromeStorageMock(
           callback();
         },
         remove(keys: string[], callback: () => void) {
-          if (failRemoveCount > 0) {
-            failRemoveCount -= 1;
-            runtime.lastError = { message: "storage remove failed" };
+          const complete = () => {
+            if (failRemoveCount > 0) {
+              failRemoveCount -= 1;
+              runtime.lastError = { message: "storage remove failed" };
+              callback();
+              delete runtime.lastError;
+              return;
+            }
+            for (const key of keys) delete store[key];
             callback();
-            delete runtime.lastError;
+          };
+          if (options.beforeRemove) {
+            void options.beforeRemove().then(complete);
             return;
           }
-          for (const key of keys) delete store[key];
-          callback();
+          complete();
         }
       }
     },

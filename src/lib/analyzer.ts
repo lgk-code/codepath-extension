@@ -578,10 +578,10 @@ export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef
     return { scope, memoryCleared: false, persistentKeysCleared: 0 };
   }
   invalidateCacheGeneration(repo);
-  clearMemoryCaches(repo ? `${repo.owner}/${repo.repo}@` : "");
-  const persistentKeysCleared = await persistentClearMany(
-    repo ? [persistentRepoPrefix(repo), persistentRepoV2Prefix(repo)] : [PERSISTENT_CACHE_PREFIX, PERSISTENT_CACHE_V2_PREFIX]
-  );
+  clearMemoryCaches(repo ? `${canonicalRepoIdentity(repo.owner, repo.repo)}@` : "");
+  const persistentKeysCleared = repo
+    ? await persistentClearRepository(repo.owner, repo.repo)
+    : await persistentClearMany([PERSISTENT_CACHE_PREFIX, PERSISTENT_CACHE_V2_PREFIX]);
   return { scope, memoryCleared: true, persistentKeysCleared };
 }
 
@@ -594,10 +594,9 @@ export async function getAnalysisCacheStats(repo?: RepoRef): Promise<CacheStats>
   try {
     const items = await storageGet(storage, null);
     const keys = Object.keys(items).filter(isPersistentCacheKey);
-    const repoPrefixes = repo ? [persistentRepoPrefix(repo), persistentRepoV2Prefix(repo)] : [];
     const repositories = groupPersistentCacheKeys(keys);
     return {
-      currentRepoPersistentKeys: repoPrefixes.length > 0 ? keys.filter((key) => repoPrefixes.some((prefix) => key.startsWith(prefix))).length : 0,
+      currentRepoPersistentKeys: repo ? keys.filter((key) => persistentKeyMatchesRepository(key, repo.owner, repo.repo)).length : 0,
       allPersistentKeys: keys.length,
       repositories
     };
@@ -615,7 +614,7 @@ export async function deletePersistentCacheEntry(key: string): Promise<CacheDele
   const entry = parsePersistentCacheKey(key);
   if (entry) {
     invalidateCacheGeneration({ owner: entry.owner, repo: entry.repo });
-    clearMemoryCaches(`${entry.owner}/${entry.repo}@${entry.branch}:`);
+    clearMemoryCaches(`${canonicalRepoIdentity(entry.owner, entry.repo)}@${entry.branch}:`);
   }
   const persistentKeysCleared = await runPersistentMutation(async () => {
     const existing = await storageGet(storage, key);
@@ -632,9 +631,10 @@ export async function deletePersistentCacheRepo(repoKey: string): Promise<CacheD
   }
 
   const parsedRepo = parseCacheRepoKey(repoKey);
-  if (parsedRepo) invalidateCacheGeneration(parsedRepo);
-  clearMemoryCaches(`${repoKey}:`);
-  const persistentKeysCleared = await persistentClearMany([`${PERSISTENT_CACHE_PREFIX}${repoKey}:`, `${PERSISTENT_CACHE_V2_PREFIX}${repoKey}:`]);
+  if (!parsedRepo) return { target: "repo", memoryCleared: false, persistentKeysCleared: 0 };
+  invalidateCacheGeneration(parsedRepo);
+  clearMemoryCaches(`${canonicalRepoIdentity(parsedRepo.owner, parsedRepo.repo)}@${parsedRepo.branch}:`);
+  const persistentKeysCleared = await persistentClearRepository(parsedRepo.owner, parsedRepo.repo, parsedRepo.branch);
   return { target: "repo", memoryCleared: true, persistentKeysCleared };
 }
 
@@ -916,7 +916,7 @@ async function loadFileCached(
 }
 
 function repoCacheKey(repo: RepoRef, branch: string): string {
-  return `${repo.owner}/${repo.repo}@${branch}`;
+  return `${canonicalRepoIdentity(repo.owner, repo.repo)}@${branch}`;
 }
 
 function repoContextCacheKey(repo: RepoRef, branch: string, treeSha: string): string {
@@ -949,14 +949,6 @@ function fileCacheKey(repo: RepoRef, branch: string, file: TreeFile, identitySco
 
 function fileIdentity(file: TreeFile, identityScope = ""): string {
   return file.sha || stringHash(`${file.path}:${file.size ?? ""}:${identityScope}`);
-}
-
-function persistentRepoPrefix(repo: RepoRef): string {
-  return `${PERSISTENT_CACHE_PREFIX}${repo.owner}/${repo.repo}@`;
-}
-
-function persistentRepoV2Prefix(repo: RepoRef): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${repo.owner}/${repo.repo}@`;
 }
 
 function persistentTreeKey(repo: RepoRef, branch: string, treeSha: string): string {
@@ -1105,7 +1097,12 @@ function isUsableCacheRecord<T>(value: unknown, kind: CacheRecordKind, currentSn
 
 function isUsableFileContentRecord(value: unknown, repo: RepoRef, branch: string, file: TreeFile, identityScope: string): value is CacheRecord<string> {
   if (!isCacheRecord<string>(value, "file")) return false;
-  if (value.basis.snapshot.owner !== repo.owner || value.basis.snapshot.repo !== repo.repo || value.basis.snapshot.refName !== branch) return false;
+  if (
+    !sameRepositoryName(value.basis.snapshot.owner, repo.owner) ||
+    !sameRepositoryName(value.basis.snapshot.repo, repo.repo) ||
+    value.basis.snapshot.refName !== branch
+  )
+    return false;
   const basisFile = value.basis.files[0];
   if (!basisFile || basisFile.path !== file.path) return false;
   if ((basisFile.blobSha ?? "") !== (file.sha ?? "")) return false;
@@ -1131,7 +1128,7 @@ function isRepoSnapshot(value: unknown): value is RepoSnapshot {
 }
 
 function sameSnapshotScope(left: RepoSnapshot, right: RepoSnapshot): boolean {
-  return left.owner === right.owner && left.repo === right.repo && left.refName === right.refName;
+  return sameRepositoryName(left.owner, right.owner) && sameRepositoryName(left.repo, right.repo) && left.refName === right.refName;
 }
 
 function fileContentInputDigest(file: TreeFile, identityScope: string): string {
@@ -1251,13 +1248,15 @@ function clearMap<T>(map: Map<string, T>, prefix: string) {
 async function persistentRead<T>(key: string): Promise<{ hit: boolean; value?: T }> {
   const storage = getChromeStorage();
   if (!storage) return { hit: false };
-  try {
-    const items = await storageGet(storage, key);
-    if (!Object.prototype.hasOwnProperty.call(items, key)) return { hit: false };
-    return { hit: true, value: items[key] as T };
-  } catch {
-    return { hit: false };
-  }
+  return runPersistentMutation(async () => {
+    try {
+      const items = await storageGet(storage, key);
+      if (!Object.prototype.hasOwnProperty.call(items, key)) return { hit: false };
+      return { hit: true, value: items[key] as T };
+    } catch {
+      return { hit: false };
+    }
+  });
 }
 
 async function persistentSet(key: string, value: unknown, guard?: CacheGenerationGuard): Promise<void> {
@@ -1299,8 +1298,29 @@ async function persistentClearMany(prefixes: string[]): Promise<number> {
   });
 }
 
+async function persistentClearRepository(owner: string, repo: string, branch?: string): Promise<number> {
+  const storage = getChromeStorage();
+  if (!storage) return 0;
+  return runPersistentMutation(async () => {
+    const items = await storageGet(storage, null);
+    const keys = Object.keys(items).filter((key) => persistentKeyMatchesRepository(key, owner, repo, branch));
+    if (keys.length > 0) await storageRemove(storage, keys);
+    return keys.length;
+  });
+}
+
+function persistentKeyMatchesRepository(key: string, owner: string, repo: string, branch?: string): boolean {
+  const entry = parsePersistentCacheKey(key);
+  return (
+    Boolean(entry) &&
+    sameRepositoryName(entry!.owner, owner) &&
+    sameRepositoryName(entry!.repo, repo) &&
+    (branch === undefined || entry!.branch === branch)
+  );
+}
+
 function pendingRecordExceedsPolicy(key: string, value: unknown): boolean {
-  const size = key.length + estimatedStorageBytes(value);
+  const size = estimatedStorageBytes(key) + estimatedStorageBytes(value);
   return size > MAX_PERSISTENT_CACHE_BYTES || size > MAX_PERSISTENT_CACHE_REPO_BYTES;
 }
 
@@ -1325,7 +1345,7 @@ async function prunePersistentCache(
       key,
       repoKey: persistentRepoKeyFromCacheKey(key),
       createdAtMs: pending?.key === key ? persistentCacheTimeMs(pending.value) || persistentCacheTimeMs(items[key]) : persistentCacheTimeMs(items[key]),
-      size: key.length + estimatedStorageBytes(pending?.key === key ? pending.value : items[key])
+      size: estimatedStorageBytes(key) + estimatedStorageBytes(pending?.key === key ? pending.value : items[key])
     }))
     .sort((left, right) => left.createdAtMs - right.createdAtMs || left.key.localeCompare(right.key));
   if (pending && pending.key.startsWith(PERSISTENT_CACHE_V2_PREFIX) && !Object.prototype.hasOwnProperty.call(items, pending.key)) {
@@ -1333,7 +1353,7 @@ async function prunePersistentCache(
       key: pending.key,
       repoKey: persistentRepoKeyFromCacheKey(pending.key),
       createdAtMs: persistentCacheTimeMs(pending.value) || Date.now(),
-      size: pending.key.length + estimatedStorageBytes(pending.value)
+      size: estimatedStorageBytes(pending.key) + estimatedStorageBytes(pending.value)
     });
   }
 
@@ -1385,16 +1405,17 @@ function pruneByteOverflow<T extends { key: string; size: number }>(entries: T[]
 
 function persistentRepoKeyFromCacheKey(key: string): string {
   const entry = parsePersistentCacheKey(key);
-  return entry ? `${entry.owner}/${entry.repo}@${entry.branch}` : "";
+  return entry ? `${canonicalRepoIdentity(entry.owner, entry.repo)}@${entry.branch}` : "";
 }
 
-function parseCacheRepoKey(repoKey: string): Pick<RepoRef, "owner" | "repo"> | undefined {
+function parseCacheRepoKey(repoKey: string): Pick<RepoRef, "owner" | "repo"> & { branch: string } | undefined {
   const atIndex = repoKey.lastIndexOf("@");
   const slashIndex = repoKey.indexOf("/");
   if (slashIndex <= 0 || atIndex <= slashIndex + 1) return undefined;
   return {
     owner: repoKey.slice(0, slashIndex),
-    repo: repoKey.slice(slashIndex + 1, atIndex)
+    repo: repoKey.slice(slashIndex + 1, atIndex),
+    branch: repoKey.slice(atIndex + 1)
   };
 }
 
@@ -1409,7 +1430,7 @@ function persistentCacheTimeMs(value: unknown): number {
 
 function estimatedStorageBytes(value: unknown): number {
   try {
-    return JSON.stringify(value).length;
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
   } catch {
     return 0;
   }
@@ -1420,11 +1441,15 @@ function groupPersistentCacheKeys(keys: string[]): CacheRepository[] {
   for (const key of keys) {
     const entry = parsePersistentCacheKey(key);
     if (!entry) continue;
-    const repoKey = `${entry.owner}/${entry.repo}@${entry.branch}`;
-    const repository = repositories.get(repoKey) ?? {
+    const identity = canonicalRepoIdentity(entry.owner, entry.repo);
+    const repoKey = `${identity}@${entry.branch}`;
+    const slashIndex = identity.indexOf("/");
+    const owner = identity.slice(0, slashIndex);
+    const repo = identity.slice(slashIndex + 1);
+    const repository: CacheRepository = repositories.get(repoKey) ?? {
       repoKey,
-      owner: entry.owner,
-      repo: entry.repo,
+      owner,
+      repo,
       branch: entry.branch,
       count: 0,
       items: []
@@ -1440,6 +1465,14 @@ function groupPersistentCacheKeys(keys: string[]): CacheRepository[] {
       items: repository.items.sort((left, right) => cacheEntryRank(left) - cacheEntryRank(right) || left.label.localeCompare(right.label))
     }))
     .sort((left, right) => left.repoKey.localeCompare(right.repoKey));
+}
+
+function canonicalRepoIdentity(owner: string, repo: string): string {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
+function sameRepositoryName(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; branch: string } & CacheEntry) | undefined {

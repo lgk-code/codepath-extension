@@ -19,8 +19,11 @@ export async function validateDeployTarget({ projectRoot, allowedRoot, targetDir
   const canonicalAllowed = await canonicalizePath(requestedAllowed, pathApi, ops);
   const canonicalTarget = await canonicalizePath(requestedTarget, pathApi, ops);
 
-  if (isSameOrDescendant(canonicalProject, canonicalTarget, pathApi, platform)) {
-    throw new Error(`Refusing to deploy into the project directory: ${canonicalTarget}`);
+  if (
+    isSameOrDescendant(canonicalProject, canonicalTarget, pathApi, platform) ||
+    isSameOrDescendant(canonicalTarget, canonicalProject, pathApi, platform)
+  ) {
+    throw new Error(`Refusing to deploy to a directory that overlaps the project directory: ${canonicalTarget}`);
   }
   if (!isStrictDescendant(canonicalAllowed, canonicalTarget, pathApi, platform)) {
     throw new Error(`Refusing to deploy outside the allowed root: ${canonicalTarget}`);

@@ -49,7 +49,9 @@ test("navigation events are signals and repository requests are sender-scoped", 
 
 test("repository operations are not replayed through sendMessage after a port attempt", () => {
   const sidebar = read("src/components/Sidebar.tsx");
-  assert.match(sidebar, /isSettingsTransportRequest\(request\)/);
+  assert.match(sidebar, /canFallbackLocallyBeforeDispatch\(request, portError\.dispatched\)/);
+  assert.doesNotMatch(sidebar, /function sendViaMessage/);
+  assert.match(sidebar, /validateRequestLocation\(request, location\.href\)/);
 });
 
 test("manifest does not request arbitrary HTTPS host access", () => {

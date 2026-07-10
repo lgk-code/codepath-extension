@@ -36,7 +36,6 @@
     "zod": "^4.4.3"
   },
   "overrides": {
-    "@babel/core": "8.0.1",
     "esbuild": "0.28.1",
     "fx-runner": "1.5.0",
     "hono": "4.12.28",
@@ -51,6 +50,7 @@
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
     "@types/unist": "^3.0.3",
+    "semver": "^7.7.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

@@ -102,5 +102,6 @@ npm.cmd run mcp
 
 - 本地 `deploy:edge` 只验证当前开发安装，不生成正式发布包。
 - CI artifact 用于开发验证。
-- 推送 `v*` tag 才会触发 Release workflow 并生成固定资产 `CodePath.zip`。
+- 正式发布使用 annotated `v*` tag（例如 `git tag -a v0.1.2 -m "v0.1.2"`）；tag 必须匹配 `package.json` 版本、指向当前 checkout `HEAD`，且 commit 已进入 `origin/main`。
+- 推送该 annotated tag 才会触发 Release workflow 并生成固定资产 `CodePath.zip`。
 - 迁移备份和 `E:\projects\CodePath-migration.bundle` 不属于仓库，也不得上传到 Release。
