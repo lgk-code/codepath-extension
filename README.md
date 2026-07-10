@@ -46,6 +46,10 @@ Release 包不内置 API Key 或 GitHub Token。你的密钥只保存在当前�
 
 点击上方截图打开 [CodePath 插件使用演示视频](docs/assets/codepath-demo.mp4)。演示网站位于 [docs/index.html](docs/index.html)，包含浏览器插件使用流程和真实项目分析案例。
 
+## 开发
+
+本项目使用 Git 管理，Windows 本机开发、质量门禁和 Edge 部署流程见 [开发指南](docs/DEVELOPMENT.md)。MCP Server 的配置与接入方式见 [MCP 使用教程](docs/MCP_USAGE.md)。
+
 ## 常见问题
 
 - 浏览器里没有变化：在 `edge://extensions` 重新加载 CodePath，并刷新 GitHub 页面。

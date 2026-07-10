@@ -12,7 +12,7 @@ CodePath 可以作为 MCP Server 运行，把 GitHub 源码分析能力提供给
 ## 前置要求
 
 - Node.js 20.19 或更高版本；推荐与 CI 一致使用 Node.js 24。
-- 已执行 `npm install`。
+- 已在 Windows 工作副本中执行 `npm.cmd ci`。
 - 一个 OpenAI 兼容接口或 Anthropic 兼容接口的模型 API Key。
 - 私有仓库需要额外准备 GitHub Token。
 
@@ -21,15 +21,8 @@ CodePath 可以作为 MCP Server 运行，把 GitHub 源码分析能力提供给
 在项目目录执行：
 
 ```powershell
-cd "C:\path\to\codepath-extension"
-npm install
-```
-
-如果项目位于 WSL 路径，请在 WSL 内安装 Linux 版 Node.js 并使用 Linux 路径执行，例如：
-
-```bash
-cd /home/lgk/projects/CodePath
-npm install
+cd E:\projects\CodePath
+npm.cmd ci
 ```
 
 ## 配置环境变量
@@ -81,12 +74,6 @@ GitHub Token 优先级为：
 npm.cmd run mcp
 ```
 
-WSL 项目请在 WSL shell 中运行：
-
-```bash
-npm run mcp
-```
-
 看到下面的输出表示服务已启动：
 
 ```text
@@ -104,7 +91,7 @@ CodePath MCP server running on stdio
   "codepath": {
     "command": "npm.cmd",
     "args": ["run", "mcp"],
-    "cwd": "C:\\path\\to\\codepath-extension",
+    "cwd": "E:\\projects\\CodePath",
     "env": {
       "CODEPATH_API_KEY": "your-model-api-key",
       "CODEPATH_PROVIDER": "openai",
@@ -115,8 +102,6 @@ CodePath MCP server running on stdio
   }
 }
 ```
-
-WSL 项目不要把 `cwd` 指向 `\\wsl$` UNC 路径后再调用 Windows `npm.cmd`；这会让 npm 落到 Windows 目录。应配置为在 WSL 环境内启动，或使用本机 Windows 路径中的项目副本。
 
 不要把真实 API Key 提交到 GitHub。建议只放在本机 OpenClaw 配置、环境变量或系统密钥管理里。
 
@@ -290,7 +275,7 @@ $env:CODEPATH_GITHUB_TOKEN="your-github-token"
 解决：
 
 ```powershell
-cd "C:\path\to\codepath-extension"
+cd E:\projects\CodePath
 npm.cmd run mcp
 ```
 

@@ -46,6 +46,10 @@ The Release package does not include any API key or GitHub token. Your secrets a
 
 Click the screenshot above to open the [CodePath extension demo video](docs/assets/codepath-demo.mp4). The demo site lives in [docs/index.html](docs/index.html) and includes the browser extension flow plus real project analysis examples.
 
+## Development
+
+The project is managed with Git. See the [development guide](docs/DEVELOPMENT.md) for the Windows-native workflow, quality gates, and Edge deployment. See the [MCP guide](docs/MCP_USAGE.md) for server configuration.
+
 ## Troubleshooting
 
 - Browser did not update: reload CodePath in `edge://extensions`, then refresh the GitHub page.

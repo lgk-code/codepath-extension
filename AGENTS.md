@@ -4,16 +4,23 @@
 
 CodePath 是一个基于 WXT、React 和 TypeScript 的浏览器扩展，用来在 GitHub 页面上直接阅读仓库代码。它会注入一个侧边栏，通过 GitHub 源码信息和兼容 OpenAI Chat Completions 的模型接口，帮助用户理解项目概览、功能路径、当前文件和后续追问。
 
+## 开发环境
+
+- 权威工作副本：`E:\projects\CodePath`。
+- 后续开发使用 Windows 原生 Git、Node.js 和 npm，不在旧 WSL 仓库中继续编辑或提交。
+- 首次安装使用 `npm.cmd ci`；不要跨系统复用 `node_modules`、`.wxt` 或 `.output`。
+- 完整流程见 `docs/DEVELOPMENT.md`。
+
 ## 开发命令
 
-- 安装依赖：`npm install`
-- 类型检查：`npm run compile`
-- 构建 Chrome/Edge MV3 扩展：`npm run build`
-- 构建并同步到 Edge 本地加载目录：`npm run deploy:edge`
-- 启动 CodePath MCP Server：`npm run mcp`
-- 检查 MCP 工具名：`npm run verify:mcp-tools`
-- 扫描密钥和本机私人路径：`npm run scan:secrets`
-- 本地统一质量门禁：`npm run quality`
+- 安装依赖：`npm.cmd ci`
+- 类型检查：`npm.cmd run compile`
+- 构建 Chrome/Edge MV3 扩展：`npm.cmd run build`
+- 构建并同步到 Edge 本地加载目录：`npm.cmd run deploy:edge`
+- 启动 CodePath MCP Server：`npm.cmd run mcp`
+- 检查 MCP 工具名：`npm.cmd run verify:mcp-tools`
+- 扫描密钥和本机私人路径：`npm.cmd run scan:secrets`
+- 本地统一质量门禁：`npm.cmd run quality`
 - 构建产物目录：`.output/chrome-mv3`
 
 MCP Server 使用环境变量读取配置：
@@ -27,17 +34,17 @@ MCP Server 使用环境变量读取配置：
 
 源码修改后，按下面流程验证浏览器里的实际效果：
 
-1. 执行 `npm run deploy:edge`。
+1. 执行 `npm.cmd run deploy:edge`。
 2. 脚本会构建 `.output/chrome-mv3`、同步到 Edge 当前加载的未打包扩展目录，并写入 `codepath-dev-reload.json`。
 3. 已加载了 self reload 能力的 CodePath 会在 development install 中读取该 marker，发现构建版本变化后调用 `chrome.runtime.reload()` 自行重载，并尽量刷新已打开的 GitHub 标签页。
 4. 如果当前浏览器里运行的是旧于 `dev-2026-07-09-self-reload-v1` 的 CodePath，第一次升级仍需要在 `edge://extensions` 手动重新加载一次，之后的本地部署才会自动 self reload。
 
-当前常用 Edge 的未打包扩展加载目录是 `D:\edge下载\CodePath`。在 WSL 中执行 `npm run deploy:edge` 时会同步到对应的 `/mnt/d/edge下载/CodePath`。如果浏览器里显示的构建版本没有变化，优先检查是否只更新了 `.output/chrome-mv3`，但没有同步到这个实际加载目录。
+当前常用 Edge 的未打包扩展加载目录是 `D:\edge下载\CodePath`。在 `E:\projects\CodePath` 执行 `npm.cmd run deploy:edge` 会同步到这个实际加载目录；需要更换目标时设置 `CODEPATH_EDGE_EXTENSION_DIR`。如果浏览器里显示的构建版本没有变化，检查目标目录中的 `codepath-dev-reload.json` 和构建版本是否已更新。
 
 推荐同步流程：
 
 ```powershell
-npm run deploy:edge
+npm.cmd run deploy:edge
 ```
 
 如果 self reload 没有在约 30 秒内生效，再到 `edge://extensions` 里重新加载 CodePath 扩展，并刷新 GitHub 页面。
@@ -56,14 +63,14 @@ npm run deploy:edge
 - 任何新功能、用户可见行为变更、设置页变更、推荐追问变更、缓存/耗时显示变更，都必须同步更新可见的 CodePath 构建版本。
 - 构建版本需要同时更新 `src/components/Sidebar.tsx` 的 `UI_VERSION`、`entrypoints/content.tsx` 的 `CONTENT_BUILD` 和 `entrypoints/background.ts` 的 `BACKGROUND_BUILD`，三者保持一致。
 - Manifest 中的 `alarms` 权限用于 development install 的 self reload 检查，让 MV3 background 能定期读取 `codepath-dev-reload.json` 并在构建版本变化时调用 `chrome.runtime.reload()`。
-- 不要硬编码 API Key、GitHub Token、本机绝对路径或个人浏览器 profile 路径。
+- 源码和脚本中不要硬编码 API Key、GitHub Token、个人目录或浏览器 profile 路径；环境相关路径通过现有环境变量配置。
 
 ## 验证要求
 
 发布或推送前至少执行：
 
-```bash
-npm run quality
+```powershell
+npm.cmd run quality
 ```
 
 `quality` 会依次执行测试、类型检查、扩展构建、构建版本一致性检查、MCP 工具名检查、密钥和本机私人路径扫描。必要时仍可拆开执行 `test`、`compile`、`build`、`verify:build-version`、`verify:mcp-tools`、`scan:secrets` 方便定位问题。
@@ -77,12 +84,12 @@ CodePath 采用“两层门禁”：
 
 本地提交前至少执行：
 
-- `npm run quality`
+- `npm.cmd run quality`
 - `git diff --check`
 
 涉及浏览器侧、设置页、推荐追问、缓存、耗时、流式输出或其他用户可见行为时，还必须执行：
 
-- `npm run deploy:edge`
+- `npm.cmd run deploy:edge`
 - 等待 CodePath self reload；必要时在 `edge://extensions` 手动重新加载 CodePath
 - 确认目标 GitHub 页面已自动刷新；必要时手动刷新 GitHub 页面
 - 确认设置页绿色构建版本变化
@@ -114,10 +121,10 @@ Codex / GitHub Actions 工具用于查看 GitHub 上的 workflow 状态、失败
   - `entrypoints/content.tsx` 中的 `CONTENT_BUILD`
   - `entrypoints/background.ts` 中的 `BACKGROUND_BUILD`
 - 每次提交前至少执行：
-  - `npm run quality`
+  - `npm.cmd run quality`
   - `git diff --check`
 - 浏览器侧改动验证流程：
-  - 执行 `npm run deploy:edge`
+  - 执行 `npm.cmd run deploy:edge`
   - 等待 CodePath self reload；必要时打开 `edge://extensions` 手动重新加载 CodePath
   - 确认 GitHub 页面自动刷新；必要时手动刷新
   - 确认绿色构建版本变化

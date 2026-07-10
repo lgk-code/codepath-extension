@@ -7,14 +7,8 @@
 每次提交或推送前至少执行：
 
 ```powershell
+cd E:\projects\CodePath
 npm.cmd run quality
-git diff --check
-```
-
-WSL 项目请在 WSL shell 中执行：
-
-```bash
-npm run quality
 git diff --check
 ```
 
@@ -63,7 +57,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - GitHub 仓库首页默认展示中文 `README.md`。
 - `README.en.md` 存在，且顶部能链接回中文 README。
 - 中文 README 顶部能链接到英文 README。
-- README 面向普通用户，不应出现本地构建、CI artifact 或测试门禁说明。
+- README 面向普通用户，可以链接开发指南，但不应内嵌本地构建、CI artifact 或测试门禁步骤。
 - README 的 `CodePath.zip` 下载链接应指向 `releases/latest/download/CodePath.zip`。
 - 演示站点页脚应提供中文 README 和英文 README 入口。
 

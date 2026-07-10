@@ -36,6 +36,12 @@ test("quality gate includes the test suite", () => {
   assert.match(pkg.scripts.quality, /npm run test/);
 });
 
+test("Windows development guide publishes topic branches for review", () => {
+  const guide = read("docs/DEVELOPMENT.md");
+  assert.match(guide, /git push -u origin HEAD/);
+  assert.match(guide, /Pull Request/);
+});
+
 test("MCP tools do not expose GitHub token as a tool argument", () => {
   const source = read("scripts/codepath-mcp.ts");
   const registerToolBlocks = source.split("server.registerTool").slice(1);
