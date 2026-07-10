@@ -71,6 +71,7 @@ export class GithubClient implements SourceClient {
   private readonly repoRequests = new Map<string, Promise<GithubRepo>>();
   private readonly treeRequests = new Map<string, Promise<TreeFile[]>>();
   private readonly snapshotRequests = new Map<string, Promise<RepoSnapshot>>();
+  private readonly refResolutionRequests = new Map<string, Promise<RepoRef>>();
 
   constructor(private readonly settings: Pick<Settings, "githubToken">) {}
 
@@ -106,7 +107,11 @@ export class GithubClient implements SourceClient {
   async resolveRepoRef(repo: RepoRef): Promise<RepoRef> {
     const candidates = uniqueCandidates(repo.refCandidates ?? []);
     if (candidates.length <= 1) return repo;
+    const key = JSON.stringify([repo.owner.toLowerCase(), repo.repo.toLowerCase(), repo.pageType, repo.branch, repo.path, candidates]);
+    return this.memoize(this.refResolutionRequests, key, () => this.resolveRepoRefCandidates(repo, candidates));
+  }
 
+  private async resolveRepoRefCandidates(repo: RepoRef, candidates: Array<{ refName: string; path: string }>): Promise<RepoRef> {
     const existingCandidates = await this.findExistingRefCandidates(repo.owner, repo.repo, repo.branch, candidates);
     if (existingCandidates.length > MAX_EXISTING_REF_CANDIDATES) {
       throw new Error("Ambiguous GitHub ref/path has too many existing ref boundaries to validate safely.");
@@ -116,12 +121,11 @@ export class GithubClient implements SourceClient {
     for (const candidate of existingCandidates) {
       try {
         const contentPath = candidate.path ? `/contents/${encodePath(candidate.path)}` : "/contents";
-        const metadata = await this.requestOptional<GithubContentResponse | unknown[]>(
-          `${repoApiBase(repo.owner, repo.repo)}${contentPath}?ref=${encodeURIComponent(candidate.refName)}`,
-          MAX_REF_METADATA_BYTES
+        const contentType = await this.requestContentType(
+          `${repoApiBase(repo.owner, repo.repo)}${contentPath}?ref=${encodeURIComponent(candidate.refName)}`
         );
-        const matchesFile = repo.pageType === "file" && !Array.isArray(metadata) && ["file", "symlink", "submodule"].includes(metadata?.type ?? "");
-        const matchesDirectory = repo.pageType === "directory" && Array.isArray(metadata);
+        const matchesFile = repo.pageType === "file" && contentType?.startsWith("application/vnd.github.raw") === true;
+        const matchesDirectory = repo.pageType === "directory" && contentType?.startsWith("application/json") === true;
         if (matchesFile || matchesDirectory) {
           viable.push(candidate);
         }
@@ -248,6 +252,27 @@ export class GithubClient implements SourceClient {
       throw new Error(`GitHub request failed ${response.status}: ${body || response.statusText}`);
     }
     return readJsonResponse<T>(response, jsonLimit);
+  }
+
+  private async requestContentType(url: string): Promise<string | undefined> {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.raw+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    };
+    if (this.settings.githubToken) headers.Authorization = `Bearer ${this.settings.githubToken}`;
+
+    const response = await fetchWithTimeout(url, { method: "HEAD", headers }, 30_000);
+    if (response.status === 404) {
+      await discardResponse(response);
+      return undefined;
+    }
+    if (!response.ok) {
+      const body = await safeResponseText(response);
+      throw new Error(`GitHub request failed ${response.status}: ${body || response.statusText}`);
+    }
+    const contentType = response.headers.get("content-type")?.toLowerCase();
+    await discardResponse(response);
+    return contentType;
   }
 
   private async getRepoCommit(owner: string, repo: string, ref: string): Promise<GithubCommitResponse | undefined> {

@@ -122,7 +122,7 @@ test("GithubClient resolves a normal deep file URL without treating path depth a
     }
     if (url.pathname.endsWith("/git/matching-refs/tags/main")) return jsonResponse([]);
     if (url.pathname.includes("/contents/packages/app/src/features/auth/components/forms/pages/LoginForm.tsx")) {
-      return jsonResponse({ type: "file" });
+      return contentHeadResponse("file");
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
@@ -144,7 +144,7 @@ test("GithubClient preserves short commit permalink resolution", async () => {
     if (url.pathname.endsWith("/git/matching-refs/heads/1234567")) return jsonResponse([]);
     if (url.pathname.endsWith("/git/matching-refs/tags/1234567")) return jsonResponse([]);
     if (url.pathname.endsWith("/commits/1234567")) return jsonResponse({ sha: "1234567890abcdef1234567890abcdef12345678" });
-    if (url.pathname.endsWith("/contents/src/app.ts") && url.searchParams.get("ref") === "1234567") return jsonResponse({ type: "file" });
+    if (url.pathname.endsWith("/contents/src/app.ts") && url.searchParams.get("ref") === "1234567") return contentHeadResponse("file");
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
   const parsed = parseGithubUrl("https://github.com/acme/demo/blob/1234567/src/app.ts");
@@ -154,6 +154,48 @@ test("GithubClient preserves short commit permalink resolution", async () => {
 
   assert.equal(resolved.branch, "1234567");
   assert.equal(resolved.path, "src/app.ts");
+});
+
+test("GithubClient ref validation does not buffer a large file body", async () => {
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = new URL(String(request));
+    if (url.pathname.endsWith("/git/matching-refs/heads/main")) return jsonResponse([{ ref: "refs/heads/main" }]);
+    if (url.pathname.endsWith("/git/matching-refs/tags/main")) return jsonResponse([]);
+    if (url.pathname.endsWith("/contents/src/large.ts")) {
+      return new Response(null, {
+        status: 200,
+        headers: { "Content-Type": "application/vnd.github.raw+json", "Content-Length": "600000" }
+      });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const parsed = parseGithubUrl("https://github.com/acme/demo/blob/main/src/large.ts");
+  assert.ok(parsed);
+
+  const resolved = await new GithubClient({ githubToken: "" }).resolveRepoRef(parsed);
+
+  assert.equal(resolved.branch, "main");
+  assert.equal(resolved.path, "src/large.ts");
+});
+
+test("GithubClient memoizes ref disambiguation within one analysis client", async () => {
+  let fetchCalls = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    fetchCalls += 1;
+    const url = new URL(String(request));
+    if (url.pathname.endsWith("/git/matching-refs/heads/release")) return jsonResponse([{ ref: "refs/heads/release/v2" }]);
+    if (url.pathname.endsWith("/git/matching-refs/tags/release")) return jsonResponse([]);
+    if (url.pathname.endsWith("/contents/src/app.ts")) return contentHeadResponse("file");
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const repo = parseGithubUrl("https://github.com/acme/demo/blob/release/v2/src/app.ts");
+  assert.ok(repo);
+  const client = new GithubClient({ githubToken: "" });
+
+  await client.resolveRepoRef(repo);
+  await client.resolveRepoRef(repo);
+
+  assert.equal(fetchCalls, 3);
 });
 
 function candidateFetch(candidates: Record<string, { headSha: string; treeSha: string; path: string }>): typeof fetch {
@@ -166,7 +208,7 @@ function candidateFetch(candidates: Record<string, { headSha: string; treeSha: s
     if (parsed.pathname.includes("/git/matching-refs/tags/")) return jsonResponse([]);
     for (const [branch, candidate] of Object.entries(candidates)) {
       if (parsed.pathname.includes(`/contents/${candidate.path}`) && parsed.searchParams.get("ref") === branch) {
-        return jsonResponse({ type: "file" });
+        return contentHeadResponse("file");
       }
       const encodedBranch = branch.split("/").map(encodeURIComponent).join("/");
       if (url.endsWith(`/git/ref/heads/${encodedBranch}`)) {
@@ -185,4 +227,11 @@ function candidateFetch(candidates: Record<string, { headSha: string; treeSha: s
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+function contentHeadResponse(type: "file" | "directory"): Response {
+  return new Response(null, {
+    status: 200,
+    headers: { "Content-Type": type === "file" ? "application/vnd.github.raw+json" : "application/json" }
+  });
 }

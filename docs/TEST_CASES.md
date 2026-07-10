@@ -125,7 +125,8 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 创建空提交后再次分析：HEAD 变化但 tree SHA 不变，允许复用结果，并显示“提交已更新，源码树未变”。
 - 打开含 `/` 的分支文件 URL：只有 GitHub ref 与文件路径能唯一校验时才分析；多解、限流或无法校验时必须明确报错。
 - commit/tag-like 首段不能提前丢弃其他边界；例如 `v1.2.3/hotfix` 必须作为候选 ref 交给 GitHub 校验。
-- ref/path 歧义先用至多两次 bounded `matching-refs` 查询筛选真实 branch/tag，再对最多 8 个实际存在的 ref 各发一次 512 KiB 有界 contents metadata 请求，不得按路径深度拒绝正常 URL，也不得为每个候选下载 recursive tree。
+- ref/path 歧义先用至多两次 bounded `matching-refs` 查询筛选真实 branch/tag，再对最多 8 个实际存在的 ref 各发一次 HEAD 类型检查；不得下载大文件正文、按路径深度拒绝正常 URL，或为每个候选下载 recursive tree。
+- 同一个 `GithubClient` 内重复解析相同 ref/path 必须命中 memoized 结果，追问的 snapshot 校验和源码加载不能重复消耗整套消歧请求。
 - 超长 GitHub URL 必须在二次复杂度的 ref/path 候选物化前拒绝。
 - owner/repo 段包含编码后的 `/`、`\\`、`.` 或 `..` 时必须拒绝解析；所有 GitHub API 与 codeload 请求必须分别编码 owner/repo 路径段。
 - API/ZIP client 的直接调用也必须复用同一 owner/repo validator；即使绕过 URL parser，`..` 或含分隔符的身份也不能带 Token 发出 fetch。
@@ -155,7 +156,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - heartbeat 只能更新 token 专属 sidecar 的时间戳，不能截断 lock 文件；promotion 和 backup 清理前必须复验 lease，backup 名必须绑定单次部署。
 - 初始 lock 必须先完整写入候选文件，再通过同目录 hard-link 排他发布；同名但无合法事务 marker 的 `CodePath.backup-*` 目录不得读取、恢复或删除。
 - stale 接管必须先原子移走 token heartbeat 形成 fencing；若移走瞬间 heartbeat 已刷新，应恢复并放弃接管，旧 owner 失去 heartbeat 后不得继续目标变更。
-- 当前 owner 即使因暂停错过 heartbeat，也不能仅凭租约时间被取代；只有同主机同运行时的 PID 已由操作系统确认退出后，才允许接管完整 token 锁。
+- 目标变更必须持有按规范化目标路径命名的 Windows system Mutex；Windows 与 WSL 使用同一个 Mutex，owner 进程退出时 helper 必须自动释放。文件 lease 仅用于恢复状态，不得依赖跨 runtime PID 或 PID 未复用假设。
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须等于 checkout `HEAD` 且是 `origin/main` 的祖先，否则 workflow 在发布前失败。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。

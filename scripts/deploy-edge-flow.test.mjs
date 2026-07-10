@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { cp, mkdir, open as fsOpen, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -189,7 +190,7 @@ test("replaceDirectoryAtomic does not reclaim a fresh lock based on a foreign PI
   try {
     await assert.rejects(
       () => replaceDirectoryAtomic({ sourceDir, targetDir, lockOptions: { timeoutMs: 40, retryMs: 5, leaseMs: 1_000 } }),
-      /timed out waiting for the deployment lock/i
+      /timed out waiting for the deployment (?:lock|mutation mutex)/i
     );
     assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "old");
   } finally {
@@ -454,7 +455,7 @@ test("a heartbeat refreshed during stale takeover cannot be fenced as expired", 
     try {
       await deploymentB;
     } catch (error) {
-      bTimedOut = /timed out waiting for the deployment lock/i.test(String(error));
+      bTimedOut = /timed out waiting for the deployment (?:lock|mutation mutex)/i.test(String(error));
     }
     releaseA?.();
     await deploymentA.catch(() => undefined);
@@ -514,7 +515,7 @@ test("a live owner paused after its lease check cannot mutate a replacement depl
           targetDir,
           lockOptions: { timeoutMs: 80, retryMs: 5, leaseMs: 40, heartbeatMs: 10 }
         }),
-      /timed out waiting for the deployment lock/i
+      /timed out waiting for the deployment (?:lock|mutation mutex)/i
     );
 
     releaseA?.();
@@ -527,6 +528,182 @@ test("a live owner paused after its lease check cannot mutate a replacement depl
   }
 });
 
+test("replaceDirectoryAtomic recovers a crashed lock created by another runtime", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  const lockPath = `${targetDir}.deploy-lock`;
+  const heartbeatPath = `${lockPath}.heartbeat-cross-runtime`;
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+  await writeFile(lockPath, JSON.stringify({ token: "cross-runtime", pid: process.pid, runtimeId: "linux:wsl", updatedAt: Date.now() - 5_000 }));
+  await writeFile(heartbeatPath, JSON.stringify({ token: "cross-runtime" }));
+  const staleTime = new Date(Date.now() - 5_000);
+  await utimes(lockPath, staleTime, staleTime);
+  await utimes(heartbeatPath, staleTime, staleTime);
+
+  try {
+    await replaceDirectoryAtomic({ sourceDir, targetDir, lockOptions: { timeoutMs: 100, retryMs: 5, leaseMs: 20 } });
+
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "new");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replaceDirectoryAtomic recovers a crashed lock after PID reuse", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  const lockPath = `${targetDir}.deploy-lock`;
+  const heartbeatPath = `${lockPath}.heartbeat-reused-pid`;
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+  await writeFile(
+    lockPath,
+    JSON.stringify({ token: "reused-pid", pid: process.pid, runtimeId: `${process.platform}:${os.hostname().toLowerCase()}`, updatedAt: Date.now() - 5_000 })
+  );
+  await writeFile(heartbeatPath, JSON.stringify({ token: "reused-pid" }));
+  const staleTime = new Date(Date.now() - 5_000);
+  await utimes(lockPath, staleTime, staleTime);
+  await utimes(heartbeatPath, staleTime, staleTime);
+
+  try {
+    await replaceDirectoryAtomic({ sourceDir, targetDir, lockOptions: { timeoutMs: 100, retryMs: 5, leaseMs: 20 } });
+
+    assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "new");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test(
+  "the Windows deployment mutex serializes separate Node processes",
+  { skip: process.platform !== "win32" && !process.env.WSL_INTEROP && !process.env.WSL_DISTRO_NAME },
+  async () => {
+    const root = await temporaryRoot();
+    const sourceA = path.join(root, "source-a");
+    const sourceB = path.join(root, "source-b");
+    const targetDir = path.join(root, "CodePath");
+    const readyPath = path.join(root, "a-ready");
+    const releasePath = path.join(root, "a-release");
+    const moduleUrl = new URL("./deploy-edge-flow.mjs", import.meta.url).href;
+    await mkdir(sourceA, { recursive: true });
+    await mkdir(sourceB, { recursive: true });
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(path.join(sourceA, "manifest.json"), "a");
+    await writeFile(path.join(sourceB, "manifest.json"), "b");
+    await writeFile(path.join(targetDir, "manifest.json"), "old");
+
+    const firstCode = `
+      import { access, writeFile } from "node:fs/promises";
+      import { replaceDirectoryAtomic } from ${JSON.stringify(moduleUrl)};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      await replaceDirectoryAtomic({
+        sourceDir: ${JSON.stringify(sourceA)},
+        targetDir: ${JSON.stringify(targetDir)},
+        lockOptions: { timeoutMs: 1000, retryMs: 5, leaseMs: 40, heartbeatMs: 200 },
+        prepareStaging: async () => {
+          await writeFile(${JSON.stringify(readyPath)}, "ready");
+          while (true) {
+            try { await access(${JSON.stringify(releasePath)}); break; } catch { await sleep(5); }
+          }
+        }
+      });
+    `;
+    const secondCode = `
+      import { replaceDirectoryAtomic } from ${JSON.stringify(moduleUrl)};
+      try {
+        await replaceDirectoryAtomic({
+          sourceDir: ${JSON.stringify(sourceB)},
+          targetDir: ${JSON.stringify(targetDir)},
+          lockOptions: { timeoutMs: 80, retryMs: 5, leaseMs: 40, heartbeatMs: 10 }
+        });
+        throw new Error("second deployment unexpectedly entered");
+      } catch (error) {
+        if (!/deployment mutation mutex/i.test(String(error))) throw error;
+      }
+    `;
+    const first = startNodeModule(firstCode);
+
+    try {
+      await waitForPath(readyPath, 5_000);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const second = await runNodeModule(secondCode);
+      assert.equal(second.code, 0, second.stderr);
+
+      await writeFile(releasePath, "release");
+      const firstResult = await waitForChild(first);
+      assert.equal(firstResult.code, 0, firstResult.stderr);
+      assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "a");
+    } finally {
+      await writeFile(releasePath, "release").catch(() => undefined);
+      first.kill();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  "the Windows deployment mutex is released when its Node owner exits",
+  { skip: process.platform !== "win32" && !process.env.WSL_INTEROP && !process.env.WSL_DISTRO_NAME },
+  async () => {
+    const root = await temporaryRoot();
+    const sourceA = path.join(root, "source-a");
+    const sourceB = path.join(root, "source-b");
+    const targetDir = path.join(root, "CodePath");
+    const readyPath = path.join(root, "a-ready");
+    const moduleUrl = new URL("./deploy-edge-flow.mjs", import.meta.url).href;
+    await mkdir(sourceA, { recursive: true });
+    await mkdir(sourceB, { recursive: true });
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(path.join(sourceA, "manifest.json"), "a");
+    await writeFile(path.join(sourceB, "manifest.json"), "b");
+    await writeFile(path.join(targetDir, "manifest.json"), "old");
+
+    const firstCode = `
+      import { writeFile } from "node:fs/promises";
+      import { replaceDirectoryAtomic } from ${JSON.stringify(moduleUrl)};
+      await replaceDirectoryAtomic({
+        sourceDir: ${JSON.stringify(sourceA)},
+        targetDir: ${JSON.stringify(targetDir)},
+        lockOptions: { timeoutMs: 1000, retryMs: 5, leaseMs: 40, heartbeatMs: 200 },
+        prepareStaging: async () => {
+          await writeFile(${JSON.stringify(readyPath)}, "ready");
+          await new Promise(() => {});
+        }
+      });
+    `;
+    const secondCode = `
+      import { replaceDirectoryAtomic } from ${JSON.stringify(moduleUrl)};
+      await replaceDirectoryAtomic({
+        sourceDir: ${JSON.stringify(sourceB)},
+        targetDir: ${JSON.stringify(targetDir)},
+        lockOptions: { timeoutMs: 1000, retryMs: 5, leaseMs: 40, heartbeatMs: 10 }
+      });
+    `;
+    const first = startNodeModule(firstCode);
+
+    try {
+      await waitForPath(readyPath, 5_000);
+      first.kill();
+      await waitForChild(first);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const second = await runNodeModule(secondCode);
+      assert.equal(second.code, 0, second.stderr);
+      assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "b");
+    } finally {
+      first.kill();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+);
+
 async function temporaryRoot() {
   const root = path.join(os.tmpdir(), `codepath-deploy-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   await mkdir(root, { recursive: true });
@@ -536,4 +713,43 @@ async function temporaryRoot() {
 async function listSiblingArtifacts(root) {
   const { readdir } = await import("node:fs/promises");
   return readdir(root);
+}
+
+function startNodeModule(code) {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  child.stdoutText = "";
+  child.stderrText = "";
+  child.stdout.on("data", (chunk) => {
+    child.stdoutText += String(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    child.stderrText += String(chunk);
+  });
+  return child;
+}
+
+async function runNodeModule(code) {
+  return waitForChild(startNodeModule(code));
+}
+
+function waitForChild(child) {
+  if (child.exitCode !== null) return Promise.resolve({ code: child.exitCode, stdout: child.stdoutText, stderr: child.stderrText });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve({ code, stdout: child.stdoutText, stderr: child.stderrText }));
+  });
+}
+
+async function waitForPath(file, timeoutMs) {
+  const { access } = await import("node:fs/promises");
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      await access(file);
+      return;
+    } catch {
+      if (Date.now() - startedAt >= timeoutMs) throw new Error(`Timed out waiting for ${file}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
 }

@@ -288,7 +288,7 @@ test("analyzeProject resolves slash branches through heads ref before commits en
 });
 
 test("explainFile validates slash ref candidates before selecting the file", async () => {
-  globalThis.fetch = (async (request: RequestInfo | URL) => {
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
     const url = String(request);
     if (url === "https://api.github.com/repos/acme/demo") return jsonResponse({ default_branch: "main" });
     if (url === "https://api.github.com/repos/acme/demo/git/matching-refs/heads/release?per_page=100") {
@@ -305,7 +305,7 @@ test("explainFile validates slash ref candidates before selecting the file", asy
       return jsonResponse({ tree: [{ path: "src/app.ts", type: "blob", sha: "blob-app", size: 24 }], truncated: false });
     }
     if (url === "https://api.github.com/repos/acme/demo/contents/src/app.ts?ref=release%2Fv2") {
-      return jsonResponse({ type: "file" });
+      if (init?.method === "HEAD") return new Response(null, { status: 200, headers: { "Content-Type": "application/vnd.github.raw+json" } });
     }
     if (url === "https://api.github.com/repos/acme/demo/contents/src/app.ts?ref=head-v2") {
       return jsonResponse({ type: "file", encoding: "base64", content: Buffer.from("export const app = true;").toString("base64") });

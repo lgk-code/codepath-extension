@@ -1,8 +1,10 @@
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, link, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 const BACKUP_MARKER = ".codepath-deploy-backup.json";
+const inProcessMutationLocks = new Map();
 
 export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTarget }) {
   await verifyBuildVersion();
@@ -20,50 +22,60 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
   let promoted = false;
 
   await ops.mkdir(path.dirname(targetDir), { recursive: true });
-  const lease = await acquireDeploymentLock(ops, lockPath, lockOptions);
-
+  const mutationMutex = await acquireDeploymentMutationMutex(targetDir, lockOptions);
   try {
-    await lease.assertOwned();
-    await ops.rm(stagingDir, { recursive: true, force: true });
-    await reconcileBackupArtifacts(ops, targetDir);
-
-    await ops.cp(sourceDir, stagingDir, { recursive: true });
-    await prepareStaging?.(stagingDir);
-    await verifyStaging?.(stagingDir);
-    await lease.assertOwned();
-
-    if (await pathExists(ops, targetDir)) {
-      await ops.writeFile(path.join(targetDir, BACKUP_MARKER), JSON.stringify({ schemaVersion: 1, transactionId: suffix }), "utf8");
-      try {
-        await ops.rename(targetDir, backupDir);
-      } catch (error) {
-        await ops.rm(path.join(targetDir, BACKUP_MARKER), { force: true });
-        throw error;
-      }
-      targetMoved = true;
-    }
-    await lease.assertOwned();
-    await ops.rename(stagingDir, targetDir);
-    promoted = true;
-    await lease.assertOwned();
-    if (targetMoved) await ops.rm(backupDir, { recursive: true, force: true });
-  } catch (error) {
-    if (targetMoved && !promoted && (await lease.isOwned())) {
-      if (await pathExists(ops, targetDir)) await ops.rm(targetDir, { recursive: true, force: true });
-      if (await pathExists(ops, backupDir)) {
-        await ops.rm(path.join(backupDir, BACKUP_MARKER), { force: true });
-        await ops.rename(backupDir, targetDir);
-      }
-    }
-    throw error;
-  } finally {
+    const lease = await acquireDeploymentLock(ops, lockPath, lockOptions);
     try {
+      await assertDeploymentOwnership(mutationMutex, lease);
       await ops.rm(stagingDir, { recursive: true, force: true });
-      if (promoted && (await lease.isOwned())) await ops.rm(backupDir, { recursive: true, force: true });
+      await reconcileBackupArtifacts(ops, targetDir);
+
+      await ops.cp(sourceDir, stagingDir, { recursive: true });
+      await prepareStaging?.(stagingDir);
+      await verifyStaging?.(stagingDir);
+      await assertDeploymentOwnership(mutationMutex, lease);
+
+      if (await pathExists(ops, targetDir)) {
+        await ops.writeFile(path.join(targetDir, BACKUP_MARKER), JSON.stringify({ schemaVersion: 1, transactionId: suffix }), "utf8");
+        try {
+          await assertDeploymentOwnership(mutationMutex, lease);
+          await ops.rename(targetDir, backupDir);
+        } catch (error) {
+          await ops.rm(path.join(targetDir, BACKUP_MARKER), { force: true });
+          throw error;
+        }
+        targetMoved = true;
+      }
+      await assertDeploymentOwnership(mutationMutex, lease);
+      await ops.rename(stagingDir, targetDir);
+      promoted = true;
+      await assertDeploymentOwnership(mutationMutex, lease);
+      if (targetMoved) await ops.rm(backupDir, { recursive: true, force: true });
+    } catch (error) {
+      if (targetMoved && !promoted && (await mutationMutex.isOwned()) && (await lease.isOwned())) {
+        if (await pathExists(ops, targetDir)) await ops.rm(targetDir, { recursive: true, force: true });
+        if (await pathExists(ops, backupDir)) {
+          await ops.rm(path.join(backupDir, BACKUP_MARKER), { force: true });
+          await ops.rename(backupDir, targetDir);
+        }
+      }
+      throw error;
     } finally {
-      await lease.release();
+      try {
+        await ops.rm(stagingDir, { recursive: true, force: true });
+        if (promoted && (await mutationMutex.isOwned()) && (await lease.isOwned())) await ops.rm(backupDir, { recursive: true, force: true });
+      } finally {
+        await lease.release();
+      }
     }
+  } finally {
+    await mutationMutex.release();
   }
+}
+
+async function assertDeploymentOwnership(mutationMutex, lease) {
+  await mutationMutex.assertOwned();
+  await lease.assertOwned();
 }
 
 async function reconcileBackupArtifacts(fsOps, targetDir) {
@@ -94,12 +106,191 @@ async function reconcileBackupArtifacts(fsOps, targetDir) {
   for (const backup of backups) await fsOps.rm(backup, { recursive: true, force: true });
 }
 
+async function acquireDeploymentMutationMutex(targetDir, { timeoutMs = 30_000 } = {}) {
+  const name = deploymentMutexName(targetDir);
+  const local = await acquireInProcessMutex(name, timeoutMs);
+  let system;
+  try {
+    system = shouldUseWindowsSystemMutex() ? await acquirePowerShellMutex(name, timeoutMs) : undefined;
+  } catch (error) {
+    await local.release();
+    throw error;
+  }
+
+  return {
+    async assertOwned() {
+      await local.assertOwned();
+      await system?.assertOwned();
+    },
+    async isOwned() {
+      return (await local.isOwned()) && (system ? await system.isOwned() : true);
+    },
+    async release() {
+      try {
+        await system?.release();
+      } finally {
+        await local.release();
+      }
+    }
+  };
+}
+
+function acquireInProcessMutex(name, timeoutMs) {
+  let state = inProcessMutationLocks.get(name);
+  if (!state) {
+    state = { owned: false, waiters: [] };
+    inProcessMutationLocks.set(name, state);
+  }
+
+  if (!state.owned) {
+    state.owned = true;
+    return Promise.resolve(createInProcessMutexHandle(name, state));
+  }
+
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve, timer: undefined };
+    waiter.timer = setTimeout(() => {
+      const index = state.waiters.indexOf(waiter);
+      if (index >= 0) state.waiters.splice(index, 1);
+      reject(new Error(`Timed out waiting for the deployment mutation mutex: ${name}`));
+    }, timeoutMs);
+    waiter.timer.unref?.();
+    state.waiters.push(waiter);
+  });
+}
+
+function createInProcessMutexHandle(name, state) {
+  let owned = true;
+  return {
+    async assertOwned() {
+      if (!owned) throw new Error(`Deployment mutation mutex was lost: ${name}`);
+    },
+    async isOwned() {
+      return owned;
+    },
+    async release() {
+      if (!owned) return;
+      owned = false;
+      const next = state.waiters.shift();
+      if (next) {
+        clearTimeout(next.timer);
+        next.resolve(createInProcessMutexHandle(name, state));
+        return;
+      }
+      state.owned = false;
+      if (inProcessMutationLocks.get(name) === state) inProcessMutationLocks.delete(name);
+    }
+  };
+}
+
+function shouldUseWindowsSystemMutex() {
+  return process.platform === "win32" || Boolean(process.env.WSL_INTEROP) || Boolean(process.env.WSL_DISTRO_NAME);
+}
+
+function deploymentMutexName(targetDir) {
+  let canonical = path.resolve(targetDir);
+  const wslDrive = /^\/mnt\/([a-z])(?:\/(.*))?$/i.exec(canonical);
+  if (wslDrive) canonical = `${wslDrive[1].toUpperCase()}:\\${(wslDrive[2] ?? "").replaceAll("/", "\\")}`;
+  canonical = canonical.replaceAll("/", "\\").toLowerCase();
+  return `CodePathDeploy-${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+function acquirePowerShellMutex(name, timeoutMs) {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$mutex = [System.Threading.Mutex]::new($false, '${name}')`,
+    "$acquired = $false",
+    "try {",
+    `  try { $acquired = $mutex.WaitOne(${Math.max(0, Math.floor(timeoutMs))}) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }`,
+    "  if (-not $acquired) { [Console]::Out.WriteLine('TIMEOUT'); exit 3 }",
+    "  [Console]::Out.WriteLine('ACQUIRED')",
+    "  [Console]::Out.Flush()",
+    "  [Console]::In.ReadToEnd() | Out-Null",
+    "} finally {",
+    "  if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }",
+    "  $mutex.Dispose()",
+    "}"
+  ].join("\n");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    const startupTimer = setTimeout(() => fail(new Error(`Timed out starting the deployment mutation mutex helper: ${name}`)), 10_000);
+    startupTimer.unref?.();
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(startupTimer);
+      child.kill();
+      reject(error);
+    };
+    child.stdin.on("error", () => undefined);
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < 4_096) stderr += String(chunk).slice(0, 4_096 - stderr.length);
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+      if (stdout.split(/\r?\n/).includes("TIMEOUT")) {
+        fail(new Error(`Timed out waiting for the deployment mutation mutex: ${name}`));
+        return;
+      }
+      if (!stdout.split(/\r?\n/).includes("ACQUIRED") || settled) return;
+      settled = true;
+      clearTimeout(startupTimer);
+      resolve(createPowerShellMutexHandle(child, name));
+    });
+    child.once("error", (error) => fail(new Error(`Unable to start deployment mutation mutex helper: ${error.message}`)));
+    child.once("exit", (code) => {
+      if (!settled) fail(new Error(`Deployment mutation mutex helper exited before acquisition (${code}): ${stderr.trim()}`));
+    });
+  });
+}
+
+function createPowerShellMutexHandle(child, name) {
+  let released = false;
+  let exited = child.exitCode !== null;
+  child.once("exit", () => {
+    exited = true;
+  });
+  return {
+    async assertOwned() {
+      if (released || exited || child.exitCode !== null) throw new Error(`Deployment mutation mutex was lost: ${name}`);
+    },
+    async isOwned() {
+      return !released && !exited && child.exitCode === null;
+    },
+    async release() {
+      if (released) return;
+      released = true;
+      if (exited || child.exitCode !== null) return;
+      await new Promise((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          child.kill();
+          finish();
+        }, 5_000);
+        timer.unref?.();
+        child.once("exit", finish);
+        child.stdin.end();
+      });
+    }
+  };
+}
+
 async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retryMs = 25, leaseMs = 120_000, heartbeatMs = Math.min(10_000, leaseMs / 3) } = {}) {
   const startedAt = Date.now();
   const owner = {
     token: `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    pid: process.pid,
-    runtimeId: currentRuntimeId(),
     updatedAt: Date.now()
   };
   const candidatePath = `${lockPath}.candidate-${owner.token}`;
@@ -220,8 +411,6 @@ async function readLockObservation(fsOps, lockPath) {
     }
     return {
       token: owner?.token,
-      pid: owner?.pid,
-      runtimeId: owner?.runtimeId,
       heartbeatPath: heartbeatFingerprint ? heartbeatPath : undefined,
       updatedAt,
       fingerprint: `${stat.mtimeMs}:${stat.size}:${content}:${heartbeatFingerprint}`
@@ -261,8 +450,6 @@ function parseLockOwner(content) {
     if (typeof owner?.token !== "string") return undefined;
     return {
       token: owner.token,
-      pid: Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : undefined,
-      runtimeId: typeof owner.runtimeId === "string" ? owner.runtimeId : undefined,
       updatedAt: Number.isFinite(owner.updatedAt) ? owner.updatedAt : undefined
     };
   } catch {
@@ -287,7 +474,6 @@ async function refreshHeartbeat(fsOps, heartbeatPath) {
 
 async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, leaseMs, retryMs) {
   if (observed.token && observed.heartbeatPath) {
-    if (!isConfirmedExitedOwner(observed)) return false;
     const fencedHeartbeat = `${observed.heartbeatPath}.fenced-${claimantToken}`;
     try {
       await fsOps.rename(observed.heartbeatPath, fencedHeartbeat);
@@ -325,8 +511,6 @@ async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, lease
     }
   }
 
-  if (observed.token && !isConfirmedExitedOwner(observed)) return false;
-
   await delay(Math.min(retryMs, 25));
   const confirmed = await readLockObservation(fsOps, lockPath);
   if (!confirmed || confirmed.fingerprint !== observed.fingerprint || Date.now() - confirmed.updatedAt <= leaseMs) return false;
@@ -338,20 +522,6 @@ async function tryFenceStaleLock(fsOps, lockPath, observed, claimantToken, lease
   } catch (error) {
     if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") return false;
     throw error;
-  }
-}
-
-function currentRuntimeId() {
-  return `${process.platform}:${os.hostname().toLowerCase()}`;
-}
-
-function isConfirmedExitedOwner(owner) {
-  if (owner.runtimeId !== currentRuntimeId() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
-  try {
-    process.kill(owner.pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === "ESRCH";
   }
 }
 
