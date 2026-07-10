@@ -4,7 +4,12 @@ export function parseGithubUrl(urlText: string): RepoRef | null {
   const url = new URL(urlText);
   if (url.hostname !== "github.com") return null;
 
-  const parts = url.pathname.split("/").filter(Boolean).map(decodePathPart);
+  const parts: string[] = [];
+  for (const rawPart of url.pathname.split("/").filter(Boolean)) {
+    const part = decodePathPart(rawPart);
+    if (part === "." || part === ".." || part.includes("/") || part.includes("\\")) return null;
+    parts.push(part);
+  }
   const [owner, repo, marker] = parts;
   if (!owner || !repo || !isValidGithubOwner(owner) || !isValidGithubRepo(repo)) return null;
 

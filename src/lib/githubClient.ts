@@ -249,10 +249,11 @@ function repoApiBase(owner: string, repo: string): string {
 }
 
 function encodePath(path: string): string {
-  return path
-    .split("/")
-    .map((part) => encodeURIComponent(part))
-    .join("/");
+  const parts = path.split("/");
+  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) {
+    throw new Error(`Unsafe GitHub path: ${path}`);
+  }
+  return parts.map((part) => encodeURIComponent(part)).join("/");
 }
 
 function decodeBase64(value: string): string {

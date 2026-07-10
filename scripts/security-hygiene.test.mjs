@@ -33,6 +33,7 @@ test("streaming UI updates are scoped to the active repository run", () => {
   assert.match(sidebar, /repoKey === repoStateKey\(repoRef\.current\)/);
   assert.match(sidebar, /isRepoStateCurrent\(repoKey, location\.href\)/);
   assert.match(sidebar, /current\.runId === runId/);
+  assert.match(sidebar, /function markStreamFallback\(runId/);
 });
 
 test("navigation events are signals and repository requests are sender-scoped", () => {

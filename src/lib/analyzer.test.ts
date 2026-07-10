@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { strToU8, zipSync } from "fflate";
-import { ANALYZER_VERSION, PROMPT_VERSION, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSuggestedQuestions } from "./analyzer";
+import {
+  ANALYZER_VERSION,
+  PROMPT_VERSION,
+  analyzeProject,
+  answerQuestion,
+  clearAnalysisCaches,
+  deletePersistentCacheRepo,
+  explainFile,
+  generateSuggestedQuestions,
+  getAnalysisCacheStats
+} from "./analyzer";
 import type { AnalysisBasis, RepoRef, Settings, TreeFile } from "../types";
 import { sha256Digest } from "./digest";
 
@@ -615,7 +625,9 @@ test("persistent v2 cache prunes old per-repository entries", async () => {
 
   await analyzeProject(repo, settings);
 
-  const v2RepoKeys = Object.keys(store).filter((key) => key.startsWith("codepath-cache-v2:acme/demo@main:"));
+  const v2RepoKeys = Object.keys(store).filter(
+    (key) => key.startsWith("codepath-cache-v2:acme/demo@main:") || key.startsWith("codepath-cache-v2:e:acme/demo@main:")
+  );
   assert.equal(v2RepoKeys.length <= 80, true);
   assert.equal(Object.prototype.hasOwnProperty.call(store, "codepath-cache-v2:acme/demo@main:overview:old-tree-0:focused:old-digest-0"), false);
 });
@@ -638,8 +650,11 @@ test("persistent v2 cache prunes and retries when storage write initially hits q
   await analyzeProject(repo, settings);
 
   const keys = Object.keys(store);
-  assert.equal(keys.some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:focused:")), true);
-  assert.equal(keys.filter((key) => key.startsWith("codepath-cache-v2:acme/demo@main:")).length <= 80, true);
+  assert.equal(keys.some((key) => key.startsWith("codepath-cache-v2:e:acme/demo@main:overview:tree-current:focused:")), true);
+  assert.equal(
+    keys.filter((key) => key.startsWith("codepath-cache-v2:acme/demo@main:") || key.startsWith("codepath-cache-v2:e:acme/demo@main:")).length <= 80,
+    true
+  );
 });
 
 test("persistent v2 cache accounts for the pending record size before writing", async () => {
@@ -661,7 +676,7 @@ test("persistent v2 cache accounts for the pending record size before writing", 
   await analyzeProject(repo, settings);
 
   const keys = Object.keys(store);
-  assert.equal(keys.some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:focused:")), true);
+  assert.equal(keys.some((key) => key.startsWith("codepath-cache-v2:e:acme/demo@main:overview:tree-current:focused:")), true);
   assert.equal(keys.some((key) => key.includes("large-old-tree-0")), false);
 });
 
@@ -679,7 +694,7 @@ test("oversized pending cache records do not evict valid existing records", asyn
   await analyzeProject(repo, settings);
 
   assert.equal(Object.prototype.hasOwnProperty.call(store, existingKey), true);
-  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:")), false);
+  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:e:acme/demo@main:overview:tree-current:")), false);
 });
 
 test("persistent cache limits count UTF-8 bytes instead of UTF-16 code units", async () => {
@@ -696,7 +711,7 @@ test("persistent cache limits count UTF-8 bytes instead of UTF-16 code units", a
   await analyzeProject(repo, settings);
 
   assert.equal(Object.prototype.hasOwnProperty.call(store, existingKey), true);
-  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:")), false);
+  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:e:acme/demo@main:overview:tree-current:")), false);
 });
 
 test("repository cache identity and repository clearing are case-insensitive", async () => {
@@ -723,7 +738,7 @@ test("repository cache identity and repository clearing are case-insensitive", a
 
   assert.equal(modelCalls, 1);
   assert.equal(reused.timing?.resultCacheHit, true);
-  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@")), true);
+  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:e:acme/demo@")), true);
 
   await clearAnalysisCaches("repo", repo);
   await analyzeProject(mixedCaseRepo, settings);
@@ -753,6 +768,25 @@ test("repository cache parsing preserves an at-sign inside a legal branch name",
   assert.equal(cleared.persistentKeysCleared > 0, true);
   assert.equal(modelCalls, 2);
   assert.equal(Object.keys(store).some((key) => key.includes("@feature%40x:")), true);
+});
+
+test("encoded cache keys cannot collide with legacy percent-containing refs", async () => {
+  const legacyKey = "codepath-cache-v2:acme/demo@release%2Fx:overview:legacy-tree:focused:legacy-digest";
+  const encodedKey = "codepath-cache-v2:e:acme/demo@release%2Fx:overview:encoded-tree:focused:encoded-digest";
+  const store = installChromeStorageMock({
+    [legacyKey]: cacheRecordForTest("overview", "2026-07-01T00:00:00.000Z"),
+    [encodedKey]: cacheRecordForTest("overview", "2026-07-02T00:00:00.000Z")
+  });
+
+  const stats = await getAnalysisCacheStats();
+
+  assert.deepEqual(
+    stats.repositories.map((item) => item.repoKey).sort(),
+    ["acme/demo@release%2Fx", "acme/demo@release/x"]
+  );
+  await deletePersistentCacheRepo("acme/demo@release/x");
+  assert.equal(Object.prototype.hasOwnProperty.call(store, encodedKey), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(store, legacyKey), true);
 });
 
 test("clearing a repository prevents an in-flight analysis from repopulating caches", async () => {
@@ -1388,7 +1422,7 @@ function snapshotForTest(headSha: string, treeSha: string) {
 
 async function persistentOverviewTestKey(repoRef: RepoRef, branch: string, treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): Promise<string> {
   const inputDigest = await persistentOverviewInputDigestForTest(treeSha, mode, files, testSettings);
-  return `codepath-cache-v2:${repoRef.owner}/${repoRef.repo}@${branch}:overview:${treeSha}:${mode}:${inputDigest}`;
+  return `codepath-cache-v2:e:${repoRef.owner}/${repoRef.repo}@${encodeURIComponent(branch)}:overview:${treeSha}:${mode}:${inputDigest}`;
 }
 
 async function persistentOverviewInputDigestForTest(treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): Promise<string> {

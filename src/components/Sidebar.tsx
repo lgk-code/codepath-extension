@@ -87,7 +87,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v2";
+const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v3";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -184,7 +184,7 @@ export function Sidebar() {
   async function run<T>(
     target: StreamTarget,
     label: string,
-    action: (onDelta: (text: string) => void) => Promise<T>,
+    action: (onDelta: (text: string) => void, onFallback: (reason: string) => void) => Promise<T>,
     onDone: (value: T, elapsedMs: number) => void,
     meta: { question?: string } = {}
   ) {
@@ -215,7 +215,7 @@ export function Sidebar() {
       )
     );
     try {
-      const value = await action(streamBatcher.push);
+      const value = await action(streamBatcher.push, (reason) => markStreamFallback(runId, startedRepoKey, target, reason));
       streamBatcher.flush();
       if (!isCurrentRun(runId, startedRepoKey)) return;
       onDone(value, Date.now() - startedAt);
@@ -275,9 +275,9 @@ export function Sidebar() {
     element.scrollTo({ top });
   }
 
-  function markStreamFallback(target: StreamTarget, reason: string) {
+  function markStreamFallback(runId: number, repoKey: string, target: StreamTarget, reason: string) {
     setActiveStream((current) =>
-      current && current.target === target && current.repoKey === repoStateKey(repoRef.current) && isRepoStateCurrent(current.repoKey, location.href)
+      current && current.runId === runId && current.target === target && current.repoKey === repoKey && isCurrentRun(runId, repoKey)
         ? { ...current, fallbackReason: reason, expectsStreaming: false, mode: "unsupported" }
         : current
     );
@@ -357,14 +357,14 @@ export function Sidebar() {
     run(
       "ask",
       "正在回答问题...",
-      (onDelta) =>
+      (onDelta, onFallback) =>
         send<ProjectOverview>({
           type: "answer-question",
           repo,
           question: trimmed,
           context: askContext.basis ? askContext.text : undefined,
           contextBasis: askContext.basis
-        }, onDelta, (reason) => markStreamFallback("ask", reason)),
+        }, onDelta, onFallback),
       (answer, elapsedMs) => {
         setAnswers((items) => [...items, { question: trimmed, answer, elapsedMs, timing: answer.timing }]);
         setQuestion("");
@@ -560,11 +560,11 @@ export function Sidebar() {
                 run(
                   "overview",
                   projectAnalysisMode === "full-source" ? "正在进行全部源码分析..." : "正在分析项目...",
-                  (onDelta) =>
+                  (onDelta, onFallback) =>
                     send<ProjectOverview>(
                       { type: "analyze-project", repo, mode: projectAnalysisMode },
                       onDelta,
-                      (reason) => markStreamFallback("overview", reason)
+                      onFallback
                     ),
                   (result) => {
                     setOverview(result);
@@ -612,7 +612,7 @@ export function Sidebar() {
                 run(
                   "feature",
                   "正在分析功能路径...",
-                  (onDelta) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta, (reason) => markStreamFallback("feature", reason)),
+                  (onDelta, onFallback) => send<FeaturePath>({ type: "analyze-feature", repo, feature }, onDelta, onFallback),
                   (result) => {
                     setFeaturePath(result);
                     requestAnalysisSuggestions("feature", featureSuggestionRequest(result));
@@ -652,7 +652,7 @@ export function Sidebar() {
                 run(
                   "file",
                   "正在解释当前文件...",
-                  (onDelta) => send<FileExplanation>({ type: "explain-file", repo }, onDelta, (reason) => markStreamFallback("file", reason)),
+                  (onDelta, onFallback) => send<FileExplanation>({ type: "explain-file", repo }, onDelta, onFallback),
                   (result) => {
                     setFileExplanation(result);
                     requestAnalysisSuggestions("file", fileSuggestionRequest(result));
@@ -705,7 +705,7 @@ export function Sidebar() {
                 run(
                   "skill",
                   "正在生成借鉴材料...",
-                  (onDelta) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta, (reason) => markStreamFallback("skill", reason)),
+                  (onDelta, onFallback) => send<SkillBlueprint>({ type: "generate-skill-blueprint", repo, feature: blueprintFeature, mode: blueprintMode }, onDelta, onFallback),
                   (result) => {
                     setSkillBlueprint(result);
                     requestAnalysisSuggestions("skill", skillSuggestionRequest(result));

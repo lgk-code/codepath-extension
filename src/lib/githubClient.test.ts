@@ -51,6 +51,20 @@ test("GithubClient encodes owner and repository as individual API path segments"
   assert.equal(requestedUrl, "https://api.github.com/repos/visible/..%2Fsecret-owner%2Fsecret-repo");
 });
 
+test("GithubClient rejects relative traversal in content paths before fetching", async () => {
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    return new Response("unexpected", { status: 500 });
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () => new GithubClient({ githubToken: "secret" }).getFile("visible", "repo", "../../../secret-owner/secret-repo/contents/secret.txt", "main"),
+    /unsafe GitHub path/i
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 test("GithubClient rejects non-unique slash-branch candidates", async () => {
   globalThis.fetch = candidateFetch({
     "release": { headSha: "head-release", treeSha: "tree-release", path: "v2/src/app.ts" },

@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, utimes } from "node:fs/promises";
 import path from "node:path";
 
 export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTarget }) {
@@ -8,10 +8,10 @@ export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTar
 }
 
 export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {}, prepareStaging, verifyStaging, lockOptions }) {
-  const ops = { cp, lstat, mkdir, open, readFile, rename, rm, ...fsOps };
+  const ops = { cp, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, ...fsOps };
   const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const stagingDir = `${targetDir}.staging-${suffix}`;
-  const backupDir = `${targetDir}.backup`;
+  const backupDir = `${targetDir}.backup-${suffix}`;
   const lockPath = `${targetDir}.deploy-lock`;
   let targetMoved = false;
   let promoted = false;
@@ -22,11 +22,7 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
   try {
     await lease.assertOwned();
     await ops.rm(stagingDir, { recursive: true, force: true });
-    if (!(await pathExists(ops, targetDir)) && (await pathExists(ops, backupDir))) {
-      await ops.rename(backupDir, targetDir);
-    } else if (await pathExists(ops, backupDir)) {
-      await ops.rm(backupDir, { recursive: true, force: true });
-    }
+    await reconcileBackupArtifacts(ops, targetDir);
 
     await ops.cp(sourceDir, stagingDir, { recursive: true });
     await prepareStaging?.(stagingDir);
@@ -40,6 +36,7 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
     await lease.assertOwned();
     await ops.rename(stagingDir, targetDir);
     promoted = true;
+    await lease.assertOwned();
     if (targetMoved) await ops.rm(backupDir, { recursive: true, force: true });
   } catch (error) {
     if (targetMoved && !promoted && (await lease.isOwned())) {
@@ -50,11 +47,26 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
   } finally {
     try {
       await ops.rm(stagingDir, { recursive: true, force: true });
-      if (promoted) await ops.rm(backupDir, { recursive: true, force: true });
+      if (promoted && (await lease.isOwned())) await ops.rm(backupDir, { recursive: true, force: true });
     } finally {
       await lease.release();
     }
   }
+}
+
+async function reconcileBackupArtifacts(fsOps, targetDir) {
+  const parent = path.dirname(targetDir);
+  const basename = path.basename(targetDir);
+  const names = await fsOps.readdir(parent);
+  const backupNames = names.filter((name) => name === `${basename}.backup` || name.startsWith(`${basename}.backup-`));
+  if (backupNames.length === 0) return;
+  const backups = backupNames.map((name) => path.join(parent, name));
+  if (!(await pathExists(fsOps, targetDir))) {
+    if (backups.length !== 1) throw new Error(`Cannot recover deployment: found ${backups.length} backup directories for ${targetDir}.`);
+    await fsOps.rename(backups[0], targetDir);
+    return;
+  }
+  for (const backup of backups) await fsOps.rm(backup, { recursive: true, force: true });
 }
 
 async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retryMs = 25, leaseMs = 120_000, heartbeatMs = Math.min(10_000, leaseMs / 3) } = {}) {
@@ -73,11 +85,13 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
       await handle.writeFile(JSON.stringify(owner), "utf8");
       await handle.sync();
       await handle.close();
+      await writeHeartbeat(fsOps, heartbeatPathFor(lockPath, owner.token), owner);
       return createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs);
     } catch (error) {
       await handle?.close().catch(() => undefined);
       if (created) {
         await fsOps.rm(lockPath, { force: true });
+        await removeHeartbeatArtifacts(fsOps, lockPath, owner.token);
         throw error;
       }
       if (error?.code !== "EEXIST") throw error;
@@ -94,6 +108,7 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
       try {
         await fsOps.rename(lockPath, abandonedPath);
         await fsOps.rm(abandonedPath, { force: true });
+        if (confirmed.token) await removeHeartbeatArtifacts(fsOps, lockPath, confirmed.token);
         continue;
       } catch (error) {
         if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") continue;
@@ -109,6 +124,7 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
 }
 
 function createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs) {
+  const heartbeatPath = heartbeatPathFor(lockPath, owner.token);
   let stopped = false;
   let leaseError;
   let heartbeat = Promise.resolve();
@@ -116,10 +132,9 @@ function createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs) {
     heartbeat = heartbeat
       .then(async () => {
         if (stopped) return;
-        const current = await readLockOwner(fsOps, lockPath);
-        if (!current || current.token !== owner.token) throw new Error(`Deployment lease was lost: ${lockPath}`);
-        owner.updatedAt = Date.now();
-        await writeLockOwner(fsOps, lockPath, owner);
+        const currentToken = await readLockToken(fsOps, lockPath);
+        if (currentToken !== owner.token) throw new Error(`Deployment lease was lost: ${lockPath}`);
+        await writeHeartbeat(fsOps, heartbeatPath, owner);
       })
       .catch((error) => {
         leaseError = error;
@@ -131,8 +146,14 @@ function createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs) {
     async assertOwned() {
       await heartbeat;
       if (leaseError) throw leaseError;
-      const current = await readLockOwner(fsOps, lockPath);
-      if (!current || current.token !== owner.token || Date.now() - current.updatedAt > leaseMs) {
+      const currentToken = await readLockToken(fsOps, lockPath);
+      const currentHeartbeat = await readHeartbeat(fsOps, heartbeatPath);
+      if (
+        currentToken !== owner.token ||
+        currentHeartbeat?.token !== owner.token ||
+        !Number.isFinite(currentHeartbeat.updatedAt) ||
+        Date.now() - currentHeartbeat.updatedAt > leaseMs
+      ) {
         throw new Error(`Deployment lease was lost: ${lockPath}`);
       }
     },
@@ -148,8 +169,9 @@ function createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs) {
       stopped = true;
       clearInterval(timer);
       await heartbeat;
-      const current = await readLockOwner(fsOps, lockPath);
-      if (current?.token === owner.token) await fsOps.rm(lockPath, { force: true });
+      const currentToken = await readLockToken(fsOps, lockPath);
+      if (currentToken === owner.token) await fsOps.rm(lockPath, { force: true });
+      await removeHeartbeatArtifacts(fsOps, lockPath, owner.token);
     }
   };
 }
@@ -159,9 +181,24 @@ async function readLockObservation(fsOps, lockPath) {
     const content = await fsOps.readFile(lockPath, "utf8");
     const stat = await fsOps.lstat(lockPath);
     const owner = parseLockOwner(content);
+    let updatedAt = owner?.updatedAt ?? stat.mtimeMs;
+    let heartbeatFingerprint = "";
+    if (owner?.token) {
+      const heartbeatPath = heartbeatPathFor(lockPath, owner.token);
+      try {
+        const heartbeatContent = await fsOps.readFile(heartbeatPath, "utf8");
+        const heartbeatStat = await fsOps.lstat(heartbeatPath);
+        const heartbeatOwner = parseLockOwner(heartbeatContent);
+        if (heartbeatOwner?.token === owner.token) updatedAt = Math.max(updatedAt, heartbeatStat.mtimeMs);
+        heartbeatFingerprint = `${heartbeatStat.mtimeMs}:${heartbeatStat.size}:${heartbeatContent}`;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
     return {
-      updatedAt: owner?.updatedAt ?? stat.mtimeMs,
-      fingerprint: `${stat.mtimeMs}:${stat.size}:${content}`
+      token: owner?.token,
+      updatedAt,
+      fingerprint: `${stat.mtimeMs}:${stat.size}:${content}:${heartbeatFingerprint}`
     };
   } catch (error) {
     if (error?.code === "ENOENT") return undefined;
@@ -172,9 +209,20 @@ async function readLockObservation(fsOps, lockPath) {
   }
 }
 
-async function readLockOwner(fsOps, lockPath) {
+async function readLockToken(fsOps, lockPath) {
   try {
-    return parseLockOwner(await fsOps.readFile(lockPath, "utf8"));
+    return parseLockOwner(await fsOps.readFile(lockPath, "utf8"))?.token;
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function readHeartbeat(fsOps, heartbeatPath) {
+  try {
+    const owner = parseLockOwner(await fsOps.readFile(heartbeatPath, "utf8"));
+    const stat = await fsOps.lstat(heartbeatPath);
+    return owner ? { token: owner.token, updatedAt: stat.mtimeMs } : undefined;
   } catch (error) {
     if (error?.code === "ENOENT") return undefined;
     throw error;
@@ -184,21 +232,36 @@ async function readLockOwner(fsOps, lockPath) {
 function parseLockOwner(content) {
   try {
     const owner = JSON.parse(content);
-    return typeof owner?.token === "string" && Number.isFinite(owner?.updatedAt) ? owner : undefined;
+    if (typeof owner?.token !== "string") return undefined;
+    return { token: owner.token, updatedAt: Number.isFinite(owner.updatedAt) ? owner.updatedAt : undefined };
   } catch {
     return undefined;
   }
 }
 
-async function writeLockOwner(fsOps, lockPath, owner) {
-  const handle = await fsOps.open(lockPath, "r+");
+async function writeHeartbeat(fsOps, heartbeatPath, owner) {
+  let handle;
   try {
-    await handle.truncate(0);
-    await handle.writeFile(JSON.stringify(owner), "utf8");
+    handle = await fsOps.open(heartbeatPath, "wx");
+    await handle.writeFile(JSON.stringify({ token: owner.token }), "utf8");
     await handle.sync();
-  } finally {
     await handle.close();
+    return;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (error?.code !== "EEXIST") throw error;
   }
+  const now = new Date();
+  await fsOps.utimes(heartbeatPath, now, now);
+}
+
+function heartbeatPathFor(lockPath, token) {
+  return `${lockPath}.heartbeat-${token}`;
+}
+
+async function removeHeartbeatArtifacts(fsOps, lockPath, token) {
+  const heartbeatPath = heartbeatPathFor(lockPath, token);
+  await fsOps.rm(heartbeatPath, { force: true });
 }
 
 function delay(ms) {

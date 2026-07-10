@@ -106,6 +106,7 @@ let globalCacheGeneration = 0;
 let persistentMutationQueue: Promise<void> = Promise.resolve();
 const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
 const PERSISTENT_CACHE_V2_PREFIX = "codepath-cache-v2:";
+const PERSISTENT_CACHE_V2_ENCODED_PREFIX = "codepath-cache-v2:e:";
 const CACHE_SCHEMA_VERSION = 2;
 export const ANALYZER_VERSION = "2026-07-09-adversarial-v3";
 export const PROMPT_VERSION = createPromptVersion();
@@ -952,31 +953,31 @@ function fileIdentity(file: TreeFile, identityScope = ""): string {
 }
 
 function persistentTreeKey(repo: RepoRef, branch: string, treeSha: string): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${repoCacheKey(repo, branch)}:tree:${treeSha}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${repoCacheKey(repo, branch)}:tree:${treeSha}`;
 }
 
 function persistentFileKey(repo: RepoRef, branch: string, file: TreeFile, identityScope = ""): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${fileCacheKey(repo, branch, file, identityScope)}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${fileCacheKey(repo, branch, file, identityScope)}`;
 }
 
 function persistentOverviewKey(repo: RepoRef, branch: string, treeSha: string, mode: ProjectAnalysisMode, inputDigest: string): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${overviewCacheKey(repo, branch, treeSha, mode, inputDigest)}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${overviewCacheKey(repo, branch, treeSha, mode, inputDigest)}`;
 }
 
 function persistentFeatureKey(repo: RepoRef, branch: string, treeSha: string, feature: string, inputDigest: string): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${featureCacheKey(repo, branch, treeSha, feature, inputDigest)}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${featureCacheKey(repo, branch, treeSha, feature, inputDigest)}`;
 }
 
 function persistentFileExplanationKey(repo: RepoRef, branch: string, blobShaOrTreeSha: string, path: string, inputDigest: string): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${fileExplanationCacheKey(repo, branch, blobShaOrTreeSha, path, inputDigest)}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${fileExplanationCacheKey(repo, branch, blobShaOrTreeSha, path, inputDigest)}`;
 }
 
 function persistentQuestionKey(repo: RepoRef, branch: string, treeSha: string, question: string, context: string, inputDigest: string): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${questionCacheKey(repo, branch, treeSha, question, context, inputDigest)}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${questionCacheKey(repo, branch, treeSha, question, context, inputDigest)}`;
 }
 
 function persistentSkillBlueprintKey(repo: RepoRef, branch: string, treeSha: string, feature: string, mode: BlueprintMode, inputDigest: string): string {
-  return `${PERSISTENT_CACHE_V2_PREFIX}${skillBlueprintCacheKey(repo, branch, treeSha, feature, mode, inputDigest)}`;
+  return `${PERSISTENT_CACHE_V2_ENCODED_PREFIX}${skillBlueprintCacheKey(repo, branch, treeSha, feature, mode, inputDigest)}`;
 }
 
 function canUseTrustedPersistentCache(gh: SourceClient, settings: Settings): boolean {
@@ -1476,8 +1477,11 @@ function sameRepositoryName(left: string, right: string): boolean {
 }
 
 function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; branch: string } & CacheEntry) | undefined {
-  const prefix = key.startsWith(PERSISTENT_CACHE_V2_PREFIX)
-    ? PERSISTENT_CACHE_V2_PREFIX
+  const encoded = key.startsWith(PERSISTENT_CACHE_V2_ENCODED_PREFIX);
+  const prefix = encoded
+    ? PERSISTENT_CACHE_V2_ENCODED_PREFIX
+    : key.startsWith(PERSISTENT_CACHE_V2_PREFIX)
+      ? PERSISTENT_CACHE_V2_PREFIX
     : key.startsWith(PERSISTENT_CACHE_PREFIX)
       ? PERSISTENT_CACHE_PREFIX
       : "";
@@ -1494,8 +1498,9 @@ function parsePersistentCacheKey(key: string): ({ owner: string; repo: string; b
 
   const owner = repoBranch.slice(0, slashIndex);
   const repo = repoBranch.slice(slashIndex + 1, atIndex);
-  const branch = decodeCachePart(repoBranch.slice(atIndex + 1));
-  const item = prefix === PERSISTENT_CACHE_V2_PREFIX ? parseV2CacheItemSuffix(key, suffix) : parseLegacyCacheItemSuffix(key, suffix);
+  const rawBranch = repoBranch.slice(atIndex + 1);
+  const branch = encoded ? decodeCachePart(rawBranch) : rawBranch;
+  const item = prefix !== PERSISTENT_CACHE_PREFIX ? parseV2CacheItemSuffix(key, suffix) : parseLegacyCacheItemSuffix(key, suffix);
   return { owner, repo, branch, ...item };
 }
 
