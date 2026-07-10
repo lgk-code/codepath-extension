@@ -699,7 +699,8 @@ async function createSourceClient(repo: RepoRef, settings: Settings): Promise<So
       getRepo: () => zipClient.getRepo(),
       getBranchSnapshot: (_owner, _repo, branch) => zipClient.getBranchSnapshot(repo.owner, repo.repo, branch),
       getTree: (_owner, _repo, branch) => zipClient.getTree(repo.owner, repo.repo, branch),
-      getFile: (_owner, _repo, path, ref) => zipClient.getFile(repo.owner, repo.repo, path, ref)
+      getFile: (_owner, _repo, path, ref) => zipClient.getFile(repo.owner, repo.repo, path, ref),
+      resolveRepoRef: (candidateRepo) => zipClient.resolveRepoRef(candidateRepo)
     };
   }
 }

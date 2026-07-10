@@ -113,6 +113,39 @@ test("ZipGithubClient cancels rejected archive responses", async () => {
   assert.equal(cancelled, true);
 });
 
+test("ZipGithubClient resolves an ordinary file candidate after API rate limiting", async () => {
+  const requested: string[] = [];
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    requested.push(`${init?.method ?? "GET"} ${url}`);
+    if (init?.method === "HEAD" && url.endsWith("/zip/main")) return new Response(null, { status: 200 });
+    if (init?.method === "HEAD" && url.endsWith("/zip/main%2Fsrc")) return new Response(null, { status: 404 });
+    if (url.endsWith("/zip/main")) return zipResponse({ "demo-main/src/app.ts": "export const app = true;" });
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const client = new ZipGithubClient("acme", "demo", "main");
+
+  const resolved = await client.resolveRepoRef({
+    owner: "acme",
+    repo: "demo",
+    branch: "main",
+    path: "src/app.ts",
+    pageType: "file",
+    refCandidates: [
+      { refName: "main", path: "src/app.ts" },
+      { refName: "main/src", path: "app.ts" }
+    ]
+  });
+
+  assert.equal(resolved.branch, "main");
+  assert.equal(resolved.path, "src/app.ts");
+  assert.deepEqual(requested, [
+    "HEAD https://codeload.github.com/acme/demo/zip/main",
+    "HEAD https://codeload.github.com/acme/demo/zip/main%2Fsrc",
+    "GET https://codeload.github.com/acme/demo/zip/main"
+  ]);
+});
+
 function zipResponse(files: Record<string, string>): Response {
   const entries = Object.fromEntries(Object.entries(files).map(([path, content]) => [path, strToU8(content)]));
   const bytes = zipSync(entries);

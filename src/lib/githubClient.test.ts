@@ -198,6 +198,41 @@ test("GithubClient memoizes ref disambiguation within one analysis client", asyn
   assert.equal(fetchCalls, 3);
 });
 
+test("GithubClient filters matching refs before applying the candidate budget", async () => {
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = new URL(String(request));
+    if (url.pathname.endsWith("/git/matching-refs/heads/release")) {
+      return jsonResponse([
+        ...Array.from({ length: 122 }, (_item, index) => ({ ref: `refs/heads/release/noise-${index}` })),
+        { ref: "refs/heads/release/1.100" }
+      ]);
+    }
+    if (url.pathname.endsWith("/git/matching-refs/tags/release")) return jsonResponse([]);
+    if (url.pathname.endsWith("/contents/README.md")) return contentHeadResponse("file");
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const repo = parseGithubUrl("https://github.com/microsoft/vscode/blob/release/1.100/README.md");
+  assert.ok(repo);
+
+  const resolved = await new GithubClient({ githubToken: "" }).resolveRepoRef(repo);
+
+  assert.equal(resolved.branch, "release/1.100");
+  assert.equal(resolved.path, "README.md");
+});
+
+test("GithubClient reads medium-sized files through the bounded raw media route", async () => {
+  const content = "x".repeat(1_377_561);
+  globalThis.fetch = (async (_request: RequestInfo | URL, init?: RequestInit) => {
+    const accept = new Headers(init?.headers).get("accept") ?? "";
+    if (accept.includes("raw")) return new Response(content, { status: 200, headers: { "Content-Type": "application/vnd.github.raw+json" } });
+    return jsonResponse({ type: "file", size: content.length, encoding: "none", content: "" });
+  }) as typeof fetch;
+
+  const result = await new GithubClient({ githubToken: "" }).getFile("acme", "demo", "src/large.ts", "main");
+
+  assert.equal(result.length, content.length);
+});
+
 function candidateFetch(candidates: Record<string, { headSha: string; treeSha: string; path: string }>): typeof fetch {
   return (async (request: RequestInfo | URL) => {
     const url = String(request);

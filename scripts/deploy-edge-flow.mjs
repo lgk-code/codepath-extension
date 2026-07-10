@@ -6,13 +6,24 @@ import path from "node:path";
 const BACKUP_MARKER = ".codepath-deploy-backup.json";
 const inProcessMutationLocks = new Map();
 
-export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTarget }) {
-  await verifyBuildVersion();
-  await build();
-  return syncTarget();
+export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTarget, withDeploymentLock = (action) => action(undefined) }) {
+  return withDeploymentLock(async (mutationMutex) => {
+    await verifyBuildVersion();
+    await build();
+    return syncTarget(mutationMutex);
+  });
 }
 
-export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {}, prepareStaging, verifyStaging, lockOptions }) {
+export async function withDeploymentMutationMutex(targetDir, action, lockOptions) {
+  const mutationMutex = await acquireDeploymentMutationMutex(targetDir, lockOptions);
+  try {
+    return await action(mutationMutex);
+  } finally {
+    await mutationMutex.release();
+  }
+}
+
+export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {}, prepareStaging, verifyStaging, lockOptions, mutationMutex: providedMutationMutex }) {
   const ops = { cp, link, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, writeFile, ...fsOps };
   const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const stagingDir = `${targetDir}.staging-${suffix}`;
@@ -22,7 +33,11 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
   let promoted = false;
 
   await ops.mkdir(path.dirname(targetDir), { recursive: true });
-  const mutationMutex = await acquireDeploymentMutationMutex(targetDir, lockOptions);
+  if (providedMutationMutex && providedMutationMutex.name !== deploymentMutexName(targetDir)) {
+    throw new Error(`Deployment mutation mutex does not match target: ${targetDir}`);
+  }
+  const mutationMutex = providedMutationMutex ?? (await acquireDeploymentMutationMutex(targetDir, lockOptions));
+  const releaseMutationMutex = !providedMutationMutex;
   try {
     const lease = await acquireDeploymentLock(ops, lockPath, lockOptions);
     try {
@@ -69,7 +84,7 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
       }
     }
   } finally {
-    await mutationMutex.release();
+    if (releaseMutationMutex) await mutationMutex.release();
   }
 }
 
@@ -106,18 +121,19 @@ async function reconcileBackupArtifacts(fsOps, targetDir) {
   for (const backup of backups) await fsOps.rm(backup, { recursive: true, force: true });
 }
 
-async function acquireDeploymentMutationMutex(targetDir, { timeoutMs = 30_000 } = {}) {
+async function acquireDeploymentMutationMutex(targetDir, { timeoutMs = 30_000, helperStartupTimeoutMs = 10_000 } = {}) {
   const name = deploymentMutexName(targetDir);
   const local = await acquireInProcessMutex(name, timeoutMs);
   let system;
   try {
-    system = shouldUseWindowsSystemMutex() ? await acquirePowerShellMutex(name, timeoutMs) : undefined;
+    system = shouldUseWindowsSystemMutex() ? await acquirePowerShellMutex(name, timeoutMs, helperStartupTimeoutMs) : undefined;
   } catch (error) {
     await local.release();
     throw error;
   }
 
   return {
+    name,
     async assertOwned() {
       await local.assertOwned();
       await system?.assertOwned();
@@ -195,12 +211,14 @@ function deploymentMutexName(targetDir) {
   return `CodePathDeploy-${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
-function acquirePowerShellMutex(name, timeoutMs) {
+function acquirePowerShellMutex(name, timeoutMs, helperStartupTimeoutMs) {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `$mutex = [System.Threading.Mutex]::new($false, '${name}')`,
     "$acquired = $false",
     "try {",
+    "  [Console]::Out.WriteLine('READY')",
+    "  [Console]::Out.Flush()",
     `  try { $acquired = $mutex.WaitOne(${Math.max(0, Math.floor(timeoutMs))}) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }`,
     "  if (-not $acquired) { [Console]::Out.WriteLine('TIMEOUT'); exit 3 }",
     "  [Console]::Out.WriteLine('ACQUIRED')",
@@ -219,15 +237,16 @@ function acquirePowerShellMutex(name, timeoutMs) {
       windowsHide: true
     });
     let settled = false;
+    let ready = false;
     let stdout = "";
     let stderr = "";
-    const startupTimer = setTimeout(() => fail(new Error(`Timed out starting the deployment mutation mutex helper: ${name}`)), 10_000);
-    startupTimer.unref?.();
+    let phaseTimer = setTimeout(() => fail(new Error(`Timed out starting the deployment mutation mutex helper: ${name}`)), helperStartupTimeoutMs);
+    phaseTimer.unref?.();
 
     const fail = (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(startupTimer);
+      clearTimeout(phaseTimer);
       child.kill();
       reject(error);
     };
@@ -237,13 +256,23 @@ function acquirePowerShellMutex(name, timeoutMs) {
     });
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
-      if (stdout.split(/\r?\n/).includes("TIMEOUT")) {
+      const lines = stdout.split(/\r?\n/);
+      if (!ready && lines.includes("READY")) {
+        ready = true;
+        clearTimeout(phaseTimer);
+        phaseTimer = setTimeout(
+          () => fail(new Error(`Timed out waiting for the deployment mutation mutex helper: ${name}`)),
+          timeoutMs + helperStartupTimeoutMs
+        );
+        phaseTimer.unref?.();
+      }
+      if (lines.includes("TIMEOUT")) {
         fail(new Error(`Timed out waiting for the deployment mutation mutex: ${name}`));
         return;
       }
-      if (!stdout.split(/\r?\n/).includes("ACQUIRED") || settled) return;
+      if (!lines.includes("ACQUIRED") || settled) return;
       settled = true;
-      clearTimeout(startupTimer);
+      clearTimeout(phaseTimer);
       resolve(createPowerShellMutexHandle(child, name));
     });
     child.once("error", (error) => fail(new Error(`Unable to start deployment mutation mutex helper: ${error.message}`)));

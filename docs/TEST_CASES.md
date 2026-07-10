@@ -134,6 +134,8 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - GitHub API 触发 rate limit 且当前是仓库根页面：ZIP fallback 应读取 codeload `HEAD`，状态显示为 `unchecked`，结果不得长期复用。
 - ZIP fallback 收到显式 branch、tag 或 40 位 commit 时，应通过 codeload 通用 exact-ref 路径请求该 ref，不得强制拼接 `refs/heads/`。
 - GitHub API 触发 rate limit 且当前文件 URL 存在 ref/path 歧义：不得用 ZIP 猜测分支，应提示改用 immutable commit URL 或仓库根页面。
+- GitHub API rate limit 后的普通文件 URL 应通过 codeload HEAD 精确检查候选 ref；只有一个 ref 存在且下载后的 ZIP 含目标路径时才允许继续，多 ref 仍保守拒绝。
+- API 文件读取统一使用 raw media type 并限制为 2 MiB；1-2 MiB 文件不能被 JSON `encoding: none` 静默当作空源码，超限必须明确失败。
 
 ## 传输、流式与安全窗口
 
@@ -157,6 +159,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 初始 lock 必须先完整写入候选文件，再通过同目录 hard-link 排他发布；同名但无合法事务 marker 的 `CodePath.backup-*` 目录不得读取、恢复或删除。
 - stale 接管必须先原子移走 token heartbeat 形成 fencing；若移走瞬间 heartbeat 已刷新，应恢复并放弃接管，旧 owner 失去 heartbeat 后不得继续目标变更。
 - 目标变更必须持有按规范化目标路径命名的 Windows system Mutex；Windows 与 WSL 使用同一个 Mutex，owner 进程退出时 helper 必须自动释放。文件 lease 仅用于恢复状态，不得依赖跨 runtime PID 或 PID 未复用假设。
+- 同一个 system Mutex 必须覆盖构建版本校验、`.output` 构建和目标发布整个事务；PowerShell helper 的启动超时与 Mutex 等待超时必须分开，配置的锁等待不能被固定启动计时提前截断。
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须等于 checkout `HEAD` 且是 `origin/main` 的祖先，否则 workflow 在发布前失败。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。

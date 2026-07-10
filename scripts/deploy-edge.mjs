@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { replaceDirectoryAtomic, runVerifiedDeployment } from "./deploy-edge-flow.mjs";
+import { replaceDirectoryAtomic, runVerifiedDeployment, withDeploymentMutationMutex } from "./deploy-edge-flow.mjs";
 import { validateDeployTarget } from "./deploy-target.mjs";
 import { DEV_RELOAD_MARKER_PATH, createDevReloadMarker, extractBuildId, parseDevReloadMarker } from "./dev-reload-marker.mjs";
 
@@ -19,9 +19,10 @@ const { targetDir: resolvedTargetDir } = await validateDeployTarget({ projectRoo
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 await runVerifiedDeployment({
+  withDeploymentLock: (action) => withDeploymentMutationMutex(resolvedTargetDir, action),
   verifyBuildVersion: () => run(npmCommand, ["run", "verify:build-version"]),
   build: () => run(npmCommand, ["run", "build"]),
-  syncTarget: async () => {
+  syncTarget: async (mutationMutex) => {
     if (!existsSync(outputDir)) {
       throw new Error(`Build output not found: ${outputDir}`);
     }
@@ -33,6 +34,7 @@ await runVerifiedDeployment({
     await replaceDirectoryAtomic({
       sourceDir: outputDir,
       targetDir: resolvedTargetDir,
+      mutationMutex,
       prepareStaging: (stagingDir) =>
         writeFile(path.join(stagingDir, DEV_RELOAD_MARKER_PATH), `${JSON.stringify(marker, null, 2)}\n`, "utf8"),
       verifyStaging: async (stagingDir) => {

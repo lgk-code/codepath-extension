@@ -1,5 +1,5 @@
 import type { RepoRef, RepoSnapshot, SourceClient, TreeFile, Settings } from "../types";
-import { discardResponse, fetchWithTimeout, readJsonResponse, safeResponseText } from "./fetchUtils";
+import { discardResponse, fetchWithTimeout, readJsonResponse, readResponseBytesLimited, safeResponseText } from "./fetchUtils";
 import { isValidGithubRepositoryIdentity } from "./githubUrl";
 
 type GithubRepo = {
@@ -63,8 +63,9 @@ type GithubContentResponse = {
 };
 
 const MAX_EXISTING_REF_CANDIDATES = 8;
-const MAX_MATCHING_REFS_PER_NAMESPACE = 100;
 const MAX_REF_METADATA_BYTES = 512 * 1024;
+const MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_SOURCE_FILE_JSON_BYTES = 3 * 1024 * 1024;
 
 export class GithubClient implements SourceClient {
   readonly kind = "github-api" as const;
@@ -160,19 +161,15 @@ export class GithubClient implements SourceClient {
     }
     const [heads, tags, abbreviatedCommit] = await Promise.all([
       this.requestOptional<GithubRefResponse[]>(
-        `${repoApiBase(owner, repo)}/git/matching-refs/${encodePath(`heads/${prefix}`)}?per_page=${MAX_MATCHING_REFS_PER_NAMESPACE}`,
+        `${repoApiBase(owner, repo)}/git/matching-refs/${encodePath(`heads/${prefix}`)}`,
         MAX_REF_METADATA_BYTES
       ),
       this.requestOptional<GithubRefResponse[]>(
-        `${repoApiBase(owner, repo)}/git/matching-refs/${encodePath(`tags/${prefix}`)}?per_page=${MAX_MATCHING_REFS_PER_NAMESPACE}`,
+        `${repoApiBase(owner, repo)}/git/matching-refs/${encodePath(`tags/${prefix}`)}`,
         MAX_REF_METADATA_BYTES
       ),
       selectedRef && /^[0-9a-f]{7,39}$/i.test(selectedRef) ? this.getRepoCommit(owner, repo, selectedRef) : Promise.resolve(undefined)
     ]);
-    if ((heads?.length ?? 0) >= MAX_MATCHING_REFS_PER_NAMESPACE || (tags?.length ?? 0) >= MAX_MATCHING_REFS_PER_NAMESPACE) {
-      throw new Error("Ambiguous GitHub ref/path matched too many repository refs to validate safely.");
-    }
-
     const existingNames = new Set<string>();
     for (const item of heads ?? []) {
       if (item.ref?.startsWith("refs/heads/")) existingNames.add(item.ref.slice("refs/heads/".length));
@@ -209,10 +206,22 @@ export class GithubClient implements SourceClient {
 
   async getFile(owner: string, repo: string, path: string, ref: string): Promise<string> {
     const url = `${repoApiBase(owner, repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`;
-    const data = await this.request<GithubContentResponse>(url);
-    if (!data.content) return "";
-    if (data.encoding !== "base64") return data.content;
-    return decodeBase64(data.content);
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.raw+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    };
+    if (this.settings.githubToken) headers.Authorization = `Bearer ${this.settings.githubToken}`;
+    const response = await fetchWithTimeout(url, { headers }, 30_000);
+    if (!response.ok) throw new Error(`GitHub API ${response.status}: ${await safeResponseText(response)}`);
+
+    if (response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+      const data = await readJsonResponse<GithubContentResponse>(response, MAX_SOURCE_FILE_JSON_BYTES);
+      if (!data.content || data.encoding === "none") throw new Error(`GitHub did not return readable content for ${path}.`);
+      if (data.encoding !== "base64") return data.content;
+      return decodeBase64(data.content, MAX_SOURCE_FILE_BYTES);
+    }
+    const bytes = await readResponseBytesLimited(response, MAX_SOURCE_FILE_BYTES);
+    return new TextDecoder().decode(bytes);
   }
 
   private async request<T>(url: string, jsonLimit?: number): Promise<T> {
@@ -338,8 +347,9 @@ function encodePath(path: string): string {
   return parts.map((part) => encodeURIComponent(part)).join("/");
 }
 
-function decodeBase64(value: string): string {
+function decodeBase64(value: string, maxBytes = Number.POSITIVE_INFINITY): string {
   const binary = atob(value.replaceAll("\n", ""));
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  if (bytes.byteLength > maxBytes) throw new Error(`GitHub file exceeded ${maxBytes} bytes.`);
   return new TextDecoder().decode(bytes);
 }

@@ -4,7 +4,7 @@ import { cp, mkdir, open as fsOpen, readFile, rename, rm, utimes, writeFile } fr
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { replaceDirectoryAtomic, runVerifiedDeployment } from "./deploy-edge-flow.mjs";
+import { replaceDirectoryAtomic, runVerifiedDeployment, withDeploymentMutationMutex } from "./deploy-edge-flow.mjs";
 
 test("runVerifiedDeployment stops before build and sync when version verification fails", async () => {
   const events = [];
@@ -22,6 +22,33 @@ test("runVerifiedDeployment stops before build and sync when version verificatio
   );
 
   assert.deepEqual(events, ["verify"]);
+});
+
+test("runVerifiedDeployment serializes verification, build, and sync under one deployment mutex", async () => {
+  const root = await temporaryRoot();
+  const targetDir = path.join(root, "CodePath");
+  let activeBuilds = 0;
+  let maxActiveBuilds = 0;
+
+  const runDeployment = () =>
+    runVerifiedDeployment({
+      withDeploymentLock: (action) => withDeploymentMutationMutex(targetDir, action, { timeoutMs: 2_000 }),
+      verifyBuildVersion: async () => undefined,
+      build: async () => {
+        activeBuilds += 1;
+        maxActiveBuilds = Math.max(maxActiveBuilds, activeBuilds);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        activeBuilds -= 1;
+      },
+      syncTarget: async () => undefined
+    });
+
+  try {
+    await Promise.all([runDeployment(), runDeployment()]);
+    assert.equal(maxActiveBuilds, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("replaceDirectoryAtomic preserves the old target when staging copy fails", async () => {
@@ -699,6 +726,46 @@ test(
       assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "b");
     } finally {
       first.kill();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  "the Windows mutex wait may outlive helper startup without timing out early",
+  { skip: process.platform !== "win32" && !process.env.WSL_INTEROP && !process.env.WSL_DISTRO_NAME },
+  async () => {
+    const root = await temporaryRoot();
+    const targetDir = path.join(root, "CodePath");
+    const readyPath = path.join(root, "owner-ready");
+    const releasePath = path.join(root, "owner-release");
+    const moduleUrl = new URL("./deploy-edge-flow.mjs", import.meta.url).href;
+    const ownerCode = `
+      import { access, writeFile } from "node:fs/promises";
+      import { withDeploymentMutationMutex } from ${JSON.stringify(moduleUrl)};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      await withDeploymentMutationMutex(${JSON.stringify(targetDir)}, async () => {
+        await writeFile(${JSON.stringify(readyPath)}, "ready");
+        while (true) {
+          try { await access(${JSON.stringify(releasePath)}); break; } catch { await sleep(5); }
+        }
+      }, { timeoutMs: 5_000 });
+    `;
+    const owner = startNodeModule(ownerCode);
+
+    try {
+      await waitForPath(readyPath, 5_000);
+      const releaseTimer = setTimeout(() => void writeFile(releasePath, "release"), 2_000);
+      const startedAt = Date.now();
+      await withDeploymentMutationMutex(targetDir, async () => undefined, { timeoutMs: 5_000, helperStartupTimeoutMs: 1_500 });
+      clearTimeout(releaseTimer);
+
+      assert.equal(Date.now() - startedAt >= 1_500, true);
+      const ownerResult = await waitForChild(owner);
+      assert.equal(ownerResult.code, 0, ownerResult.stderr);
+    } finally {
+      await writeFile(releasePath, "release").catch(() => undefined);
+      owner.kill();
       await rm(root, { recursive: true, force: true });
     }
   }

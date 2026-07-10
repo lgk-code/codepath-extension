@@ -1,5 +1,5 @@
 import { unzipSync, strFromU8 } from "fflate";
-import type { RepoSnapshot, SourceClient, TreeFile } from "../types";
+import type { RepoRef, RepoSnapshot, SourceClient, TreeFile } from "../types";
 import { discardResponse, fetchWithTimeout, readResponseBytesLimited } from "./fetchUtils";
 import { isUsefulPath } from "./fileRules";
 import { isValidGithubRepositoryIdentity } from "./githubUrl";
@@ -14,6 +14,7 @@ const MAX_ZIP_BYTES = 25 * 1024 * 1024;
 const MAX_UNZIPPED_BYTES = 80 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 5000;
 const MAX_ZIP_ENTRY_BYTES = 2 * 1024 * 1024;
+const MAX_ZIP_REF_CANDIDATES = 20;
 
 export class ZipGithubClient implements SourceClient {
   readonly kind = "github-zip" as const;
@@ -25,7 +26,7 @@ export class ZipGithubClient implements SourceClient {
   constructor(
     private readonly owner: string,
     private readonly repo: string,
-    private readonly requestedBranch?: string
+    private requestedBranch?: string
   ) {
     this.resolvedBranch = requestedBranch || "HEAD";
   }
@@ -67,6 +68,47 @@ export class ZipGithubClient implements SourceClient {
     return strFromU8(entry.content);
   }
 
+  async resolveRepoRef(repo: RepoRef): Promise<RepoRef> {
+    const candidates = Array.from(
+      new Map((repo.refCandidates ?? []).map((candidate) => [`${candidate.refName}\0${candidate.path}`, candidate])).values()
+    );
+    if (candidates.length <= 1) return repo;
+    if (candidates.length > MAX_ZIP_REF_CANDIDATES) {
+      throw new Error("Ambiguous GitHub ref/path has too many candidates for ZIP fallback validation.");
+    }
+
+    const existing = [];
+    for (const candidate of candidates) {
+      const response = await fetchWithTimeout(archiveUrl(this.owner, this.repo, candidate.refName), { method: "HEAD" }, 15_000);
+      if (response.ok) existing.push(candidate);
+      else if (response.status !== 404) {
+        const status = `${response.status} ${response.statusText}`.trim();
+        await discardResponse(response);
+        throw new Error(`Unable to validate ZIP ref ${candidate.refName}: ${status}`);
+      }
+      await discardResponse(response);
+      if (existing.length > 1) break;
+    }
+    if (existing.length !== 1) {
+      const reason = existing.length === 0 ? "no candidate ref exists" : "multiple candidate refs exist";
+      throw new Error(`Ambiguous GitHub ref/path cannot be validated by ZIP fallback: ${reason}.`);
+    }
+
+    const selected = existing[0];
+    if (!selected) throw new Error("ZIP fallback did not retain the validated ref candidate.");
+    this.requestedBranch = selected.refName;
+    this.resolvedBranch = selected.refName;
+    this.entries = null;
+    this.snapshotIdentity = "";
+    const entries = await this.ensureEntries();
+    const pathExists =
+      repo.pageType === "file"
+        ? entries.some((entry) => entry.path === selected.path)
+        : !selected.path || entries.some((entry) => entry.path.startsWith(`${selected.path}/`));
+    if (!pathExists) throw new Error(`ZIP ref ${selected.refName} did not contain the requested ${repo.pageType} path ${selected.path}.`);
+    return { ...repo, branch: selected.refName, path: selected.path, refCandidates: [selected] };
+  }
+
   private async ensureEntries(): Promise<ZipEntry[]> {
     if (this.entries) return this.entries;
     if (!isValidGithubRepositoryIdentity(this.owner, this.repo)) {
@@ -78,11 +120,7 @@ export class ZipGithubClient implements SourceClient {
 
     for (const branch of branches) {
       try {
-        const archiveUrl =
-          branch === "HEAD"
-            ? `https://codeload.github.com/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/zip/HEAD`
-            : `https://codeload.github.com/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/zip/${encodeURIComponent(branch)}`;
-        const response = await fetchWithTimeout(archiveUrl, {}, 45_000);
+        const response = await fetchWithTimeout(archiveUrl(this.owner, this.repo, branch), {}, 45_000);
         if (!response.ok) {
           lastError = `${response.status} ${response.statusText}`;
           await discardResponse(response);
@@ -147,6 +185,11 @@ export class ZipGithubClient implements SourceClient {
 
     throw new Error(`Unable to download public repository zip. Last error: ${lastError}`);
   }
+}
+
+function archiveUrl(owner: string, repo: string, branch: string): string {
+  const ref = branch === "HEAD" ? "HEAD" : encodeURIComponent(branch);
+  return `https://codeload.github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/zip/${ref}`;
 }
 
 function stripRoot(path: string): string {
