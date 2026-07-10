@@ -1084,6 +1084,110 @@ test("GitHub rate-limit fallback survives an unreadable error response body", as
   assert.equal(result.timing?.cacheStatus, "unchecked");
 });
 
+test("model errors mentioning GitHub rate limits never trigger source fallback", async () => {
+  let modelCalls = 0;
+  let codeloadCalls = 0;
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-main" }],
+    files: { "README.md": "# API content" }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (url === "https://models.example/v1/chat/completions") {
+      modelCalls += 1;
+      return new Response("GitHub model rate limit 429", { status: 429 });
+    }
+    if (url.startsWith("https://codeload.github.com/")) {
+      codeloadCalls += 1;
+      return zipResponse({ "demo-main/README.md": "# ZIP content" });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  await assert.rejects(() => analyzeProject(repo, settings), /模型接口 429/);
+
+  assert.equal(modelCalls, 1);
+  assert.equal(codeloadCalls, 0);
+});
+
+test("explainFile treats a cache record with missing basis files as a miss", async () => {
+  const key = "codepath-cache-v2:e:acme/demo@main:file:blob-current:src/app.ts";
+  const capturedAt = "2026-07-10T00:00:00.000Z";
+  installChromeStorageMock({
+    [key]: {
+      schemaVersion: 2,
+      kind: "file",
+      value: "stale malformed content",
+      basis: {
+        snapshot: {
+          owner: "acme",
+          repo: "demo",
+          refName: "main",
+          headSha: "blob-current",
+          treeSha: "blob-current",
+          capturedAt,
+          lastValidatedAt: capturedAt
+        },
+        inputDigest: "blob-current",
+        promptVersion: PROMPT_VERSION,
+        analyzerVersion: ANALYZER_VERSION
+      }
+    }
+  });
+  const prompts: string[] = [];
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "src/app.ts", type: "blob", size: 24, sha: "blob-current" }],
+    files: { "src/app.ts": "export const current = true;" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: (body) => prompts.push(JSON.stringify(body.messages ?? []))
+  });
+
+  await explainFile({ ...repo, pageType: "file", path: "src/app.ts" }, settings);
+
+  assert.match(prompts[0] ?? "", /current = true/);
+  assert.doesNotMatch(prompts[0] ?? "", /stale malformed content/);
+});
+
+test("explainFile treats a cache record with a non-string file payload as a miss", async () => {
+  const key = "codepath-cache-v2:e:acme/demo@main:file:blob-current:src/app.ts";
+  const capturedAt = "2026-07-10T00:00:00.000Z";
+  installChromeStorageMock({
+    [key]: {
+      schemaVersion: 2,
+      kind: "file",
+      value: 42,
+      basis: {
+        snapshot: {
+          owner: "acme",
+          repo: "demo",
+          refName: "main",
+          headSha: "blob-current",
+          treeSha: "blob-current",
+          capturedAt,
+          lastValidatedAt: capturedAt
+        },
+        files: [{ path: "src/app.ts", blobSha: "blob-current", size: 24 }],
+        inputDigest: "blob-current",
+        promptVersion: PROMPT_VERSION,
+        analyzerVersion: ANALYZER_VERSION
+      }
+    }
+  });
+  const prompts: string[] = [];
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "src/app.ts", type: "blob", size: 24, sha: "blob-current" }],
+    files: { "src/app.ts": "export const current = true;" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    onModelRequest: (body) => prompts.push(JSON.stringify(body.messages ?? []))
+  });
+
+  await explainFile({ ...repo, pageType: "file", path: "src/app.ts" }, settings);
+
+  assert.match(prompts[0] ?? "", /current = true/);
+});
+
 test("analyzeProject reuses the successful API repository probe", async () => {
   let repoRequests = 0;
   const baseFetch = mockAnalyzeProjectFetch({

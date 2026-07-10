@@ -211,6 +211,8 @@ export type CacheDeleteResult = {
 export type RuntimeRequest =
   | { type: "get-settings" }
   | { type: "save-settings"; settings: Settings }
+  | { type: "open-secret-editor"; field: "apiKey" | "githubToken" }
+  | { type: "update-secret"; field: "apiKey" | "githubToken"; value: string }
   | { type: "list-models"; settings: Settings }
   | { type: "test-settings"; repo?: RepoRef }
   | { type: "clear-cache"; scope: CacheClearScope; repo?: RepoRef }

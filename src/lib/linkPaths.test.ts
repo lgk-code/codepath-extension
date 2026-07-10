@@ -29,7 +29,7 @@ test("rehypeLinkCodePaths rewrites explicit markdown links to the analyzed commi
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
   const anchor = tree.children[0];
@@ -37,7 +37,7 @@ test("rehypeLinkCodePaths rewrites explicit markdown links to the analyzed commi
 
   assert.equal(
     anchor.properties.href,
-    "https://github.com/acme/demo/blob/abcdef1234567890/src/app.ts"
+    "https://github.com/acme/demo/blob/abcdef1234567890abcdef1234567890abcdef12/src/app.ts"
   );
 });
 
@@ -54,13 +54,13 @@ test("rehypeLinkCodePaths rewrites explicit relative markdown links with non-pat
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
   assert.equal(
     tree.children[0]?.properties.href,
-    "https://github.com/acme/demo/blob/abcdef1234567890/src/app.ts"
+    "https://github.com/acme/demo/blob/abcdef1234567890abcdef1234567890abcdef12/src/app.ts"
   );
 });
 
@@ -77,17 +77,17 @@ test("rehypeLinkCodePaths extracts file paths from same-repo links that use slas
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
   assert.equal(
     tree.children[0]?.properties.href,
-    "https://github.com/acme/demo/blob/abcdef1234567890/packages/ui/src/app.ts"
+    "https://github.com/acme/demo/blob/abcdef1234567890abcdef1234567890abcdef12/packages/ui/src/app.ts"
   );
 });
 
-test("rehypeLinkCodePaths leaves ambiguous slash-branch GitHub links untouched", () => {
+test("rehypeLinkCodePaths makes ambiguous slash-branch GitHub links inert", () => {
   const tree = {
     type: "root",
     children: [
@@ -100,14 +100,12 @@ test("rehypeLinkCodePaths leaves ambiguous slash-branch GitHub links untouched",
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890") as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12") as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
-  assert.equal(
-    tree.children[0]?.properties.href,
-    "https://github.com/acme/demo/blob/feature/cache-fix/foo/bar.ts"
-  );
+  assert.equal(tree.children[0]?.tagName, "span");
+  assert.equal(tree.children[0]?.properties.href, undefined);
 });
 
 test("rehypeLinkCodePaths uses known source paths to disambiguate slash-branch GitHub links", () => {
@@ -123,17 +121,17 @@ test("rehypeLinkCodePaths uses known source paths to disambiguate slash-branch G
     ]
   };
 
-  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890", ["foo/bar.ts"]) as unknown as () => unknown;
+  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }, "abcdef1234567890abcdef1234567890abcdef12", ["foo/bar.ts"]) as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
   assert.equal(
     tree.children[0]?.properties.href,
-    "https://github.com/acme/demo/blob/abcdef1234567890/foo/bar.ts"
+    "https://github.com/acme/demo/blob/abcdef1234567890abcdef1234567890abcdef12/foo/bar.ts"
   );
 });
 
-test("rehypeLinkCodePaths leaves slash-branch GitHub links untouched when known source suffixes are ambiguous", () => {
+test("rehypeLinkCodePaths makes ambiguous known source suffix links inert", () => {
   const tree = {
     type: "root",
     children: [
@@ -148,14 +146,73 @@ test("rehypeLinkCodePaths leaves slash-branch GitHub links untouched when known 
 
   const plugin = rehypeLinkCodePaths(
     { owner: "acme", repo: "demo", pageType: "repo" },
-    "abcdef1234567890",
+    "abcdef1234567890abcdef1234567890abcdef12",
     ["foo/bar.ts", "cache-fix/foo/bar.ts"]
   ) as unknown as () => unknown;
   const transformer = plugin() as (tree: unknown) => void;
   transformer(tree);
 
-  assert.equal(
-    tree.children[0]?.properties.href,
-    "https://github.com/acme/demo/blob/feature/cache-fix/foo/bar.ts"
-  );
+  assert.equal(tree.children[0]?.tagName, "span");
+  assert.equal(tree.children[0]?.properties.href, undefined);
+});
+
+test("rehypeLinkCodePaths renders external model links as inert text", () => {
+  const tree = {
+    type: "root",
+    children: [
+      {
+        type: "element",
+        tagName: "a",
+        properties: { href: "https://tracker.example/collect" },
+        children: [{ type: "text", value: "external" }]
+      }
+    ]
+  };
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12"
+  ) as unknown as () => unknown;
+  const transformer = plugin() as (tree: unknown) => void;
+
+  transformer(tree);
+
+  assert.equal(tree.children[0]?.tagName, "span");
+  assert.equal("href" in (tree.children[0]?.properties ?? {}), false);
+});
+
+test("rehypeLinkCodePaths removes model-provided image sources", () => {
+  const tree = {
+    type: "root",
+    children: [
+      {
+        type: "element",
+        tagName: "img",
+        properties: { src: "https://tracker.example/pixel.png", alt: "diagram" },
+        children: []
+      }
+    ]
+  };
+  const plugin = rehypeLinkCodePaths(
+    { owner: "acme", repo: "demo", pageType: "repo" },
+    "abcdef1234567890abcdef1234567890abcdef12"
+  ) as unknown as () => unknown;
+  const transformer = plugin() as (tree: unknown) => void;
+
+  transformer(tree);
+
+  assert.equal(tree.children[0]?.tagName, "span");
+  assert.equal("src" in (tree.children[0]?.properties ?? {}), false);
+});
+
+test("rehypeLinkCodePaths does not create source links without an immutable commit", () => {
+  const tree = {
+    type: "root",
+    children: [{ type: "text", value: "Read src/app.ts next." }]
+  };
+  const plugin = rehypeLinkCodePaths({ owner: "acme", repo: "demo", pageType: "repo" }) as unknown as () => unknown;
+  const transformer = plugin() as (tree: unknown) => void;
+
+  transformer(tree);
+
+  assert.equal(tree.children.every((node) => node.type === "text"), true);
 });

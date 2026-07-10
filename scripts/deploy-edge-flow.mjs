@@ -24,6 +24,14 @@ export async function withDeploymentMutationMutex(targetDir, action, lockOptions
   }
 }
 
+export async function withDeploymentPipelineMutex(outputDir, targetDir, action, lockOptions) {
+  return withDeploymentMutationMutex(
+    outputDir,
+    () => withDeploymentMutationMutex(targetDir, action, lockOptions),
+    lockOptions
+  );
+}
+
 export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {}, prepareStaging, verifyStaging, lockOptions, mutationMutex: providedMutationMutex }) {
   const ops = { cp, link, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, writeFile, ...fsOps };
   const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;

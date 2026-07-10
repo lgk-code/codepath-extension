@@ -331,6 +331,39 @@ test("chatAuto bounds total raw stream bytes even when lines stay small", async 
   assert.equal(cancelled, true);
 });
 
+test("chatAuto never replays a model request after emitting a stream delta", async () => {
+  let fetchCount = 0;
+  const deltas: string[] = [];
+  globalThis.fetch = (async () => {
+    fetchCount += 1;
+    if (fetchCount > 1) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "replayed" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: {broken\n\n')
+          );
+          controller.close();
+        }
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } }
+    );
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () => chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], (delta) => deltas.push(delta)),
+    /invalid SSE data/
+  );
+
+  assert.deepEqual(deltas, ["partial"]);
+  assert.equal(fetchCount, 1);
+});
+
 function streamingSettings() {
   return {
     provider: "openai" as const,

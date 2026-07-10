@@ -15,9 +15,10 @@ import {
 import { chat, listModels, normalizeBaseUrl, probeStreamingSupport, resolveProvider } from "../src/lib/aiClient";
 import { DEV_RELOAD_MARKER_PATH, checkDevSelfReloadOnce, parseDevReloadMarker, type ExtensionInstallType } from "../src/lib/devSelfReload";
 import { GithubClient } from "../src/lib/githubClient";
-import { validateRepoRequestScope } from "../src/lib/runtimeBoundary";
+import { validateRequestLocation } from "../src/lib/runtimeBoundary";
+import { createSettingsStore } from "../src/lib/settingsStore";
 
-const BACKGROUND_BUILD = "dev-2026-07-10-adversarial-review-fixes-v11";
+const BACKGROUND_BUILD = "dev-2026-07-10-adversarial-review-fixes-v12";
 const DEV_RELOAD_ALARM_NAME = "codepath-dev-self-reload";
 const DEV_RELOAD_ALARM_PERIOD_MINUTES = 0.5;
 const DEV_RELOAD_ACTIVE_INTERVAL_MS = 5_000;
@@ -32,6 +33,11 @@ type StreamHandlers = {
 
 let devReloadStarted = false;
 let devReloadCheckInFlight = false;
+const settingsStore = createSettingsStore({
+  load: loadSettingsFromStorage,
+  save: (settings) => storageSet({ [SETTINGS_KEY]: settings }),
+  normalize: normalizeSettings
+});
 
 export default defineBackground(() => {
   startDevSelfReload();
@@ -157,8 +163,8 @@ async function readDevReloadMarker() {
 
 async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHandlers = {}, requestSenderUrl?: string): Promise<RuntimeResponse<unknown>> {
   try {
-    if (!validateRepoRequestScope(request, requestSenderUrl)) {
-      return fail("Repository request does not match the sender GitHub tab.");
+    if (!validateRequestLocation(request, requestSenderUrl ?? "")) {
+      return fail("Repository request does not match the sender's current GitHub location.");
     }
     const validationError = validateRuntimeRequest(request);
     if (validationError) return fail(validationError);
@@ -168,9 +174,17 @@ async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHand
     }
 
     if (request.type === "save-settings") {
-      const settings = normalizeSettings(request.settings);
-      await storageSet({ [SETTINGS_KEY]: settings });
-      return ok(settings);
+      return ok(await settingsStore.saveNonSecret(request.settings));
+    }
+
+    if (request.type === "open-secret-editor") {
+      await openSecretEditor(request.field);
+      return ok(true);
+    }
+
+    if (request.type === "update-secret") {
+      await settingsStore.updateSecret(request.field, request.value.trim());
+      return ok(true);
     }
 
     if (request.type === "list-models") {
@@ -254,10 +268,20 @@ function validateText(value: string, label: string, maxLength: number): string {
 }
 
 async function getSettings(): Promise<Settings> {
+  return settingsStore.read();
+}
+
+async function loadSettingsFromStorage(): Promise<Settings> {
   const stored = await storageGet(SETTINGS_KEY);
   const value = stored[SETTINGS_KEY];
   const patch = isSettingsPatch(value);
-  return normalizeSettings({ ...DEFAULT_SETTINGS, ...patch });
+  return { ...DEFAULT_SETTINGS, ...patch };
+}
+
+async function openSecretEditor(field: "apiKey" | "githubToken"): Promise<void> {
+  const url = new URL(chrome.runtime.getURL("secret-input.html"));
+  url.searchParams.set("field", field);
+  await chrome.windows.create({ url: url.href, type: "popup", width: 480, height: 360, focused: true });
 }
 
 async function getModelList(settings: Settings): Promise<ModelListResult> {
@@ -354,7 +378,16 @@ async function testSettings(request: Extract<RuntimeRequest, { type: "test-setti
       diagnostics.streamFirstDeltaMs = streaming.firstDeltaMs;
       diagnostics.streamDeltaCount = streaming.deltaCount;
       diagnostics.streamingCheck = streaming.message;
-      await storageSet({ [SETTINGS_KEY]: { ...settings, supportsStreaming: streaming.supported, streamingMode: streaming.mode } });
+      const applied = await settingsStore.updateStreamingMetadataIfCurrent(settings, {
+        supportsStreaming: streaming.supported,
+        streamingMode: streaming.mode
+      });
+      if (!applied) {
+        const current = await settingsStore.read();
+        diagnostics.supportsStreaming = current.supportsStreaming;
+        diagnostics.streamingMode = current.streamingMode || "untested";
+        diagnostics.streamingCheck = `${streaming.message} 测试期间设置已变化，本次结果未写入当前配置。`;
+      }
     } catch (error) {
       diagnostics.modelCheck = formatModelDiagnostic(error);
       diagnostics.supportsStreaming = false;

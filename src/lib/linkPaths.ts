@@ -43,19 +43,66 @@ export function githubFileUrl(repo: RepoRef, path: string, branchOverride?: stri
     .join("/")}`;
 }
 
+export function immutableGithubCommit(value?: string): string | undefined {
+  return value && /^[0-9a-f]{40}$/i.test(value) ? value : undefined;
+}
+
 export function rehypeLinkCodePaths(repo: RepoRef | null, refOverride?: string, knownPaths: string[] = []): Plugin<[], Node> {
   return () => {
     return (tree) => {
-      if (!repo) return;
-      rewriteExplicitLinks(tree, repo, refOverride, knownPaths);
-      visitTextParents(tree, [], (parent, index, textNode, ancestors) => {
-        if (isInsideIgnoredElement(parent) || ancestors.some(isIgnoredElement)) return;
-        const replacement = linkifyText(textNode.value, repo, refOverride);
-        if (!replacement) return;
-        parent.children.splice(index, 1, ...replacement);
-      });
+      const immutableRef = immutableGithubCommit(refOverride);
+      if (repo && immutableRef) {
+        rewriteExplicitLinks(tree, repo, immutableRef, knownPaths);
+        visitTextParents(tree, [], (parent, index, textNode, ancestors) => {
+          if (isInsideIgnoredElement(parent) || ancestors.some(isIgnoredElement)) return;
+          const replacement = linkifyText(textNode.value, repo, immutableRef);
+          if (!replacement) return;
+          parent.children.splice(index, 1, ...replacement);
+        });
+      }
+      sanitizeModelLinksAndImages(tree, repo, immutableRef);
     };
   };
+}
+
+function sanitizeModelLinksAndImages(node: Node, repo: RepoRef | null, immutableRef: string | undefined) {
+  if (node.type === "element") {
+    const element = node as ElementNode;
+    if (element.tagName === "img") {
+      const alt = typeof element.properties?.alt === "string" ? element.properties.alt : "image";
+      element.tagName = "span";
+      element.properties = { className: ["cp-blocked-media"] };
+      element.children = [text(alt)];
+    } else if (element.tagName === "a") {
+      const href = typeof element.properties?.href === "string" ? element.properties.href : "";
+      if (!isAllowedImmutableSourceLink(href, repo, immutableRef)) {
+        element.tagName = "span";
+        element.properties = { className: ["cp-blocked-link"] };
+      }
+    }
+  }
+  if (!isParent(node)) return;
+  for (const child of node.children) sanitizeModelLinksAndImages(child, repo, immutableRef);
+}
+
+function isAllowedImmutableSourceLink(href: string, repo: RepoRef | null, immutableRef: string | undefined): boolean {
+  if (!href || !repo || !immutableRef) return false;
+  try {
+    const url = new URL(href);
+    const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "github.com" &&
+      parts[0]?.toLowerCase() === repo.owner.toLowerCase() &&
+      parts[1]?.toLowerCase() === repo.repo.toLowerCase() &&
+      parts[2] === "blob" &&
+      parts[3] === immutableRef &&
+      parts.length > 4 &&
+      parts.slice(4).every((part) => Boolean(part) && part !== "." && part !== "..")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function rewriteExplicitLinks(node: Node, repo: RepoRef, refOverride: string | undefined, knownPaths: string[]) {

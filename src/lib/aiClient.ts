@@ -201,10 +201,14 @@ export async function chatAuto(
     return chat(settings, messages);
   }
 
+  let emittedDelta = false;
   try {
-    return await chatStream(settings, messages, onDelta);
+    return await chatStream(settings, messages, (text) => {
+      emittedDelta = true;
+      onDelta(text);
+    });
   } catch (error) {
-    if (isAuthOrConfigError(error)) throw error;
+    if (!(error instanceof StreamingUnsupportedError) || emittedDelta) throw error;
     onFallback?.(formatStreamingProbeError(error));
     return chat(settings, messages);
   }
@@ -396,11 +400,6 @@ function anthropicBody(settings: Settings, messages: ChatMessage[], stream = fal
     messages: userMessages,
     ...(stream ? { stream: true } : {})
   };
-}
-
-function isAuthOrConfigError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b(401|403)\b/.test(message);
 }
 
 function formatStreamingProbeError(error: unknown): string {

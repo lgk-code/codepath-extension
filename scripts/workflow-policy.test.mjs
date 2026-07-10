@@ -33,8 +33,24 @@ test("release publication is orchestrated by the trusted default-branch workflow
   assert.equal((release.match(/contents:\s*write/g) ?? []).length, 1);
   assert.match(release, /environment:\s*release/);
   assert.match(release, /needs:\s*build-extension/);
+  const buildJob = release.slice(release.indexOf("  build-extension:"), release.indexOf("  publish-release:"));
+  assert.ok(
+    buildJob.indexOf("Verify immutable release tag ruleset") < buildJob.indexOf("Verify annotated tag provenance"),
+    "the immutable tag policy must be established before accepting a build candidate"
+  );
+  assert.match(buildJob, /RELEASE_TAG_OBJECT/);
+  assert.match(buildJob, /tag_object=\$RELEASE_TAG_OBJECT/);
   const publishJob = release.slice(release.indexOf("  publish-release:"));
+  const publishCheckout = publishJob.slice(
+    publishJob.indexOf("Checkout trusted publish verifier"),
+    publishJob.indexOf("Verify immutable release tag ruleset")
+  );
+  assert.match(publishCheckout, /ref:\s*\$\{\{ github\.workflow_sha \}\}/);
+  assert.doesNotMatch(publishCheckout, /ref:\s*main/);
   assert.match(publishJob, /git fetch --force origin "refs\/tags\/\$RELEASE_TAG:refs\/tags\/\$RELEASE_TAG"/);
+  assert.match(publishJob, /EXPECTED_TAG_OBJECT/);
+  assert.match(publishJob, /CURRENT_TAG_OBJECT/);
+  assert.match(publishJob, /CURRENT_TAG_OBJECT" != "\$EXPECTED_TAG_OBJECT/);
   assert.match(publishJob, /CURRENT_COMMIT/);
   assert.match(publishJob, /EXPECTED_COMMIT/);
   assert.match(publishJob, /CURRENT_COMMIT" != "\$EXPECTED_COMMIT/);

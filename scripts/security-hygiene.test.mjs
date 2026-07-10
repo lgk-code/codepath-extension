@@ -17,14 +17,35 @@ test("GitHub page sidebar does not render secret input values", () => {
   assert.doesNotMatch(sidebar, /apiKeyDraft|githubTokenDraft/);
 });
 
-test("secret editor writes the canonical settings key and is restricted to GitHub pages", () => {
+test("secret editor is opened and mutated only through the background", () => {
   const editor = read("public/secret-input.js");
   const config = read("wxt.config.ts");
+  const background = read("entrypoints/background.ts");
 
-  assert.match(editor, /const SETTINGS_KEY = "codepath-settings"/);
-  assert.match(config, /web_accessible_resources/);
-  assert.match(config, /resources:\s*\["secret-input\.html",\s*"secret-input\.js",\s*"secret-input\.css"\]/);
-  assert.match(config, /matches:\s*\["https:\/\/github\.com\/\*"\]/);
+  assert.doesNotMatch(config, /web_accessible_resources/);
+  assert.match(config, /frame-ancestors 'none'/);
+  assert.match(editor, /chrome\.runtime\.sendMessage/);
+  assert.doesNotMatch(editor, /chrome\.storage\.local/);
+  assert.match(background, /chrome\.windows\.create/);
+  assert.match(background, /request\.type === "update-secret"/);
+  assert.match(background, /settingsStore\.updateSecret/);
+  assert.match(background, /settingsStore\.saveNonSecret/);
+  assert.match(background, /updateStreamingMetadataIfCurrent/);
+});
+
+test("prompt version fingerprints every source-backed analysis prompt", () => {
+  const analyzer = read("src/lib/analyzer.ts");
+  const fingerprint = analyzer.slice(analyzer.indexOf("function createPromptVersion"), analyzer.indexOf("function analysisBasis"));
+
+  for (const name of [
+    "analyzeProjectAttempt",
+    "analyzeFeatureAttempt",
+    "generateSkillBlueprintAttempt",
+    "explainFileAttempt",
+    "answerQuestionAttempt"
+  ]) {
+    assert.match(fingerprint, new RegExp(`${name}\\.toString\\(\\)`));
+  }
 });
 
 test("streaming UI updates are scoped to the active repository run", () => {
@@ -46,13 +67,14 @@ test("navigation events are signals and repository requests are sender-scoped", 
   assert.match(sidebar, /parseGithubUrl\(location\.href\)/);
   assert.match(background, /port\.sender/);
   assert.match(background, /sender\?\.tab\?\.url/);
-  assert.match(background, /validateRepoRequestScope/);
+  assert.match(background, /validateRequestLocation/);
 });
 
 test("repository operations are not replayed through sendMessage after a port attempt", () => {
   const sidebar = read("src/components/Sidebar.tsx");
   assert.match(sidebar, /canFallbackLocallyBeforeDispatch\(request, portError\.dispatched\)/);
   assert.doesNotMatch(sidebar, /function sendViaMessage/);
+  assert.doesNotMatch(sidebar, /request\.type === "save-settings"[\s\S]{0,180}setExtensionSettings/);
   assert.match(sidebar, /validateRequestLocation\(request, location\.href\)/);
 });
 

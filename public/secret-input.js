@@ -1,4 +1,3 @@
-const SETTINGS_KEY = "codepath-settings";
 const fields = {
   apiKey: {
     title: "模型 API Key",
@@ -43,9 +42,8 @@ async function updateSecret(value) {
   clearButton.disabled = true;
   status.textContent = "正在保存...";
   try {
-    const stored = await storageGet(SETTINGS_KEY);
-    const current = stored && typeof stored === "object" ? stored : {};
-    await storageSet({ [SETTINGS_KEY]: { ...current, [field]: value } });
+    const response = await chrome.runtime.sendMessage({ type: "update-secret", field, value });
+    if (!response?.ok) throw new Error(response?.error || "Secret update failed");
     status.textContent = value ? "已保存。" : "已清除。";
     input.value = "";
     setTimeout(() => window.close(), 600);
@@ -54,24 +52,4 @@ async function updateSecret(value) {
     saveButton.disabled = false;
     clearButton.disabled = false;
   }
-}
-
-function storageGet(key) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.local.get(key, (items) => {
-      const error = chrome.runtime.lastError;
-      if (error) reject(new Error(error.message || "Storage read failed"));
-      else resolve(items[key]);
-    });
-  });
-}
-
-function storageSet(items) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.local.set(items, () => {
-      const error = chrome.runtime.lastError;
-      if (error) reject(new Error(error.message || "Storage write failed"));
-      else resolve();
-    });
-  });
 }

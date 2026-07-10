@@ -35,6 +35,9 @@ declare const chrome: {
     query(queryInfo: { url?: string | string[] }, callback: (tabs: Array<{ id?: number }>) => void): void;
     reload(tabId: number): void;
   };
+  windows: {
+    create(createData: { url: string; type: "popup"; width: number; height: number; focused: boolean }): Promise<unknown>;
+  };
   storage: {
     local: {
       get(key: string, callback: (items: Record<string, unknown>) => void): void;

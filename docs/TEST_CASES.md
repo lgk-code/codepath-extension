@@ -140,10 +140,15 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - API 文件读取统一使用 raw media type 并限制为 2 MiB；1-2 MiB 文件不能被 JSON `encoding: none` 静默当作空源码，超限必须明确失败。
 - Git tree mode 为 `120000` 的符号链接必须按当前源码快照隔离文件内容缓存；链接 blob 不变但目标内容随 tree 更新时，模型只能看到新目标内容。
 - 403/429 错误响应正文读取失败时，错误仍必须保留 GitHub 状态码并触发 ZIP fallback。
+- 只有 GitHub client 抛出的 typed 403/429 才能触发 ZIP fallback；模型接口错误即使正文包含 `GitHub`、`403` 或 `429`，也不得重放模型请求或降级源码来源。
+- prompt cache fingerprint 必须包含五个实际承载 inline prompt 的 analysis attempt；只修改任一分析指令时，旧模型结果必须自然失效。
+- `basis.files` 缺失或类型错误的持久化记录必须按 cache miss 处理，不能让文件分析因本地存储损坏而崩溃。
 
 ## 传输、流式与安全窗口
 
 - 安全窗口保存 API Key 和 GitHub Token 后，设置页重新读取的值掩码应立即变化；清除后也应同步生效。
+- 密钥编辑页不得出现在 `web_accessible_resources`，扩展页 CSP 必须禁止 framing；Sidebar 只能请求 background 以扩展身份打开该窗口，密钥页只能向 background 发送 allowlisted 单字段更新。
+- 所有设置写入必须由 background 串行处理；非密钥表单不得携带或覆盖密钥，模型探测期间连接配置变化时不得写入旧探测元数据。
 - 中性代理 URL 配置为 Anthropic provider 时，应发送 `/messages` 与 `x-api-key`，不得退回 OpenAI 格式。
 - 长时间模型请求期间后台每 20 秒发送 heartbeat；前端不得因端口超时通过 `sendMessage` 重放分析。
 - `list-models` 只有在 port 请求尚未成功投递时才允许本地 fallback；投递后的超时、断连或流错误不得切换 transport 重放。
@@ -152,6 +157,9 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 同一 repo/target 的新任务启动后，旧任务的 fallback 必须因 runId 不同而被拒绝，不能修改新任务的 stream 状态。
 - OpenAI `[DONE]` 和 Anthropic `message_stop` 到达后应立即完成，不等待服务端关闭连接。
 - 大量流式 delta 应按批次刷新 Markdown；最终文本不能丢字、重复或跨仓库显示。
+- 模型流在发出首个 delta 后发生解析或读取错误时不得自动发送第二次非流请求；只有首段输出前明确识别的 streaming-unsupported 错误可回退。
+- background 必须比较 sender 当前完整 owner/repo/branch/page/path，而不只比较仓库名；同仓库 SPA 导航后的旧请求也必须拒绝。
+- 模型 Markdown 只能把当前仓库、40 位 immutable commit 下的源码路径渲染为链接；unchecked ZIP 路径、外部链接和图片必须渲染为不发请求的普通文本。
 
 ## 部署与发布门禁
 
@@ -164,10 +172,12 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - stale 接管必须先原子移走 token heartbeat 形成 fencing；若移走瞬间 heartbeat 已刷新，应恢复并放弃接管，旧 owner 失去 heartbeat 后不得继续目标变更。
 - 目标变更必须持有按规范化目标路径命名的 Windows system Mutex；Windows 与 WSL 使用同一个 Mutex，owner 进程退出时 helper 必须自动释放。文件 lease 仅用于恢复状态，不得依赖跨 runtime PID 或 PID 未复用假设。
 - 同一个 system Mutex 必须覆盖构建版本校验、`.output` 构建和目标发布整个事务；PowerShell helper 的启动超时与 Mutex 等待超时必须分开，配置的锁等待不能被固定启动计时提前截断。
+- 不同部署目标共享同一个 `.output` 时，必须先获取 output-scoped Mutex，再获取 target-scoped Mutex；锁顺序固定为 output 后 target，并覆盖 staging copy 完成。
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
 - Release workflow 必须从默认分支 `repository_dispatch` 运行；候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
-- `release` environment 审批完成后，写权限 job 必须重新 fetch 并解引用远端 annotated tag，确认其 commit 与只读构建输出 SHA 完全一致后才能发布。
+- `release` environment 审批完成后，写权限 job 必须从 `github.workflow_sha` checkout verifier，不能执行浮动 `main` 上后来出现的脚本。
+- 写权限 job 必须重新 fetch 远端 annotated tag，同时确认 tag object SHA 和 peel 后 commit SHA 与只读构建输出完全一致后才能发布。
 - `refs/tags/v*` 必须由 active tag ruleset 同时限制 update 和 deletion；写权限 job 在发布前必须通过 Rulesets API 验证策略仍存在，避免 tag 校验与发布之间被移动。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
 - `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应同时拒绝脆弱版本和不满足上游 semver/Node engine 的强制 override。

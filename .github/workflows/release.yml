@@ -21,14 +21,21 @@ jobs:
     outputs:
       tag: ${{ steps.provenance.outputs.tag }}
       commit: ${{ steps.provenance.outputs.commit }}
+      tag_object: ${{ steps.provenance.outputs.tag_object }}
 
     steps:
       - name: Checkout trusted release workflow
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify immutable release tag ruleset
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.client_payload.tag }}
+        run: node scripts/verify-release-ruleset.mjs "$RELEASE_TAG"
 
       - name: Verify annotated tag provenance from trusted main
         id: provenance
@@ -46,6 +53,7 @@ jobs:
             echo "Release tag must be annotated: $RELEASE_TAG" >&2
             exit 1
           fi
+          RELEASE_TAG_OBJECT="$(git rev-parse "refs/tags/$RELEASE_TAG")"
           RELEASE_COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           git merge-base --is-ancestor "$RELEASE_COMMIT" refs/remotes/origin/main
           PACKAGE_VERSION="$(git show "$RELEASE_COMMIT:package.json" | node -e 'let source=""; process.stdin.on("data", chunk => source += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(source).version));')"
@@ -55,6 +63,7 @@ jobs:
           fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "tag_object=$RELEASE_TAG_OBJECT" >> "$GITHUB_OUTPUT"
 
       - name: Checkout verified release commit
         env:
@@ -117,7 +126,7 @@ jobs:
       - name: Checkout trusted publish verifier
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -131,12 +140,18 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.build-extension.outputs.tag }}
           EXPECTED_COMMIT: ${{ needs.build-extension.outputs.commit }}
+          EXPECTED_TAG_OBJECT: ${{ needs.build-extension.outputs.tag_object }}
         run: |
           set -euo pipefail
           git fetch --force --no-tags origin main:refs/remotes/origin/main
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
             echo "Release tag is no longer annotated: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          CURRENT_TAG_OBJECT="$(git rev-parse "refs/tags/$RELEASE_TAG")"
+          if [[ "$CURRENT_TAG_OBJECT" != "$EXPECTED_TAG_OBJECT" ]]; then
+            echo "Release tag object moved after build: expected $EXPECTED_TAG_OBJECT, got $CURRENT_TAG_OBJECT" >&2
             exit 1
           fi
           CURRENT_COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"

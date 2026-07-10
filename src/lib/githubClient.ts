@@ -68,6 +68,16 @@ const MAX_REF_METADATA_BYTES = 512 * 1024;
 const MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SOURCE_FILE_JSON_BYTES = 3 * 1024 * 1024;
 
+export class GithubRateLimitError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "GithubRateLimitError";
+  }
+}
+
 export class GithubClient implements SourceClient {
   readonly kind = "github-api" as const;
   private readonly repoRequests = new Map<string, Promise<GithubRepo>>();
@@ -341,7 +351,8 @@ async function githubResponseError(response: Response, prefix: string): Promise<
   } catch (error) {
     detail = `response body unavailable: ${error instanceof Error ? error.message : String(error)}`;
   }
-  return new Error(`${prefix} ${response.status}: ${detail || "request failed"}`);
+  const message = `${prefix} ${response.status}: ${detail || "request failed"}`;
+  return response.status === 403 || response.status === 429 ? new GithubRateLimitError(response.status, message) : new Error(message);
 }
 
 function repoApiBase(owner: string, repo: string): string {

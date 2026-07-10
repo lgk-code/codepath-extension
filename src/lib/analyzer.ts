@@ -25,7 +25,7 @@ import type {
   TimingBreakdown,
   TreeFile
 } from "../types";
-import { GithubClient } from "./githubClient";
+import { GithubClient, GithubRateLimitError } from "./githubClient";
 import { ZipGithubClient } from "./zipGithubClient";
 import { chatAuto } from "./aiClient";
 import { FILE_RULES_FINGERPRINT, classifyPath, isLikelyImportant, isUsefulPath } from "./fileRules";
@@ -737,8 +737,7 @@ async function runWithGithubRateLimitFallback<T>(
 }
 
 function isGithubRateLimitError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /github/i.test(message) && (/rate limit/i.test(message) || /\b(?:403|429)\b/.test(message));
+  return error instanceof GithubRateLimitError;
 }
 
 async function createSourceClient(repo: RepoRef, settings: Settings, forceZip = false): Promise<SourceClient> {
@@ -748,8 +747,7 @@ async function createSourceClient(repo: RepoRef, settings: Settings, forceZip = 
     await apiClient.getRepo(repo.owner, repo.repo);
     return apiClient;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("403") && !message.toLowerCase().includes("rate limit")) throw error;
+    if (!(error instanceof GithubRateLimitError)) throw error;
     return createZipSourceClient(repo);
   }
 }
@@ -778,6 +776,7 @@ async function resolveRepoSnapshot(
   try {
     snapshot = await measure(timing, "githubMs", () => gh.getBranchSnapshot(repo.owner, repo.repo, branch));
   } catch (error) {
+    if (error instanceof GithubRateLimitError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`缓存无法校验，请重新连接 GitHub 或清理缓存后重试。${message}`);
   }
@@ -1076,10 +1075,15 @@ function createPromptVersion(): string {
   return `${ANALYZER_VERSION}:${stringHash(
     [
       analyzeProject.toString(),
+      analyzeProjectAttempt.toString(),
       analyzeFeature.toString(),
+      analyzeFeatureAttempt.toString(),
       generateSkillBlueprint.toString(),
+      generateSkillBlueprintAttempt.toString(),
       explainFile.toString(),
+      explainFileAttempt.toString(),
       answerQuestion.toString(),
+      answerQuestionAttempt.toString(),
       generateSuggestedQuestions.toString(),
       FEATURE_KEYWORDS_FINGERPRINT,
       FILE_RULES_FINGERPRINT,
@@ -1148,7 +1152,26 @@ function cacheRecord<T>(kind: CacheRecordKind, value: T, basis: AnalysisBasis): 
 function isCacheRecord<T>(value: unknown, kind: CacheRecordKind): value is CacheRecord<T> {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<CacheRecord<T>>;
-  return record.schemaVersion === CACHE_SCHEMA_VERSION && record.kind === kind && isRepoSnapshot(record.basis?.snapshot) && "value" in record;
+  return record.schemaVersion === CACHE_SCHEMA_VERSION && record.kind === kind && isAnalysisBasis(record.basis) && "value" in record;
+}
+
+function isAnalysisBasis(value: unknown): value is AnalysisBasis {
+  if (!value || typeof value !== "object") return false;
+  const basis = value as Partial<AnalysisBasis>;
+  return (
+    isRepoSnapshot(basis.snapshot) &&
+    Array.isArray(basis.files) &&
+    basis.files.every(
+      (file) =>
+        Boolean(file) &&
+        typeof file.path === "string" &&
+        (file.blobSha === undefined || typeof file.blobSha === "string") &&
+        (file.size === undefined || (typeof file.size === "number" && Number.isFinite(file.size) && file.size >= 0))
+    ) &&
+    typeof basis.inputDigest === "string" &&
+    typeof basis.promptVersion === "string" &&
+    typeof basis.analyzerVersion === "string"
+  );
 }
 
 function isUsableCacheRecord<T>(value: unknown, kind: CacheRecordKind, currentSnapshot: RepoSnapshot, inputDigest: string): value is CacheRecord<T> {
@@ -1162,7 +1185,7 @@ function isUsableCacheRecord<T>(value: unknown, kind: CacheRecordKind, currentSn
 }
 
 function isUsableFileContentRecord(value: unknown, repo: RepoRef, branch: string, file: TreeFile, identityScope: string): value is CacheRecord<string> {
-  if (!isCacheRecord<string>(value, "file")) return false;
+  if (!isCacheRecord<string>(value, "file") || typeof value.value !== "string") return false;
   if (
     !sameRepositoryName(value.basis.snapshot.owner, repo.owner) ||
     !sameRepositoryName(value.basis.snapshot.repo, repo.repo) ||

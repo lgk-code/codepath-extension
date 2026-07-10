@@ -85,7 +85,7 @@ $env:CODEPATH_EDGE_EXTENSION_ROOT="D:\path\to"
 npm.cmd run deploy:edge
 ```
 
-脚本会构建 `.output/chrome-mv3`，安全同步到目标目录，并写入 `codepath-dev-reload.json`。已经加载 self reload 版本的 development install 会自动重载；首次从旧版本升级时仍可能需要在 `edge://extensions` 手动重新加载一次。
+脚本会构建 `.output/chrome-mv3`，安全同步到目标目录，并写入 `codepath-dev-reload.json`。同一项目的所有部署先按共享输出目录串行构建，再按目标目录串行提升，因此即使两个命令部署到不同目录，也不能并发改写同一份 `.output`。已经加载 self reload 版本的 development install 会自动重载；首次从旧版本升级时仍可能需要在 `edge://extensions` 手动重新加载一次。
 
 ## MCP Server
 
@@ -106,5 +106,5 @@ npm.cmd run mcp
 - 推送 annotated tag 后，从默认分支发送受信发布事件：`gh api repos/lgk-code/codepath-extension/dispatches --method POST -f event_type=release -f "client_payload[tag]=v0.1.3"`。tag push 本身不发布。
 - Release workflow 先以只读权限验证 tag/main/package 并构建，再由 `release` environment 的独立写权限 job 发布固定资产 `CodePath.zip`；仓库应为该 environment 配置所需审批。
 - 仓库必须启用 active tag ruleset `Immutable release tags`，以 `refs/tags/v*` 为范围，限制 update 和 deletion，且不配置 bypass actor；允许首次创建 release tag，但创建后不可移动或删除。
-- 审批后的发布 job 会先通过 GitHub Rulesets API 验证上述不可变 tag 策略，再次 fetch annotated tag；若策略缺失、tag 在构建后被移动、改成 lightweight tag，或不再指向已构建 SHA，发布必须失败。
+- 候选构建和审批后的发布 job 都会通过 GitHub Rulesets API 验证上述不可变 tag 策略。写权限 job 只执行 `github.workflow_sha` 固定的受信脚本，并同时复验 annotated tag object SHA 与 peel 后 commit SHA；任一身份变化都必须阻止发布。
 - 迁移备份和 `E:\projects\CodePath-migration.bundle` 不属于仓库，也不得上传到 Release。

@@ -4,7 +4,13 @@ import { cp, mkdir, open as fsOpen, readFile, rename, rm, utimes, writeFile } fr
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { DEPLOY_LOCK_DEFAULTS, replaceDirectoryAtomic, runVerifiedDeployment, withDeploymentMutationMutex } from "./deploy-edge-flow.mjs";
+import {
+  DEPLOY_LOCK_DEFAULTS,
+  replaceDirectoryAtomic,
+  runVerifiedDeployment,
+  withDeploymentMutationMutex,
+  withDeploymentPipelineMutex
+} from "./deploy-edge-flow.mjs";
 
 test("runVerifiedDeployment stops before build and sync when version verification fails", async () => {
   const events = [];
@@ -45,6 +51,38 @@ test("runVerifiedDeployment serializes verification, build, and sync under one d
 
   try {
     await Promise.all([runDeployment(), runDeployment()]);
+    assert.equal(maxActiveBuilds, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("deployment pipeline serializes one shared output across different targets", async () => {
+  const root = await temporaryRoot();
+  const outputDir = path.join(root, "shared-output");
+  const targetA = path.join(root, "target-a");
+  const targetB = path.join(root, "target-b");
+  let activeBuilds = 0;
+  let maxActiveBuilds = 0;
+
+  const runDeployment = (targetDir) =>
+    runVerifiedDeployment({
+      withDeploymentLock: (action) =>
+        withDeploymentPipelineMutex(outputDir, targetDir, action, { timeoutMs: 2_000 }),
+      verifyBuildVersion: async () => undefined,
+      build: async () => {
+        activeBuilds += 1;
+        maxActiveBuilds = Math.max(maxActiveBuilds, activeBuilds);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        activeBuilds -= 1;
+      },
+      syncTarget: async (targetMutex) => {
+        assert.equal(typeof targetMutex?.assertOwned, "function");
+      }
+    });
+
+  try {
+    await Promise.all([runDeployment(targetA), runDeployment(targetB)]);
     assert.equal(maxActiveBuilds, 1);
   } finally {
     await rm(root, { recursive: true, force: true });

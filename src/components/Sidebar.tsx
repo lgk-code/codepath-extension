@@ -28,7 +28,7 @@ import type {
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../lib/defaults";
 import { parseGithubUrl } from "../lib/githubUrl";
 import { inferProviderFromBaseUrl, listModels, normalizeBaseUrl, resolveProvider } from "../lib/aiClient";
-import { githubFileUrl, rehypeLinkCodePaths } from "../lib/linkPaths";
+import { githubFileUrl, immutableGithubCommit, rehypeLinkCodePaths } from "../lib/linkPaths";
 import { canFallbackLocallyBeforeDispatch, isRepoStateCurrent, repoStateKey, validateRequestLocation } from "../lib/runtimeBoundary";
 import { createStreamBatcher } from "../lib/streamBatcher";
 
@@ -87,7 +87,7 @@ const PROJECT_ANALYSIS_MODE_HINT: Record<ProjectAnalysisMode, string> = {
   "full-source": "当前模式会读取所有可用源码；仓库过大时会直接提示，不截断、不分批。"
 };
 
-const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v11";
+const UI_VERSION = "dev-2026-07-10-adversarial-review-fixes-v12";
 const SIDEBAR_COLLAPSED_KEY = "codepath.sidebarCollapsed";
 
 export function Sidebar() {
@@ -934,10 +934,15 @@ function SettingsPanel(props: {
     }
   }
 
-  function openSecretEditor(field: "apiKey" | "githubToken") {
-    const url = chrome.runtime.getURL(`secret-input.html?field=${encodeURIComponent(field)}`);
-    window.open(url, "codepath-secret-input", "width=480,height=360,popup=yes");
-    setModelListStatus(field === "apiKey" ? "请在扩展安全窗口中更新模型 API Key。" : "请在扩展安全窗口中更新 GitHub Token。");
+  async function openSecretEditor(field: "apiKey" | "githubToken") {
+    setModelListStatus("正在打开扩展安全窗口...");
+    try {
+      await send<boolean>({ type: "open-secret-editor", field });
+      setModelListStatus(field === "apiKey" ? "请在扩展安全窗口中更新模型 API Key。" : "请在扩展安全窗口中更新 GitHub Token。");
+    } catch (error) {
+      setModelListStatus(`安全窗口打开失败：${humanizeError(error)}`);
+      return;
+    }
     let attempts = 0;
     const timer = window.setInterval(() => {
       attempts += 1;
@@ -1226,7 +1231,7 @@ function SuggestionList(props: {
 }
 
 function MarkdownBlock(props: { repo: RepoRef | null; branch?: string; text: string; sources: string[]; timing?: TimingBreakdown }) {
-  const sourceRef = props.timing?.headSha && !props.timing.headSha.startsWith("unchecked:") ? props.timing.headSha : props.branch;
+  const sourceRef = immutableGithubCommit(props.timing?.headSha);
   return (
     <div className="cp-result">
       {props.timing && <TimingMeta timing={props.timing} repo={props.repo} branch={props.branch} />}
@@ -1239,7 +1244,7 @@ function MarkdownBlock(props: { repo: RepoRef | null; branch?: string; text: str
         <div className="cp-sources">
           <strong>参考源码</strong>
           {props.sources.map((source) =>
-            props.repo ? (
+            props.repo && sourceRef ? (
               <a key={source} href={githubFileUrl(props.repo, source, sourceRef)} target="_blank" rel="noreferrer">
                 {source}
               </a>
@@ -1549,12 +1554,6 @@ async function sendSettingsViaStorage<T>(request: RuntimeRequest): Promise<Runti
     return localOk((await getExtensionSettings()) as T);
   }
 
-  if (request.type === "save-settings") {
-    const settings = normalizeSettingsDraft(request.settings);
-    await setExtensionSettings(settings);
-    return localOk(settings as T);
-  }
-
   return { ok: false, error: "Not a settings request." };
 }
 
@@ -1595,24 +1594,6 @@ function getExtensionSettings(): Promise<Settings> {
       const value = items[SETTINGS_KEY];
       const patch = value && typeof value === "object" ? (value as Partial<Settings>) : {};
       resolve(normalizeSettingsDraft({ ...DEFAULT_SETTINGS, ...patch }));
-    });
-  });
-}
-
-function setExtensionSettings(settings: Settings): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!chrome?.storage?.local) {
-      reject(new Error("Extension storage is unavailable."));
-      return;
-    }
-
-    chrome.storage.local.set({ [SETTINGS_KEY]: normalizeSettingsDraft(settings) }, () => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-      resolve();
     });
   });
 }
