@@ -31,6 +31,7 @@ import { chatAuto } from "./aiClient";
 import { FILE_RULES_FINGERPRINT, classifyPath, isLikelyImportant, isUsefulPath } from "./fileRules";
 import { FEATURE_KEYWORDS_FINGERPRINT, expandFeatureKeywords } from "./featureKeywords";
 import { IMPORTS_FINGERPRINT, extractImports } from "./imports";
+import { sha256Digest } from "./digest";
 
 type FileSnippet = {
   path: string;
@@ -87,6 +88,12 @@ type BrowserStorageArea = {
   remove(keys: string[], callback: () => void): void;
 };
 
+type CacheGenerationGuard = {
+  global: number;
+  repoKey: string;
+  repo: number;
+};
+
 const repoContextCache = new Map<string, RepoAnalysisContext>();
 const snippetCache = new Map<string, string>();
 const overviewCache = new Map<string, CacheRecord<ProjectOverview>>();
@@ -94,10 +101,13 @@ const featureCache = new Map<string, CacheRecord<FeaturePath>>();
 const fileExplanationCache = new Map<string, CacheRecord<FileExplanation>>();
 const questionCache = new Map<string, CacheRecord<ProjectOverview>>();
 const skillBlueprintCache = new Map<string, CacheRecord<SkillBlueprint>>();
+const repoCacheGenerations = new Map<string, number>();
+let globalCacheGeneration = 0;
+let persistentMutationQueue: Promise<void> = Promise.resolve();
 const PERSISTENT_CACHE_PREFIX = "codepath-cache:";
 const PERSISTENT_CACHE_V2_PREFIX = "codepath-cache-v2:";
 const CACHE_SCHEMA_VERSION = 2;
-export const ANALYZER_VERSION = "2026-07-08-cache-v2";
+export const ANALYZER_VERSION = "2026-07-09-adversarial-v3";
 export const PROMPT_VERSION = createPromptVersion();
 const MAX_PERSISTENT_CACHE_ENTRIES = 240;
 const MAX_PERSISTENT_CACHE_REPO_ENTRIES = 80;
@@ -119,12 +129,13 @@ const GENERIC_CONTEXT_PROFILE: ProjectProfile = {
 
 export async function analyzeProject(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<ProjectOverview> {
   const mode = options.mode ?? "focused";
+  const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
   const selectedFiles = mode === "full-source" ? context.usefulFiles : pickImportantFiles(context.usefulFiles, context.profile);
-  const resultInputDigest = analysisInputDigest("overview", settings, context, selectedFiles, mode);
+  const resultInputDigest = await analysisInputDigest("overview", settings, context, selectedFiles, mode);
   const cacheKey = overviewCacheKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest);
   const cached = overviewCache.get(cacheKey);
   if (cached && isUsableCacheRecord<ProjectOverview>(cached, "overview", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
@@ -132,14 +143,14 @@ export async function analyzeProject(repo: RepoRef, settings: Settings, options:
 
   const persisted = persistResults ? await persistentRead<CacheRecord<ProjectOverview>>(persistentOverviewKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest)) : { hit: false };
   if (persisted.hit && isUsableCacheRecord<ProjectOverview>(persisted.value, "overview", context.snapshot, resultInputDigest)) {
-    overviewCache.set(cacheKey, persisted.value);
+    setCacheIfCurrent(overviewCache, cacheKey, persisted.value, cacheGuard);
     return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
   }
 
   const snippets =
     mode === "full-source"
-      ? await loadFullSourceSnippets(gh, repo, context.branch, context.snapshot.headSha, selectedFiles, timing, persistResults)
-      : await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, selectedFiles, context.profile.kind === "python-ml" ? 22000 : 16000, timing, persistResults);
+      ? await loadFullSourceSnippets(gh, repo, context.branch, context.snapshot.headSha, selectedFiles, timing, persistResults, cacheGuard)
+      : await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, selectedFiles, context.profile.kind === "python-ml" ? 22000 : 16000, timing, persistResults, cacheGuard);
   const structuralContext = buildStructuralContext(context, snippets);
 
   const content = await runModel(timing, settings, [
@@ -170,23 +181,24 @@ ${formatSnippets(snippets)}`
   const basis = analysisBasis(context, snippets, resultInputDigest);
   const overview = { summary: content, sources: snippets.map((item) => ({ path: item.path, blobSha: item.blobSha })), branch: context.branch, basis };
   const record = cacheRecord("overview", overview, basis);
-  if (canCacheResult(timing)) {
+  if (canCacheResult(timing) && isCacheGenerationCurrent(cacheGuard)) {
     overviewCache.set(cacheKey, record);
-    if (persistResults) await persistentSet(persistentOverviewKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest), record);
+    if (persistResults) await persistentSet(persistentOverviewKey(repo, context.branch, context.snapshot.treeSha, mode, resultInputDigest), record, cacheGuard);
   }
   return withTiming(overview, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
 export async function analyzeFeature(repo: RepoRef, settings: Settings, feature: string, options: AnalysisRunOptions = {}): Promise<FeaturePath> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
+  const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
 
   const keywords = expandFeatureKeywords(normalizedFeature);
   const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 16);
-  const resultInputDigest = analysisInputDigest("feature", settings, context, candidates, normalizedFeature);
+  const resultInputDigest = await analysisInputDigest("feature", settings, context, candidates, normalizedFeature);
   const cacheKey = featureCacheKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest);
   const cached = featureCache.get(cacheKey);
   if (cached && isUsableCacheRecord<FeaturePath>(cached, "feature", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
@@ -195,11 +207,11 @@ export async function analyzeFeature(repo: RepoRef, settings: Settings, feature:
     ? await persistentRead<CacheRecord<FeaturePath>>(persistentFeatureKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest))
     : { hit: false };
   if (persisted.hit && isUsableCacheRecord<FeaturePath>(persisted.value, "feature", context.snapshot, resultInputDigest)) {
-    featureCache.set(cacheKey, persisted.value);
+    setCacheIfCurrent(featureCache, cacheKey, persisted.value, cacheGuard);
     return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
   }
 
-  const snippets = await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, candidates, 24000, timing, persistResults);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, candidates, 24000, timing, persistResults, cacheGuard);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
   const structuralContext = buildStructuralContext(context, withImports);
 
@@ -242,24 +254,25 @@ ${formatSnippets(withImports)}`
     basis
   };
   const record = cacheRecord("feature", result, basis);
-  if (canCacheResult(timing)) {
+  if (canCacheResult(timing) && isCacheGenerationCurrent(cacheGuard)) {
     featureCache.set(cacheKey, record);
-    if (persistResults) await persistentSet(persistentFeatureKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest), record);
+    if (persistResults) await persistentSet(persistentFeatureKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, resultInputDigest), record, cacheGuard);
   }
   return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
 export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, feature: string, mode: BlueprintMode, options: AnalysisRunOptions = {}): Promise<SkillBlueprint> {
   const normalizedFeature = validateTextInput(feature, "功能描述", MAX_FEATURE_LENGTH);
+  const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
 
   const keywords = expandFeatureKeywords(normalizedFeature);
   const candidates = scoreFeatureFiles(context.usefulFiles, keywords, context.profile).slice(0, 18);
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(context.usefulFiles, context.profile).slice(0, 18);
-  const resultInputDigest = analysisInputDigest("blueprint", settings, context, selected, `${mode}:${normalizedFeature}`);
+  const resultInputDigest = await analysisInputDigest("blueprint", settings, context, selected, `${mode}:${normalizedFeature}`);
   const cacheKey = skillBlueprintCacheKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest);
   const cached = skillBlueprintCache.get(cacheKey);
   if (cached && isUsableCacheRecord<SkillBlueprint>(cached, "blueprint", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
@@ -268,11 +281,11 @@ export async function generateSkillBlueprint(repo: RepoRef, settings: Settings, 
     ? await persistentRead<CacheRecord<SkillBlueprint>>(persistentSkillBlueprintKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest))
     : { hit: false };
   if (persisted.hit && isUsableCacheRecord<SkillBlueprint>(persisted.value, "blueprint", context.snapshot, resultInputDigest)) {
-    skillBlueprintCache.set(cacheKey, persisted.value);
+    setCacheIfCurrent(skillBlueprintCache, cacheKey, persisted.value, cacheGuard);
     return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
   }
 
-  const snippets = await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, selected, 28000, timing, persistResults);
+  const snippets = await loadSnippetsCached(gh, repo, context.branch, context.snapshot.headSha, selected, 28000, timing, persistResults, cacheGuard);
   const withImports = snippets.map((snippet) => ({ ...snippet, imports: extractImports(snippet.content) }));
   const structuralContext = buildStructuralContext(context, withImports);
 
@@ -312,24 +325,25 @@ ${formatSnippets(withImports)}`
     basis
   };
   const record = cacheRecord("blueprint", result, basis);
-  if (canCacheResult(timing)) {
+  if (canCacheResult(timing) && isCacheGenerationCurrent(cacheGuard)) {
     skillBlueprintCache.set(cacheKey, record);
-    if (persistResults) await persistentSet(persistentSkillBlueprintKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest), record);
+    if (persistResults) await persistentSet(persistentSkillBlueprintKey(repo, context.branch, context.snapshot.treeSha, normalizedFeature, mode, resultInputDigest), record, cacheGuard);
   }
   return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
 export async function explainFile(repo: RepoRef, settings: Settings, options: AnalysisRunOptions = {}): Promise<FileExplanation> {
+  const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
   if (!repo.path) throw new Error("The current page is not a GitHub file page.");
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
-  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
   const resolvedRepo = context.resolvedRepo;
   const targetPath = resolvedRepo.path;
   if (!targetPath) throw new Error("The current GitHub file URL did not resolve to a file path.");
   const currentFile = context.files.find((file) => file.type === "blob" && file.path === targetPath) ?? { path: targetPath, type: "blob" as const };
-  const resultInputDigest = analysisInputDigest("file", settings, context, [currentFile], targetPath);
+  const resultInputDigest = await analysisInputDigest("file", settings, context, [currentFile], targetPath);
   const cacheKey = fileExplanationCacheKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest);
   const cached = fileExplanationCache.get(cacheKey);
   if (cached && isUsableCacheRecord<FileExplanation>(cached, "file", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
@@ -338,11 +352,11 @@ export async function explainFile(repo: RepoRef, settings: Settings, options: An
     ? await persistentRead<CacheRecord<FileExplanation>>(persistentFileExplanationKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest))
     : { hit: false };
   if (persisted.hit && isUsableCacheRecord<FileExplanation>(persisted.value, "file", context.snapshot, resultInputDigest)) {
-    fileExplanationCache.set(cacheKey, persisted.value);
+    setCacheIfCurrent(fileExplanationCache, cacheKey, persisted.value, cacheGuard);
     return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
   }
 
-  const content = await loadFileCached(gh, resolvedRepo, context.branch, context.snapshot.headSha, currentFile, timing, persistResults);
+  const content = await loadFileCached(gh, resolvedRepo, context.branch, context.snapshot.headSha, currentFile, timing, persistResults, cacheGuard);
   const imports = extractImports(content);
   const structuralContext = buildStructuralContext(context, [{ path: targetPath, content, imports }]);
 
@@ -375,8 +389,8 @@ ${truncate(content, 18000)}`
   const basis = analysisBasis(context, [{ path: targetPath, content, imports, blobSha: currentFile.sha, size: currentFile.size }], resultInputDigest);
   const result = { path: targetPath, summary, sources: [{ path: targetPath, blobSha: currentFile.sha }], branch: context.branch, basis };
   const record = cacheRecord("file", result, basis);
-  fileExplanationCache.set(cacheKey, record);
-  if (persistResults) await persistentSet(persistentFileExplanationKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest), record);
+  if (isCacheGenerationCurrent(cacheGuard)) fileExplanationCache.set(cacheKey, record);
+  if (persistResults) await persistentSet(persistentFileExplanationKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest), record, cacheGuard);
   return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
@@ -389,6 +403,7 @@ export async function answerQuestion(
   contextBasis?: AnalysisBasis
 ): Promise<ProjectOverview> {
   const normalizedQuestion = validateTextInput(question, "追问", MAX_QUESTION_LENGTH);
+  const cacheGuard = captureCacheGeneration(repo);
   const timing = createTiming();
   let validatedContext = "";
   let gh: SourceClient | undefined;
@@ -433,7 +448,7 @@ ${normalizedQuestion}`
 
   gh ??= await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
-  const repoContext = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
+  const repoContext = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults, cacheGuard));
   if (context && contextBasis && !validatedContext) {
     assertCurrentAnalysisBasis(contextBasis);
     const status = cacheStatusFor(contextBasis.snapshot, repoContext.snapshot);
@@ -454,7 +469,7 @@ ${normalizedQuestion}`
   const candidates = scoreFeatureFiles(repoContext.usefulFiles, keywords, repoContext.profile).slice(0, 14);
   const selected = candidates.length > 0 ? candidates : pickImportantFiles(repoContext.usefulFiles, repoContext.profile).slice(0, 14);
   const contextForPrompt = validatedContext || "";
-  const resultInputDigest = analysisInputDigest("question", settings, repoContext, selected, `${normalizedQuestion}:${contextForPrompt}`);
+  const resultInputDigest = await analysisInputDigest("question", settings, repoContext, selected, `${normalizedQuestion}:${contextForPrompt}`);
   const cacheKey = questionCacheKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest);
   const cached = questionCache.get(cacheKey);
   if (cached && isUsableCacheRecord<ProjectOverview>(cached, "question", repoContext.snapshot, resultInputDigest)) return cachedResult(cached, repoContext.snapshot, timing);
@@ -463,11 +478,11 @@ ${normalizedQuestion}`
     ? await persistentRead<CacheRecord<ProjectOverview>>(persistentQuestionKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest))
     : { hit: false };
   if (persisted.hit && isUsableCacheRecord<ProjectOverview>(persisted.value, "question", repoContext.snapshot, resultInputDigest)) {
-    questionCache.set(cacheKey, persisted.value);
+    setCacheIfCurrent(questionCache, cacheKey, persisted.value, cacheGuard);
     return cachedResult(persisted.value, repoContext.snapshot, timing, { persistentCacheHit: true });
   }
 
-  const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, repoContext.snapshot.headSha, selected, 22000, timing, persistResults);
+  const snippets = await loadSnippetsCached(gh, repo, repoContext.branch, repoContext.snapshot.headSha, selected, 22000, timing, persistResults, cacheGuard);
   const structuralContext = buildStructuralContext(repoContext, snippets);
 
   const content = await runModel(timing, settings, [
@@ -497,9 +512,9 @@ ${formatSnippets(snippets)}`
   const basis = analysisBasis(repoContext, snippets, resultInputDigest);
   const result = { summary: content, sources: snippets.map((item) => ({ path: item.path, blobSha: item.blobSha })), branch: repoContext.branch, basis };
   const record = cacheRecord("question", result, basis);
-  if (canCacheResult(timing)) {
+  if (canCacheResult(timing) && isCacheGenerationCurrent(cacheGuard)) {
     questionCache.set(cacheKey, record);
-    if (persistResults) await persistentSet(persistentQuestionKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest), record);
+    if (persistResults) await persistentSet(persistentQuestionKey(repo, repoContext.branch, repoContext.snapshot.treeSha, normalizedQuestion, contextForPrompt, resultInputDigest), record, cacheGuard);
   }
   return withTiming(result, timing, snapshotTiming(repoContext.snapshot, statusForCurrentSnapshot(repoContext.snapshot)));
 }
@@ -562,6 +577,7 @@ export async function clearAnalysisCaches(scope: CacheClearScope, repo?: RepoRef
   if (scope === "repo" && !repo) {
     return { scope, memoryCleared: false, persistentKeysCleared: 0 };
   }
+  invalidateCacheGeneration(repo);
   clearMemoryCaches(repo ? `${repo.owner}/${repo.repo}@` : "");
   const persistentKeysCleared = await persistentClearMany(
     repo ? [persistentRepoPrefix(repo), persistentRepoV2Prefix(repo)] : [PERSISTENT_CACHE_PREFIX, PERSISTENT_CACHE_V2_PREFIX]
@@ -597,10 +613,16 @@ export async function deletePersistentCacheEntry(key: string): Promise<CacheDele
   }
 
   const entry = parsePersistentCacheKey(key);
-  if (entry) clearMemoryCaches(`${entry.owner}/${entry.repo}@${entry.branch}:`);
-  const existing = await storageGet(storage, key);
-  await storageRemove(storage, [key]);
-  return { target: "entry", memoryCleared: Boolean(entry), persistentKeysCleared: Object.prototype.hasOwnProperty.call(existing, key) ? 1 : 0 };
+  if (entry) {
+    invalidateCacheGeneration({ owner: entry.owner, repo: entry.repo });
+    clearMemoryCaches(`${entry.owner}/${entry.repo}@${entry.branch}:`);
+  }
+  const persistentKeysCleared = await runPersistentMutation(async () => {
+    const existing = await storageGet(storage, key);
+    await storageRemove(storage, [key]);
+    return Object.prototype.hasOwnProperty.call(existing, key) ? 1 : 0;
+  });
+  return { target: "entry", memoryCleared: Boolean(entry), persistentKeysCleared };
 }
 
 export async function deletePersistentCacheRepo(repoKey: string): Promise<CacheDeleteResult> {
@@ -609,6 +631,8 @@ export async function deletePersistentCacheRepo(repoKey: string): Promise<CacheD
     return { target: "repo", memoryCleared: false, persistentKeysCleared: 0 };
   }
 
+  const parsedRepo = parseCacheRepoKey(repoKey);
+  if (parsedRepo) invalidateCacheGeneration(parsedRepo);
   clearMemoryCaches(`${repoKey}:`);
   const persistentKeysCleared = await persistentClearMany([`${PERSISTENT_CACHE_PREFIX}${repoKey}:`, `${PERSISTENT_CACHE_V2_PREFIX}${repoKey}:`]);
   return { target: "repo", memoryCleared: true, persistentKeysCleared };
@@ -713,7 +737,13 @@ async function resolveSourceRepoRef(gh: SourceClient, repo: RepoRef): Promise<Re
   return gh.resolveRepoRef(repo);
 }
 
-async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: TimingCollector, persistContext = true): Promise<RepoAnalysisContext> {
+async function getRepoAnalysisContext(
+  gh: SourceClient,
+  repo: RepoRef,
+  timing?: TimingCollector,
+  persistContext = true,
+  cacheGuard = captureCacheGeneration(repo)
+): Promise<RepoAnalysisContext> {
   const { branch, snapshot, resolvedRepo } = await resolveRepoSnapshot(gh, repo, timing);
   const trustedCache = persistContext && gh.kind === "github-api";
   const key = repoContextCacheKey(repo, branch, snapshot.treeSha);
@@ -730,7 +760,7 @@ async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: 
       timing.timing.persistentCacheHit ??= true;
     }
     const context = { ...persisted.value.value, branch, snapshot, resolvedRepo };
-    repoContextCache.set(key, context);
+    setCacheIfCurrent(repoContextCache, key, context, cacheGuard);
     return context;
   }
 
@@ -739,11 +769,12 @@ async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: 
   const profile = detectProjectProfile(usefulFiles);
   const treeSummary = summarizeTree(usefulFiles);
   const context = { resolvedRepo, branch, snapshot, files, usefulFiles, profile, treeSummary };
-  repoContextCache.set(key, context);
-  if (trustedCache) {
+  setCacheIfCurrent(repoContextCache, key, context, cacheGuard);
+  if (trustedCache && isCacheGenerationCurrent(cacheGuard)) {
     await persistentSet(
       persistentTreeKey(repo, branch, snapshot.treeSha),
-      cacheRecord("tree", context, analysisBasis(context, [], `tree:${snapshot.treeSha}`))
+      cacheRecord("tree", context, analysisBasis(context, [], `tree:${snapshot.treeSha}`)),
+      cacheGuard
     );
   }
   return context;
@@ -757,7 +788,8 @@ async function loadSnippetsCached(
   files: TreeFile[],
   budget: number,
   timing?: TimingCollector,
-  persistFiles = true
+  persistFiles = true,
+  cacheGuard = captureCacheGeneration(repo)
 ): Promise<FileSnippet[]> {
   const snippets: FileSnippet[] = [];
   let used = 0;
@@ -765,7 +797,7 @@ async function loadSnippetsCached(
     if (used >= budget) break;
     if ((file.size ?? 0) > 180_000) continue;
     try {
-      const content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles);
+      const content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles, cacheGuard);
       const remaining = budget - used;
       const clipped = truncate(content, Math.min(7000, remaining));
       used += clipped.length;
@@ -785,7 +817,8 @@ async function loadFullSourceSnippets(
   fetchRef: string,
   files: TreeFile[],
   timing?: TimingCollector,
-  persistFiles = true
+  persistFiles = true,
+  cacheGuard = captureCacheGeneration(repo)
 ): Promise<FileSnippet[]> {
   const sorted = [...files].sort((left, right) => left.path.localeCompare(right.path));
   const oversizedFile = sorted.find((file) => (file.size ?? 0) > FULL_SOURCE_SINGLE_FILE_LIMIT);
@@ -801,7 +834,7 @@ async function loadFullSourceSnippets(
   for (const file of sorted) {
     let content: string;
     try {
-      content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles);
+      content = await loadFileCached(gh, repo, branch, fetchRef, file, timing, persistFiles, cacheGuard);
     } catch (error) {
       throw new Error(`全部源码分析读取失败：${file.path}。${error instanceof Error ? error.message : String(error)}`);
     }
@@ -832,7 +865,16 @@ function canCacheResult(timing: TimingCollector): boolean {
   return timing.timing.sourceIncomplete !== true;
 }
 
-async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, fetchRef: string, file: TreeFile, timing?: TimingCollector, persistFile = true): Promise<string> {
+async function loadFileCached(
+  gh: SourceClient,
+  repo: RepoRef,
+  branch: string,
+  fetchRef: string,
+  file: TreeFile,
+  timing?: TimingCollector,
+  persistFile = true,
+  cacheGuard = captureCacheGeneration(repo)
+): Promise<string> {
   const path = file.path;
   const key = fileCacheKey(repo, branch, file, fetchRef);
   const trustedCache = persistFile && gh.kind === "github-api";
@@ -848,12 +890,12 @@ async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, f
         timing.timing.sourceCacheHit ??= true;
         timing.timing.persistentCacheHit ??= true;
       }
-      snippetCache.set(key, persisted.value.value);
+      setCacheIfCurrent(snippetCache, key, persisted.value.value, cacheGuard);
       return persisted.value.value;
     }
   }
   const content = await measure(timing, "fileMs", () => gh.getFile(repo.owner, repo.repo, path, fetchRef));
-  if (trustedCache) {
+  if (trustedCache && isCacheGenerationCurrent(cacheGuard)) {
     snippetCache.set(key, content);
     if (content.length <= 180_000) {
       const snapshot = repoSnapshotFromFile(repo, branch, file, fetchRef);
@@ -865,7 +907,8 @@ async function loadFileCached(gh: SourceClient, repo: RepoRef, branch: string, f
           inputDigest: fileContentInputDigest(file, fetchRef),
           promptVersion: PROMPT_VERSION,
           analyzerVersion: ANALYZER_VERSION
-        })
+        }),
+        cacheGuard
       );
     }
   }
@@ -948,29 +991,27 @@ function canUseTrustedPersistentCache(gh: SourceClient, settings: Settings): boo
   return gh.kind === "github-api" && !settings.githubToken;
 }
 
-function analysisInputDigest(kind: CacheRecordKind, settings: Settings, context: RepoAnalysisContext, files: TreeFile[], extra: unknown): string {
-  return stringHash(
-    JSON.stringify({
-      kind,
-      extra,
-      treeSha: context.snapshot.treeSha,
-      files: files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path)),
-      model: modelFingerprint(settings),
-      promptVersion: PROMPT_VERSION,
-      analyzerVersion: ANALYZER_VERSION
-    })
-  );
+async function analysisInputDigest(kind: CacheRecordKind, settings: Settings, context: RepoAnalysisContext, files: TreeFile[], extra: unknown): Promise<string> {
+  return sha256Digest([
+    kind,
+    JSON.stringify(extra),
+    context.snapshot.treeSha,
+    JSON.stringify(files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path))),
+    await modelFingerprint(settings),
+    PROMPT_VERSION,
+    ANALYZER_VERSION
+  ]);
 }
 
-function modelFingerprint(settings: Settings): string {
-  return stringHash(
-    JSON.stringify({
-      provider: settings.provider,
-      baseUrl: settings.baseUrl.replace(/\/+$/, ""),
-      model: settings.model,
-      maxOutputTokens: settings.maxOutputTokens ?? null
-    })
-  );
+async function modelFingerprint(settings: Settings): Promise<string> {
+  const credentialFingerprint = await sha256Digest([settings.apiKey]);
+  return sha256Digest([
+    settings.provider,
+    settings.baseUrl.replace(/\/+$/, ""),
+    settings.model,
+    String(settings.maxOutputTokens ?? ""),
+    credentialFingerprint
+  ]);
 }
 
 function createPromptVersion(): string {
@@ -1121,6 +1162,7 @@ function cachedResult<T extends object>(
 }
 
 function cacheStatusFor(cachedSnapshot: RepoSnapshot, currentSnapshot: RepoSnapshot): CacheStatus {
+  if (!sameSnapshotScope(cachedSnapshot, currentSnapshot)) return "stale";
   if (cachedSnapshot.headSha.startsWith("unchecked:") || currentSnapshot.headSha.startsWith("unchecked:")) return "unchecked";
   if (cachedSnapshot.headSha === currentSnapshot.headSha) return "fresh";
   if (cachedSnapshot.treeSha === currentSnapshot.treeSha) return "same-tree-new-head";
@@ -1165,6 +1207,37 @@ function clearMemoryCaches(prefix: string) {
   clearMap(skillBlueprintCache, prefix);
 }
 
+function captureCacheGeneration(repo: RepoRef): CacheGenerationGuard {
+  const repoKey = generationRepoKey(repo.owner, repo.repo);
+  return {
+    global: globalCacheGeneration,
+    repoKey,
+    repo: repoCacheGenerations.get(repoKey) ?? 0
+  };
+}
+
+function invalidateCacheGeneration(repo?: Pick<RepoRef, "owner" | "repo">) {
+  if (!repo) {
+    globalCacheGeneration += 1;
+    repoCacheGenerations.clear();
+    return;
+  }
+  const repoKey = generationRepoKey(repo.owner, repo.repo);
+  repoCacheGenerations.set(repoKey, (repoCacheGenerations.get(repoKey) ?? 0) + 1);
+}
+
+function isCacheGenerationCurrent(guard: CacheGenerationGuard): boolean {
+  return guard.global === globalCacheGeneration && guard.repo === (repoCacheGenerations.get(guard.repoKey) ?? 0);
+}
+
+function setCacheIfCurrent<T>(map: Map<string, T>, key: string, value: T, guard: CacheGenerationGuard) {
+  if (isCacheGenerationCurrent(guard)) map.set(key, value);
+}
+
+function generationRepoKey(owner: string, repo: string): string {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
 function clearMap<T>(map: Map<string, T>, prefix: string) {
   if (!prefix) {
     map.clear();
@@ -1187,37 +1260,57 @@ async function persistentRead<T>(key: string): Promise<{ hit: boolean; value?: T
   }
 }
 
-async function persistentSet(key: string, value: unknown): Promise<void> {
+async function persistentSet(key: string, value: unknown, guard?: CacheGenerationGuard): Promise<void> {
   const storage = getChromeStorage();
   if (!storage) return;
   const isV2 = key.startsWith(PERSISTENT_CACHE_V2_PREFIX);
-  try {
-    if (isV2) await prunePersistentCache(storage, key, { key, value });
-    await storageSet(storage, { [key]: value });
-    if (isV2) await prunePersistentCache(storage, key);
-  } catch {
-    if (!isV2) return;
+  if (guard && !isCacheGenerationCurrent(guard)) return;
+  if (isV2 && pendingRecordExceedsPolicy(key, value)) return;
+
+  await runPersistentMutation(async () => {
+    if (guard && !isCacheGenerationCurrent(guard)) return;
     try {
-      await prunePersistentCache(storage, key, { key, value });
+      if (isV2) await prunePersistentCache(storage, key, { key, value });
+      if (guard && !isCacheGenerationCurrent(guard)) return;
       await storageSet(storage, { [key]: value });
-      await prunePersistentCache(storage, key);
+      if (isV2) await prunePersistentCache(storage, key);
     } catch {
-      // Persistent cache is a best-effort optimization; analysis should still work without it.
+      if (!isV2 || (guard && !isCacheGenerationCurrent(guard))) return;
+      try {
+        await prunePersistentCache(storage, key, { key, value });
+        if (guard && !isCacheGenerationCurrent(guard)) return;
+        await storageSet(storage, { [key]: value });
+        await prunePersistentCache(storage, key);
+      } catch {
+        // Persistent cache is a best-effort optimization; analysis should still work without it.
+      }
     }
-  }
+  });
 }
 
 async function persistentClearMany(prefixes: string[]): Promise<number> {
   const storage = getChromeStorage();
   if (!storage) return 0;
-  try {
+  return runPersistentMutation(async () => {
     const items = await storageGet(storage, null);
     const keys = Object.keys(items).filter((key) => prefixes.some((prefix) => key.startsWith(prefix)));
     if (keys.length > 0) await storageRemove(storage, keys);
     return keys.length;
-  } catch {
-    return 0;
-  }
+  });
+}
+
+function pendingRecordExceedsPolicy(key: string, value: unknown): boolean {
+  const size = key.length + estimatedStorageBytes(value);
+  return size > MAX_PERSISTENT_CACHE_BYTES || size > MAX_PERSISTENT_CACHE_REPO_BYTES;
+}
+
+function runPersistentMutation<T>(action: () => Promise<T>): Promise<T> {
+  const result = persistentMutationQueue.then(action, action);
+  persistentMutationQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
 }
 
 async function prunePersistentCache(
@@ -1293,6 +1386,16 @@ function pruneByteOverflow<T extends { key: string; size: number }>(entries: T[]
 function persistentRepoKeyFromCacheKey(key: string): string {
   const entry = parsePersistentCacheKey(key);
   return entry ? `${entry.owner}/${entry.repo}@${entry.branch}` : "";
+}
+
+function parseCacheRepoKey(repoKey: string): Pick<RepoRef, "owner" | "repo"> | undefined {
+  const atIndex = repoKey.lastIndexOf("@");
+  const slashIndex = repoKey.indexOf("/");
+  if (slashIndex <= 0 || atIndex <= slashIndex + 1) return undefined;
+  return {
+    owner: repoKey.slice(0, slashIndex),
+    repo: repoKey.slice(slashIndex + 1, atIndex)
+  };
 }
 
 function persistentCacheTimeMs(value: unknown): number {

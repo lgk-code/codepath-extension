@@ -3,6 +3,7 @@ import { afterEach, test } from "node:test";
 import { strToU8, zipSync } from "fflate";
 import { ANALYZER_VERSION, PROMPT_VERSION, analyzeProject, answerQuestion, clearAnalysisCaches, explainFile, generateSuggestedQuestions } from "./analyzer";
 import type { AnalysisBasis, RepoRef, Settings, TreeFile } from "../types";
+import { sha256Digest } from "./digest";
 
 const originalFetch = globalThis.fetch;
 
@@ -139,6 +140,41 @@ test("analyzeProject reuses cached overview when head changes but tree stays the
   assert.equal(second.timing?.cacheStatus, "same-tree-new-head");
   assert.equal(second.timing?.headSha, "head-one");
   assert.equal(second.timing?.lastValidatedAt !== undefined, true);
+});
+
+test("analyzeProject does not reuse model results across colliding legacy FNV model ids", async () => {
+  const firstModel = "m-w3i1gfipcz";
+  const secondModel = "m-exsvehk3q5";
+  assert.equal(legacyModelFingerprint(firstModel), legacyModelFingerprint(secondModel), "fixture must collide under the legacy fingerprint");
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Demo" },
+    onModelRequest: () => {
+      modelCalls += 1;
+    }
+  });
+
+  await analyzeProject(repo, { ...settings, model: firstModel });
+  await analyzeProject(repo, { ...settings, model: secondModel });
+
+  assert.equal(modelCalls, 2);
+});
+
+test("analyzeProject isolates model result caches by API credential fingerprint", async () => {
+  let modelCalls = 0;
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Demo" },
+    onModelRequest: () => {
+      modelCalls += 1;
+    }
+  });
+
+  await analyzeProject(repo, { ...settings, apiKey: "tenant-one-key" });
+  await analyzeProject(repo, { ...settings, apiKey: "tenant-two-key" });
+
+  assert.equal(modelCalls, 2);
 });
 
 test("analyzeProject ignores legacy raw persistent overview cache entries", async () => {
@@ -415,7 +451,7 @@ test("explainFile uses git tree blob identity for files filtered out of project 
 
 test("analyzeProject ignores v2 persistent overview records whose basis does not match the current request", async () => {
   const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
-  const key = persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  const key = await persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
   installChromeStorageMock({
     [key]: {
       schemaVersion: 2,
@@ -454,7 +490,7 @@ test("analyzeProject ignores v2 persistent overview records whose basis does not
 
 test("analyzeProject treats corrupt v2 CacheRecord snapshots as cache misses", async () => {
   const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
-  const key = persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  const key = await persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
   installChromeStorageMock({
     [key]: {
       schemaVersion: 2,
@@ -467,7 +503,7 @@ test("analyzeProject treats corrupt v2 CacheRecord snapshots as cache misses", a
       basis: {
         snapshot: { ...snapshotForTest("head-current", "tree-current"), headSha: 123 },
         files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
-        inputDigest: persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
+        inputDigest: await persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
         promptVersion: PROMPT_VERSION,
         analyzerVersion: ANALYZER_VERSION
       }
@@ -493,7 +529,7 @@ test("analyzeProject treats corrupt v2 CacheRecord snapshots as cache misses", a
 
 test("analyzeProject does not reuse v2 CacheRecords from another repository scope", async () => {
   const tree = [{ path: "README.md", type: "blob" as const, size: 16, sha: "blob-current" }];
-  const key = persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
+  const key = await persistentOverviewTestKey(repo, "main", "tree-current", "focused", tree, settings);
   installChromeStorageMock({
     [key]: {
       schemaVersion: 2,
@@ -506,7 +542,7 @@ test("analyzeProject does not reuse v2 CacheRecords from another repository scop
       basis: {
         snapshot: { ...snapshotForTest("head-current", "tree-current"), owner: "other" },
         files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
-        inputDigest: persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
+        inputDigest: await persistentOverviewInputDigestForTest("tree-current", "focused", tree, settings),
         promptVersion: PROMPT_VERSION,
         analyzerVersion: ANALYZER_VERSION
       }
@@ -629,6 +665,70 @@ test("persistent v2 cache accounts for the pending record size before writing", 
   assert.equal(keys.some((key) => key.includes("large-old-tree-0")), false);
 });
 
+test("oversized pending cache records do not evict valid existing records", async () => {
+  const existingKey = "codepath-cache-v2:acme/demo@main:overview:existing-tree:focused:existing-digest";
+  const store = installChromeStorageMock({ [existingKey]: cacheRecordForTest("overview", "2026-07-01T00:00:00.000Z") });
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current",
+    modelContent: () => `源码确认\n- ${"z".repeat(1_600_000)}`
+  });
+
+  await analyzeProject(repo, settings);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(store, existingKey), true);
+  assert.equal(Object.keys(store).some((key) => key.startsWith("codepath-cache-v2:acme/demo@main:overview:tree-current:")), false);
+});
+
+test("clearing a repository prevents an in-flight analysis from repopulating caches", async () => {
+  let modelCalls = 0;
+  let releaseFirstModel: (() => void) | undefined;
+  let markFirstModelStarted: (() => void) | undefined;
+  const firstModelStarted = new Promise<void>((resolve) => {
+    markFirstModelStarted = resolve;
+  });
+  const firstModelGate = new Promise<void>((resolve) => {
+    releaseFirstModel = resolve;
+  });
+  const sourceFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current"
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    if (String(request) === "https://models.example/v1/chat/completions") {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        markFirstModelStarted?.();
+        await firstModelGate;
+      }
+      return jsonResponse({ choices: [{ message: { content: `源码确认\n- 第 ${modelCalls} 次。` } }] });
+    }
+    return sourceFetch(request, init);
+  }) as typeof fetch;
+
+  const pending = analyzeProject(repo, settings);
+  await firstModelStarted;
+  await clearAnalysisCaches("repo", repo);
+  releaseFirstModel?.();
+  await pending;
+  await analyzeProject(repo, settings);
+
+  assert.equal(modelCalls, 2);
+});
+
+test("cache clearing propagates persistent storage removal failures", async () => {
+  installChromeStorageMock(
+    { "codepath-cache-v2:acme/demo@main:overview:tree:focused:digest": cacheRecordForTest("overview", "2026-07-01T00:00:00.000Z") },
+    { failRemoveCount: 1 }
+  );
+
+  await assert.rejects(() => clearAnalysisCaches("all"), /storage remove failed/i);
+});
+
 test("analyzeProject marks zip fallback snapshots as unchecked and does not reuse result cache", async () => {
   let modelCalls = 0;
   globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
@@ -729,6 +829,27 @@ test("answerQuestion refuses context-only answers from older prompt versions", a
   await assert.rejects(
     () => answerQuestion(repo, settings, "这个项目主要做什么？", "旧分析上下文。".repeat(80), {}, oldBasis),
     /上下文版本已过期/
+  );
+});
+
+test("answerQuestion rejects a basis from another repository even when SHAs match", async () => {
+  globalThis.fetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-current" }],
+    files: { "README.md": "# Current" },
+    headSha: "head-current",
+    treeSha: "tree-current"
+  });
+  const otherRepoBasis: AnalysisBasis = {
+    snapshot: { ...snapshotForTest("head-current", "tree-current"), owner: "other" },
+    files: [{ path: "README.md", blobSha: "blob-current", size: 16 }],
+    inputDigest: "other-context",
+    promptVersion: PROMPT_VERSION,
+    analyzerVersion: ANALYZER_VERSION
+  };
+
+  await assert.rejects(
+    () => answerQuestion(repo, settings, "这个项目主要做什么？", "旧分析上下文。".repeat(80), {}, otherRepoBasis),
+    /旧分析上下文已过期/
   );
 });
 
@@ -1071,10 +1192,14 @@ function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
-function installChromeStorageMock(initial: Record<string, unknown>, options: { failSetCount?: number; maxSerializedBytes?: number } = {}): Record<string, unknown> {
+function installChromeStorageMock(
+  initial: Record<string, unknown>,
+  options: { failSetCount?: number; failRemoveCount?: number; maxSerializedBytes?: number } = {}
+): Record<string, unknown> {
   const store = { ...initial };
   const runtime: { lastError?: { message?: string } } = {};
   let failSetCount = options.failSetCount ?? 0;
+  let failRemoveCount = options.failRemoveCount ?? 0;
   (globalThis as typeof globalThis & { chrome?: unknown }).chrome = {
     storage: {
       local: {
@@ -1101,6 +1226,13 @@ function installChromeStorageMock(initial: Record<string, unknown>, options: { f
           callback();
         },
         remove(keys: string[], callback: () => void) {
+          if (failRemoveCount > 0) {
+            failRemoveCount -= 1;
+            runtime.lastError = { message: "storage remove failed" };
+            callback();
+            delete runtime.lastError;
+            return;
+          }
           for (const key of keys) delete store[key];
           callback();
         }
@@ -1124,23 +1256,21 @@ function snapshotForTest(headSha: string, treeSha: string) {
   };
 }
 
-function persistentOverviewTestKey(repoRef: RepoRef, branch: string, treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): string {
-  const inputDigest = persistentOverviewInputDigestForTest(treeSha, mode, files, testSettings);
+async function persistentOverviewTestKey(repoRef: RepoRef, branch: string, treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): Promise<string> {
+  const inputDigest = await persistentOverviewInputDigestForTest(treeSha, mode, files, testSettings);
   return `codepath-cache-v2:${repoRef.owner}/${repoRef.repo}@${branch}:overview:${treeSha}:${mode}:${inputDigest}`;
 }
 
-function persistentOverviewInputDigestForTest(treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): string {
-  return stringHashForTest(
-    JSON.stringify({
-      kind: "overview",
-      extra: mode,
-      treeSha,
-      files: files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path)),
-      model: modelFingerprintForTest(testSettings),
-      promptVersion: PROMPT_VERSION,
-      analyzerVersion: ANALYZER_VERSION
-    })
-  );
+async function persistentOverviewInputDigestForTest(treeSha: string, mode: string, files: TreeFile[], testSettings: Settings): Promise<string> {
+  return sha256Digest([
+    "overview",
+    JSON.stringify(mode),
+    treeSha,
+    JSON.stringify(files.map((file) => ({ path: file.path, blobSha: file.sha, size: file.size })).sort((left, right) => left.path.localeCompare(right.path))),
+    await modelFingerprintForTest(testSettings),
+    PROMPT_VERSION,
+    ANALYZER_VERSION
+  ]);
 }
 
 function cacheRecordForTest(kind: "overview", capturedAt: string, summary = "old") {
@@ -1166,15 +1296,14 @@ function cacheRecordForTest(kind: "overview", capturedAt: string, summary = "old
   };
 }
 
-function modelFingerprintForTest(testSettings: Settings): string {
-  return stringHashForTest(
-    JSON.stringify({
-      provider: testSettings.provider,
-      baseUrl: testSettings.baseUrl.replace(/\/+$/, ""),
-      model: testSettings.model,
-      maxOutputTokens: testSettings.maxOutputTokens ?? null
-    })
-  );
+async function modelFingerprintForTest(testSettings: Settings): Promise<string> {
+  return sha256Digest([
+    testSettings.provider,
+    testSettings.baseUrl.replace(/\/+$/, ""),
+    testSettings.model,
+    String(testSettings.maxOutputTokens ?? ""),
+    await sha256Digest([testSettings.apiKey])
+  ]);
 }
 
 function stringHashForTest(value: string): string {
@@ -1184,6 +1313,17 @@ function stringHashForTest(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(36);
+}
+
+function legacyModelFingerprint(model: string): string {
+  return stringHashForTest(
+    JSON.stringify({
+      provider: "openai",
+      baseUrl: "https://models.example/v1",
+      model,
+      maxOutputTokens: null
+    })
+  );
 }
 
 function zipResponse(files: Record<string, string>): Response {
