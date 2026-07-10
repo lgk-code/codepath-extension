@@ -134,7 +134,9 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - GitHub API 触发 rate limit 且当前是仓库根页面：ZIP fallback 应读取 codeload `HEAD`，状态显示为 `unchecked`，结果不得长期复用。
 - ZIP fallback 收到显式 branch、tag 或 40 位 commit 时，应通过 codeload 通用 exact-ref 路径请求该 ref，不得强制拼接 `refs/heads/`。
 - GitHub API 触发 rate limit 且当前文件 URL 存在 ref/path 歧义：不得用 ZIP 猜测分支，应提示改用 immutable commit URL 或仓库根页面。
-- GitHub API rate limit 后的普通文件 URL 应通过 codeload HEAD 精确检查候选 ref；只有一个 ref 存在且下载后的 ZIP 含目标路径时才允许继续，多 ref 仍保守拒绝。
+- GitHub API rate limit 后的普通文件 URL 应通过 codeload HEAD 精确检查候选 ref，并仅在有界 archive 路径验证得到唯一可行候选时继续。
+- 多个候选 ref 都存在时，ZIP fallback 最多下载 3 个有界 archive，并按完整路径索引筛选唯一可行候选；多个路径都可行时仍拒绝。
+- 聚焦分析允许跳过普通文件读取错误，但 403/429 rate limit 必须向外传播并触发整次 ZIP 重试，不能让模型基于空 snippets 继续。
 - API 文件读取统一使用 raw media type 并限制为 2 MiB；1-2 MiB 文件不能被 JSON `encoding: none` 静默当作空源码，超限必须明确失败。
 
 ## 传输、流式与安全窗口
@@ -163,6 +165,7 @@ CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不�
 - 默认 `D:\edge下载\CodePath` 部署后同时存在有效 MV3 `manifest.json` 和新版本 `codepath-dev-reload.json`。
 - Release 必须使用与 tagged `package.json` 版本完全一致的 annotated tag；tag peel 后的 commit 必须是 `origin/main` 的祖先，验证通过后只读 job 才能 checkout 该 commit 构建。
 - Release workflow 必须从默认分支 `repository_dispatch` 运行；候选构建 job 仅有 `contents: read`，唯一 `contents: write` job 必须依赖构建 artifact 并绑定 `release` environment。
+- `release` environment 审批完成后，写权限 job 必须重新 fetch 并解引用远端 annotated tag，确认其 commit 与只读构建输出 SHA 完全一致后才能发布。
 - `.github/workflows` 中所有 `uses:` 必须固定为 40 位 commit SHA。
 - `npm.cmd audit` 应报告 0 个已知漏洞；锁文件策略测试应同时拒绝脆弱版本和不满足上游 semver/Node engine 的强制 override。
 - esbuild 必须同时满足 WXT/tsx 的 `0.27.x` 范围并避开 `>=0.27.3 <0.28.1` 公告区间；当前固定为 `0.27.2`，不得用不兼容的 `0.28.x` override。

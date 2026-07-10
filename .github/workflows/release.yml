@@ -114,6 +114,32 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout trusted publish verifier
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate tag after release approval
+        env:
+          RELEASE_TAG: ${{ needs.build-extension.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.build-extension.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin main:refs/remotes/origin/main
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
+            echo "Release tag is no longer annotated: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          CURRENT_COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          if [[ "$CURRENT_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+            echo "Release tag moved after build: expected $EXPECTED_COMMIT, got $CURRENT_COMMIT" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$CURRENT_COMMIT" refs/remotes/origin/main
+
       - name: Download verified release asset
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

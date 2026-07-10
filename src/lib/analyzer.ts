@@ -862,7 +862,8 @@ async function loadSnippetsCached(
       const clipped = truncate(content, Math.min(7000, remaining));
       used += clipped.length;
       snippets.push({ path: file.path, content: clipped, blobSha: file.sha, size: file.size });
-    } catch {
+    } catch (error) {
+      if (isGithubRateLimitError(error)) throw error;
       markSourceIncomplete(timing, file.path);
       // Skip files GitHub refuses or cannot decode; the rest of the context is still useful.
     }

@@ -170,6 +170,42 @@ test("ZipGithubClient retains a filtered current file separately from project sn
   assert.equal(await client.getFile("acme", "demo", repo.path ?? "", repo.branch ?? ""), "<svg>logo</svg>");
 });
 
+test("ZipGithubClient uses archive paths to disambiguate multiple existing refs", async () => {
+  let zipGets = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (init?.method === "HEAD" && (url.endsWith("/zip/feature") || url.endsWith("/zip/feature%2Fsidebar"))) {
+      return new Response(null, { status: 200 });
+    }
+    if (url.endsWith("/zip/feature")) {
+      zipGets += 1;
+      return zipResponse({ "demo-feature/README.md": "# Feature" });
+    }
+    if (url.endsWith("/zip/feature%2Fsidebar")) {
+      zipGets += 1;
+      return zipResponse({ "demo-sidebar/src/app.ts": "export const app = true;" });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const client = new ZipGithubClient("acme", "demo", "feature/sidebar");
+
+  const resolved = await client.resolveRepoRef({
+    owner: "acme",
+    repo: "demo",
+    branch: "feature/sidebar",
+    path: "src/app.ts",
+    pageType: "file",
+    refCandidates: [
+      { refName: "feature", path: "sidebar/src/app.ts" },
+      { refName: "feature/sidebar", path: "src/app.ts" }
+    ]
+  });
+
+  assert.equal(resolved.branch, "feature/sidebar");
+  assert.equal(resolved.path, "src/app.ts");
+  assert.equal(zipGets, 2);
+});
+
 function zipResponse(files: Record<string, string>): Response {
   const entries = Object.fromEntries(Object.entries(files).map(([path, content]) => [path, strToU8(content)]));
   const bytes = zipSync(entries);

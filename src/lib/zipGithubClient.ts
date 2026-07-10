@@ -15,6 +15,7 @@ const MAX_UNZIPPED_BYTES = 80 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 5000;
 const MAX_ZIP_ENTRY_BYTES = 2 * 1024 * 1024;
 const MAX_ZIP_REF_CANDIDATES = 20;
+const MAX_ZIP_ARCHIVE_CANDIDATES = 3;
 
 export class ZipGithubClient implements SourceClient {
   readonly kind = "github-zip" as const;
@@ -92,28 +93,40 @@ export class ZipGithubClient implements SourceClient {
         throw new Error(`Unable to validate ZIP ref ${candidate.refName}: ${status}`);
       }
       await discardResponse(response);
-      if (existing.length > 1) break;
+      if (existing.length > MAX_ZIP_ARCHIVE_CANDIDATES) break;
     }
-    if (existing.length !== 1) {
-      const reason = existing.length === 0 ? "no candidate ref exists" : "multiple candidate refs exist";
+    if (existing.length === 0 || existing.length > MAX_ZIP_ARCHIVE_CANDIDATES) {
+      const reason = existing.length === 0 ? "no candidate ref exists" : "too many candidate refs exist";
       throw new Error(`Ambiguous GitHub ref/path cannot be validated by ZIP fallback: ${reason}.`);
     }
 
-    const selected = existing[0];
+    const viable: Array<{ candidate: { refName: string; path: string }; client: ZipGithubClient }> = [];
+    for (const candidate of existing) {
+      const probe = new ZipGithubClient(this.owner, this.repo, candidate.refName);
+      probe.setRequestedPath(candidate.path);
+      await probe.ensureEntries();
+      if (probe.containsPath(repo.pageType, candidate.path)) viable.push({ candidate, client: probe });
+      if (viable.length > 1) break;
+    }
+    if (viable.length !== 1) {
+      const reason = viable.length === 0 ? "no candidate archive contained the requested path" : "multiple candidate archives contained the requested path";
+      throw new Error(`Ambiguous GitHub ref/path cannot be validated by ZIP fallback: ${reason}.`);
+    }
+
+    const selected = viable[0];
     if (!selected) throw new Error("ZIP fallback did not retain the validated ref candidate.");
-    this.requestedBranch = selected.refName;
-    this.resolvedBranch = selected.refName;
-    this.setRequestedPath(selected.path);
-    this.entries = null;
-    this.archivePaths.clear();
-    this.snapshotIdentity = "";
-    const entries = await this.ensureEntries();
-    const pathExists =
-      repo.pageType === "file"
-        ? this.archivePaths.has(selected.path)
-        : !selected.path || [...this.archivePaths].some((entryPath) => entryPath.startsWith(`${selected.path}/`));
-    if (!pathExists) throw new Error(`ZIP ref ${selected.refName} did not contain the requested ${repo.pageType} path ${selected.path}.`);
-    return { ...repo, branch: selected.refName, path: selected.path, refCandidates: [selected] };
+    this.requestedBranch = selected.candidate.refName;
+    this.resolvedBranch = selected.candidate.refName;
+    this.requestedPath = selected.candidate.path;
+    this.entries = selected.client.entries;
+    this.archivePaths = new Set(selected.client.archivePaths);
+    this.snapshotIdentity = selected.client.snapshotIdentity;
+    const candidate = selected.candidate;
+    return { ...repo, branch: candidate.refName, path: candidate.path, refCandidates: [candidate] };
+  }
+
+  private containsPath(pageType: RepoRef["pageType"], path: string): boolean {
+    return pageType === "file" ? this.archivePaths.has(path) : !path || [...this.archivePaths].some((entryPath) => entryPath.startsWith(`${path}/`));
   }
 
   private setRequestedPath(path: string) {

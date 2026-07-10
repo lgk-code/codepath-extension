@@ -33,4 +33,9 @@ test("release publication is orchestrated by the trusted default-branch workflow
   assert.equal((release.match(/contents:\s*write/g) ?? []).length, 1);
   assert.match(release, /environment:\s*release/);
   assert.match(release, /needs:\s*build-extension/);
+  const publishJob = release.slice(release.indexOf("  publish-release:"));
+  assert.match(publishJob, /git fetch --force origin "refs\/tags\/\$RELEASE_TAG:refs\/tags\/\$RELEASE_TAG"/);
+  assert.match(publishJob, /CURRENT_COMMIT/);
+  assert.match(publishJob, /EXPECTED_COMMIT/);
+  assert.match(publishJob, /CURRENT_COMMIT" != "\$EXPECTED_COMMIT/);
 });

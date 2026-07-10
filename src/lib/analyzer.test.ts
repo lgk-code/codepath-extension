@@ -951,6 +951,31 @@ test("analyzeProject restarts entirely with ZIP when a later GitHub API request 
   assert.match(result.summary, /late fallback/);
 });
 
+test("focused analysis propagates file rate limits into the full ZIP retry", async () => {
+  let codeloadCalls = 0;
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-main" }],
+    files: { "README.md": "# API content" }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo/contents/README.md?ref=head-main") {
+      return new Response("rate limited", { status: 403 });
+    }
+    if (url === "https://codeload.github.com/acme/demo/zip/main") {
+      codeloadCalls += 1;
+      return zipResponse({ "demo-main/README.md": "# ZIP content" });
+    }
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  const result = await analyzeProject(repo, settings);
+
+  assert.equal(codeloadCalls, 1);
+  assert.equal(result.timing?.cacheStatus, "unchecked");
+  assert.equal(result.sources.some((source) => source.path === "README.md"), true);
+});
+
 test("analyzeProject reuses the successful API repository probe", async () => {
   let repoRequests = 0;
   const baseFetch = mockAnalyzeProjectFetch({
