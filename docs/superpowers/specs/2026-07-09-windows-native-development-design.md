@@ -16,7 +16,7 @@ The existing WSL checkout remains temporarily as a backup. It is not deleted or 
 - Git, Node.js, npm, tests, builds, and commits run with Windows-native tools.
 - Node.js dependencies and generated output are recreated on Windows; Linux `node_modules`, `.wxt`, `.output`, and reports are never copied.
 - Repository text files use LF through `.gitattributes`, avoiding platform-dependent line-ending churn.
-- The unpacked Edge extension remains a separate deploy target. `CODEPATH_EDGE_EXTENSION_DIR` can override its location; the current default remains `D:\edge下载\CodePath` because that is browser state, not the source checkout.
+- The unpacked Edge extension remains a separate deploy target. `CODEPATH_EDGE_EXTENSION_DIR` can override its location and `CODEPATH_EDGE_EXTENSION_ROOT` defines the allowed safety boundary; the current default remains `D:\edge下载\CodePath` because that is browser state, not the source checkout.
 
 ## Git Workflow
 

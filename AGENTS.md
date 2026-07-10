@@ -39,7 +39,7 @@ MCP Server 使用环境变量读取配置：
 3. 已加载了 self reload 能力的 CodePath 会在 development install 中读取该 marker，发现构建版本变化后调用 `chrome.runtime.reload()` 自行重载，并尽量刷新已打开的 GitHub 标签页。
 4. 如果当前浏览器里运行的是旧于 `dev-2026-07-09-self-reload-v1` 的 CodePath，第一次升级仍需要在 `edge://extensions` 手动重新加载一次，之后的本地部署才会自动 self reload。
 
-当前常用 Edge 的未打包扩展加载目录是 `D:\edge下载\CodePath`。在 `E:\projects\CodePath` 执行 `npm.cmd run deploy:edge` 会同步到这个实际加载目录；需要更换目标时设置 `CODEPATH_EDGE_EXTENSION_DIR`。如果浏览器里显示的构建版本没有变化，检查目标目录中的 `codepath-dev-reload.json` 和构建版本是否已更新。
+当前常用 Edge 的未打包扩展加载目录是 `D:\edge下载\CodePath`。在 `E:\projects\CodePath` 执行 `npm.cmd run deploy:edge` 会同步到这个实际加载目录；需要更换目标时，同时设置 `CODEPATH_EDGE_EXTENSION_DIR` 和它的安全根目录 `CODEPATH_EDGE_EXTENSION_ROOT`。如果浏览器里显示的构建版本没有变化，检查目标目录中的 `codepath-dev-reload.json` 和构建版本是否已更新。
 
 推荐同步流程：
 
