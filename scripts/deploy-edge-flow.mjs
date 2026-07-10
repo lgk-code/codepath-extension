@@ -1,5 +1,7 @@
-import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, utimes } from "node:fs/promises";
+import { cp, link, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+const BACKUP_MARKER = ".codepath-deploy-backup.json";
 
 export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTarget }) {
   await verifyBuildVersion();
@@ -8,7 +10,7 @@ export async function runVerifiedDeployment({ verifyBuildVersion, build, syncTar
 }
 
 export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {}, prepareStaging, verifyStaging, lockOptions }) {
-  const ops = { cp, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, ...fsOps };
+  const ops = { cp, link, lstat, mkdir, open, readFile, readdir, rename, rm, utimes, writeFile, ...fsOps };
   const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const stagingDir = `${targetDir}.staging-${suffix}`;
   const backupDir = `${targetDir}.backup-${suffix}`;
@@ -32,6 +34,7 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
     if (await pathExists(ops, targetDir)) {
       await ops.rename(targetDir, backupDir);
       targetMoved = true;
+      await ops.writeFile(path.join(backupDir, BACKUP_MARKER), JSON.stringify({ schemaVersion: 1, transactionId: suffix }), "utf8");
     }
     await lease.assertOwned();
     await ops.rename(stagingDir, targetDir);
@@ -41,7 +44,10 @@ export async function replaceDirectoryAtomic({ sourceDir, targetDir, fsOps = {},
   } catch (error) {
     if (targetMoved && !promoted && (await lease.isOwned())) {
       if (await pathExists(ops, targetDir)) await ops.rm(targetDir, { recursive: true, force: true });
-      if (await pathExists(ops, backupDir)) await ops.rename(backupDir, targetDir);
+      if (await pathExists(ops, backupDir)) {
+        await ops.rm(path.join(backupDir, BACKUP_MARKER), { force: true });
+        await ops.rename(backupDir, targetDir);
+      }
     }
     throw error;
   } finally {
@@ -58,11 +64,24 @@ async function reconcileBackupArtifacts(fsOps, targetDir) {
   const parent = path.dirname(targetDir);
   const basename = path.basename(targetDir);
   const names = await fsOps.readdir(parent);
-  const backupNames = names.filter((name) => name === `${basename}.backup` || name.startsWith(`${basename}.backup-`));
-  if (backupNames.length === 0) return;
-  const backups = backupNames.map((name) => path.join(parent, name));
+  const escapedBasename = basename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const backupPattern = new RegExp(`^${escapedBasename}\\.backup-(\\d+-\\d+-[0-9a-f]+)$`, "i");
+  const backups = [];
+  for (const name of names) {
+    const match = backupPattern.exec(name);
+    if (!match) continue;
+    const backup = path.join(parent, name);
+    try {
+      const marker = JSON.parse(await fsOps.readFile(path.join(backup, BACKUP_MARKER), "utf8"));
+      if (marker?.schemaVersion === 1 && marker.transactionId === match[1]) backups.push(backup);
+    } catch {
+      // Similar names without a valid CodePath transaction marker are not ours.
+    }
+  }
+  if (backups.length === 0) return;
   if (!(await pathExists(fsOps, targetDir))) {
     if (backups.length !== 1) throw new Error(`Cannot recover deployment: found ${backups.length} backup directories for ${targetDir}.`);
+    await fsOps.rm(path.join(backups[0], BACKUP_MARKER), { force: true });
     await fsOps.rename(backups[0], targetDir);
     return;
   }
@@ -75,22 +94,27 @@ async function acquireDeploymentLock(fsOps, lockPath, { timeoutMs = 30_000, retr
     token: `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     updatedAt: Date.now()
   };
+  const candidatePath = `${lockPath}.candidate-${owner.token}`;
   while (true) {
     let handle;
-    let created = false;
+    let published = false;
     try {
-      handle = await fsOps.open(lockPath, "wx");
-      created = true;
+      handle = await fsOps.open(candidatePath, "wx");
       owner.updatedAt = Date.now();
       await handle.writeFile(JSON.stringify(owner), "utf8");
       await handle.sync();
       await handle.close();
+      handle = undefined;
+      await fsOps.link(candidatePath, lockPath);
+      published = true;
+      await fsOps.rm(candidatePath, { force: true });
       await writeHeartbeat(fsOps, heartbeatPathFor(lockPath, owner.token), owner);
       return createDeploymentLease(fsOps, lockPath, owner, leaseMs, heartbeatMs);
     } catch (error) {
       await handle?.close().catch(() => undefined);
-      if (created) {
-        await fsOps.rm(lockPath, { force: true });
+      await fsOps.rm(candidatePath, { force: true });
+      if (published) {
+        if ((await readLockToken(fsOps, lockPath)) === owner.token) await fsOps.rm(lockPath, { force: true });
         await removeHeartbeatArtifacts(fsOps, lockPath, owner.token);
         throw error;
       }

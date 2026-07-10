@@ -11,7 +11,7 @@ export function parseGithubUrl(urlText: string): RepoRef | null {
     parts.push(part);
   }
   const [owner, repo, marker] = parts;
-  if (!owner || !repo || !isValidGithubOwner(owner) || !isValidGithubRepo(repo)) return null;
+  if (!owner || !repo || !isValidGithubRepositoryIdentity(owner, repo)) return null;
 
   if (marker === "blob") {
     const selection = splitBranchAndPath(parts.slice(3), "file");
@@ -30,6 +30,10 @@ export function parseGithubUrl(urlText: string): RepoRef | null {
   if (!marker) return { owner, repo, pageType: "repo" };
 
   return { owner, repo, pageType: "unknown" };
+}
+
+export function isValidGithubRepositoryIdentity(owner: string, repo: string): boolean {
+  return isValidGithubOwner(owner) && isValidGithubRepo(repo);
 }
 
 function isValidGithubOwner(value: string): boolean {
@@ -70,7 +74,8 @@ function splitBranchAndPath(
   if (parts.length > 1 && (looksLikeCommitRef(parts[0]!) || looksLikeReleaseTag(parts[0]!))) {
     return {
       branch: parts[0],
-      path: parts.slice(1).join("/")
+      path: parts.slice(1).join("/"),
+      ...candidateProperty(possibleRefCandidates(parts, pageType))
     };
   }
   if (parts.length > 2 && COMMON_BRANCH_PREFIXES.has(parts[0]!.toLowerCase())) {

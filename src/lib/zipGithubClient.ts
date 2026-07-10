@@ -2,6 +2,7 @@ import { unzipSync, strFromU8 } from "fflate";
 import type { RepoSnapshot, SourceClient, TreeFile } from "../types";
 import { discardResponse, fetchWithTimeout, readResponseBytesLimited } from "./fetchUtils";
 import { isUsefulPath } from "./fileRules";
+import { isValidGithubRepositoryIdentity } from "./githubUrl";
 import { digestZipEntries } from "./sourceIdentity";
 
 type ZipEntry = {
@@ -68,6 +69,9 @@ export class ZipGithubClient implements SourceClient {
 
   private async ensureEntries(): Promise<ZipEntry[]> {
     if (this.entries) return this.entries;
+    if (!isValidGithubRepositoryIdentity(this.owner, this.repo)) {
+      throw new Error(`Invalid GitHub repository identity: ${this.owner}/${this.repo}`);
+    }
 
     const branches = this.requestedBranch ? [this.requestedBranch] : ["HEAD"];
     let lastError = "";

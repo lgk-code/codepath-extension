@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, open as fsOpen, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -312,6 +312,84 @@ test("a deployment that loses its lease after promotion cannot delete its rollba
     assert.equal(await readFile(path.join(targetDir, "manifest.json"), "utf8"), "new");
     assert.equal((await listSiblingArtifacts(root)).filter((name) => name.includes(".backup-")).length, 1);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("deployment recovery ignores unrelated backup-like sibling directories", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  const personalDir = path.join(root, "CodePath.backup-personal");
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await mkdir(personalDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+  await writeFile(path.join(personalDir, "sentinel.txt"), "personal");
+
+  try {
+    await replaceDirectoryAtomic({ sourceDir, targetDir });
+
+    assert.equal(await readFile(path.join(personalDir, "sentinel.txt"), "utf8"), "personal");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("deployment publishes complete lock metadata atomically", async () => {
+  const root = await temporaryRoot();
+  const sourceDir = path.join(root, "source");
+  const targetDir = path.join(root, "CodePath");
+  const lockPath = `${targetDir}.deploy-lock`;
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "manifest.json"), "new");
+  await writeFile(path.join(targetDir, "manifest.json"), "old");
+
+  let markLockWrite;
+  let releaseLockWrite;
+  const lockWriteStarted = new Promise((resolve) => {
+    markLockWrite = resolve;
+  });
+  const holdLockWrite = new Promise((resolve) => {
+    releaseLockWrite = resolve;
+  });
+
+  try {
+    const deployment = replaceDirectoryAtomic({
+      sourceDir,
+      targetDir,
+      fsOps: {
+        async open(value, flags) {
+          const handle = await fsOpen(value, flags);
+          if (flags !== "wx" || (value !== lockPath && !String(value).includes(".candidate-"))) return handle;
+          return {
+            async writeFile(...args) {
+              markLockWrite?.();
+              await holdLockWrite;
+              return handle.writeFile(...args);
+            },
+            sync: () => handle.sync(),
+            close: () => handle.close()
+          };
+        }
+      }
+    });
+    await lockWriteStarted;
+
+    let observed = null;
+    try {
+      observed = await readFile(lockPath, "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    releaseLockWrite?.();
+    await deployment;
+
+    assert.equal(observed === null || observed.length > 0, true);
+  } finally {
+    releaseLockWrite?.();
     await rm(root, { recursive: true, force: true });
   }
 });

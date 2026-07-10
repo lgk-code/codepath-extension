@@ -39,16 +39,17 @@ test("GithubClient memoizes successful repository metadata", async () => {
   assert.equal(repoRequests, 1);
 });
 
-test("GithubClient encodes owner and repository as individual API path segments", async () => {
-  let requestedUrl = "";
-  globalThis.fetch = (async (request: RequestInfo | URL) => {
-    requestedUrl = String(request);
+test("GithubClient rejects invalid owner and repository identities before fetching", async () => {
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
     return jsonResponse({ default_branch: "main" });
   }) as typeof fetch;
 
-  await new GithubClient({ githubToken: "" }).getRepo("visible", "../secret-owner/secret-repo");
-
-  assert.equal(requestedUrl, "https://api.github.com/repos/visible/..%2Fsecret-owner%2Fsecret-repo");
+  const client = new GithubClient({ githubToken: "secret" });
+  await assert.rejects(() => client.getRepo("..", "demo"), /invalid GitHub repository/i);
+  await assert.rejects(() => client.getRepo("visible", "../secret-owner/secret-repo"), /invalid GitHub repository/i);
+  assert.equal(fetchCalls, 0);
 });
 
 test("GithubClient rejects relative traversal in content paths before fetching", async () => {

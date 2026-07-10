@@ -83,16 +83,15 @@ test("ZipGithubClient uses codeload HEAD when no branch was supplied", async () 
   assert.equal(info.default_branch, "HEAD");
 });
 
-test("ZipGithubClient encodes owner and repository as individual codeload path segments", async () => {
-  const requestedUrls: string[] = [];
-  globalThis.fetch = (async (request: RequestInfo | URL) => {
-    requestedUrls.push(String(request));
-    return new Response("not found", { status: 404 });
+test("ZipGithubClient rejects invalid owner and repository identities before fetching", async () => {
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    return new Response("unexpected", { status: 500 });
   }) as typeof fetch;
 
-  await assert.rejects(() => new ZipGithubClient("visible", "../secret-owner/secret-repo").getRepo(), /Unable to download/);
-
-  assert.deepEqual(requestedUrls, ["https://codeload.github.com/visible/..%2Fsecret-owner%2Fsecret-repo/zip/HEAD"]);
+  await assert.rejects(() => new ZipGithubClient("visible", "../secret-owner/secret-repo").getRepo(), /invalid GitHub repository/i);
+  assert.equal(fetchCalls, 0);
 });
 
 test("ZipGithubClient cancels rejected archive responses", async () => {

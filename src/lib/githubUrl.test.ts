@@ -66,7 +66,11 @@ test("parseGithubUrl keeps commit permalink refs separate from file paths", () =
     repo: "demo",
     branch: commit,
     path: "foo/bar.ts",
-    pageType: "file"
+    pageType: "file",
+    refCandidates: [
+      { refName: commit, path: "foo/bar.ts" },
+      { refName: `${commit}/foo`, path: "bar.ts" }
+    ]
   });
 });
 
@@ -76,8 +80,22 @@ test("parseGithubUrl keeps tag refs separate from unknown directory paths", () =
     repo: "demo",
     branch: "v1.0.0",
     path: "foo/bar.ts",
-    pageType: "file"
+    pageType: "file",
+    refCandidates: [
+      { refName: "v1.0.0", path: "foo/bar.ts" },
+      { refName: "v1.0.0/foo", path: "bar.ts" }
+    ]
   });
+});
+
+test("parseGithubUrl preserves a slash ref candidate after a tag-like prefix", () => {
+  const parsed = parseGithubUrl("https://github.com/acme/demo/blob/v1.2.3/hotfix/src/app.ts") as RepoRefWithCandidates;
+
+  assert.deepEqual(parsed.refCandidates, [
+    { refName: "v1.2.3", path: "hotfix/src/app.ts" },
+    { refName: "v1.2.3/hotfix", path: "src/app.ts" },
+    { refName: "v1.2.3/hotfix/src", path: "app.ts" }
+  ]);
 });
 
 test("parseGithubUrl preserves every possible slash ref and file path boundary", () => {

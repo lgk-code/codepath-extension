@@ -1,5 +1,6 @@
 import type { RepoRef, RepoSnapshot, SourceClient, TreeFile, Settings } from "../types";
 import { discardResponse, fetchWithTimeout, readJsonResponse, safeResponseText } from "./fetchUtils";
+import { isValidGithubRepositoryIdentity } from "./githubUrl";
 
 type GithubRepo = {
   default_branch: string;
@@ -245,6 +246,7 @@ function uniqueCandidates(candidates: Array<{ refName: string; path: string }>):
 }
 
 function repoApiBase(owner: string, repo: string): string {
+  if (!isValidGithubRepositoryIdentity(owner, repo)) throw new Error(`Invalid GitHub repository identity: ${owner}/${repo}`);
   return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
