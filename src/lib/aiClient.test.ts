@@ -228,3 +228,116 @@ test("chatAuto streams Anthropic text_delta events", async () => {
   assert.equal(content, "你好");
   assert.deepEqual(deltas, ["你", "好"]);
 });
+
+test("chatAuto stops at a terminal event without waiting for the connection to close", async () => {
+  let fetchCount = 0;
+  let cancelled = false;
+  globalThis.fetch = (async () => {
+    fetchCount += 1;
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"content":"done"}}]}\n\ndata: [DONE]\n\ndata: {broken\n\n'
+            )
+          );
+          closeTimer = setTimeout(() => controller.close(), 150);
+        },
+        cancel() {
+          cancelled = true;
+          if (closeTimer) clearTimeout(closeTimer);
+        }
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } }
+    );
+  }) as typeof fetch;
+
+  const startedAt = Date.now();
+  const content = await chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {});
+
+  assert.equal(content, "done");
+  assert.equal(fetchCount, 1);
+  assert.equal(cancelled, true);
+  assert.ok(Date.now() - startedAt < 100, "terminal event should end the request immediately");
+});
+
+test("chatAuto bounds an unterminated SSE line and cancels the reader before fallback", async () => {
+  let fetchCount = 0;
+  let cancelled = false;
+  globalThis.fetch = (async () => {
+    fetchCount += 1;
+    if (fetchCount > 1) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "fallback" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("x".repeat(256 * 1024 + 1)));
+          closeTimer = setTimeout(() => controller.close(), 150);
+        },
+        cancel() {
+          cancelled = true;
+          if (closeTimer) clearTimeout(closeTimer);
+        }
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } }
+    );
+  }) as typeof fetch;
+
+  const content = await chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {});
+
+  assert.equal(content, "fallback");
+  assert.equal(fetchCount, 2);
+  assert.equal(cancelled, true);
+});
+
+test("chatAuto bounds total raw stream bytes even when lines stay small", async () => {
+  let fetchCount = 0;
+  let cancelled = false;
+  globalThis.fetch = (async () => {
+    fetchCount += 1;
+    if (fetchCount > 1) {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "fallback" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    const keepAliveLines = (": " + "x".repeat(1_020) + "\n").repeat(2_060);
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(keepAliveLines));
+        },
+        cancel() {
+          cancelled = true;
+        }
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } }
+    );
+  }) as typeof fetch;
+
+  const content = await chatAuto(streamingSettings(), [{ role: "user", content: "Say done." }], () => {});
+
+  assert.equal(content, "fallback");
+  assert.equal(fetchCount, 2);
+  assert.equal(cancelled, true);
+});
+
+function streamingSettings() {
+  return {
+    provider: "openai" as const,
+    apiKey: "stream-test-key",
+    baseUrl: "https://models.example/v1",
+    model: "stream-model",
+    githubToken: "",
+    supportsStreaming: true
+  };
+}

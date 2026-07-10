@@ -1,5 +1,6 @@
 import type { ModelOption, Settings, StreamingMode } from "../types";
 import { clearResponseTimeout, fetchWithTimeout, readJsonResponse, readResponseStreamChunk, safeResponseText } from "./fetchUtils";
+import { parseSseLine } from "./sse";
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_MAX_TOKENS = 4096;
@@ -7,6 +8,8 @@ const OPENAI_MAX_TOKENS = 4096;
 const MODEL_REQUEST_TIMEOUT_MS = 120_000;
 const MODEL_LIST_TIMEOUT_MS = 30_000;
 const MAX_STREAM_CONTENT_CHARS = 500_000;
+const MAX_STREAM_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_SSE_LINE_BYTES = 256 * 1024;
 
 type ChatMessage = {
   role: "system" | "user";
@@ -267,6 +270,7 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
   }
 
   if (!response.body) {
+    clearResponseTimeout(response);
     throw new StreamingUnsupportedError("response body is not readable");
   }
 
@@ -276,72 +280,69 @@ async function chatStreamDetailed(settings: Settings, messages: ChatMessage[], o
   let content = "";
   let firstDeltaMs: number | undefined;
   let deltaCount = 0;
+  let totalBytes = 0;
+  let streamEnded = false;
+  let terminalReached = false;
   const startedAt = Date.now();
 
+  const processLine = (line: string): boolean => {
+    let event;
+    try {
+      event = parseSseLine(line, provider);
+    } catch (error) {
+      throw new StreamingUnsupportedError(error instanceof Error ? error.message : String(error));
+    }
+    if (event.kind === "terminal") return true;
+    if (event.kind !== "delta") return false;
+
+    content += event.text;
+    if (content.length > MAX_STREAM_CONTENT_CHARS) throw new StreamingUnsupportedError("streaming response is too large");
+    deltaCount += 1;
+    firstDeltaMs ??= Date.now() - startedAt;
+    onDelta(event.text);
+    return false;
+  };
+
   try {
-    while (true) {
+    readLoop: while (true) {
       const { done, value } = await readResponseStreamChunk(response, reader);
-      if (done) break;
+      if (done) {
+        streamEnded = true;
+        break;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_STREAM_BYTES) throw new StreamingUnsupportedError("raw streaming response is too large");
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        const delta = parseSseLine(line, provider);
-        if (!delta) continue;
-        content += delta;
-        if (content.length > MAX_STREAM_CONTENT_CHARS) throw new StreamingUnsupportedError("streaming response is too large");
-        deltaCount += 1;
-        firstDeltaMs ??= Date.now() - startedAt;
-        onDelta(delta);
+        if (processLine(line)) {
+          terminalReached = true;
+          break readLoop;
+        }
+      }
+      if (new TextEncoder().encode(buffer).byteLength > MAX_PENDING_SSE_LINE_BYTES) {
+        throw new StreamingUnsupportedError("pending SSE line is too large");
       }
     }
 
-    buffer += decoder.decode();
-    for (const line of buffer.split(/\r?\n/)) {
-      const delta = parseSseLine(line, provider);
-      if (!delta) continue;
-      content += delta;
-      if (content.length > MAX_STREAM_CONTENT_CHARS) throw new StreamingUnsupportedError("streaming response is too large");
-      deltaCount += 1;
-      firstDeltaMs ??= Date.now() - startedAt;
-      onDelta(delta);
+    if (!terminalReached) {
+      buffer += decoder.decode();
+      if (new TextEncoder().encode(buffer).byteLength > MAX_PENDING_SSE_LINE_BYTES) {
+        throw new StreamingUnsupportedError("pending SSE line is too large");
+      }
+      for (const line of buffer.split(/\r?\n/)) {
+        if (processLine(line)) break;
+      }
     }
   } finally {
+    if (!streamEnded) await reader.cancel().catch(() => {});
+    reader.releaseLock();
     clearResponseTimeout(response);
   }
 
   if (!content) throw new StreamingUnsupportedError("no streaming delta content");
   return { content, firstDeltaMs, deltaCount };
-}
-
-function parseSseLine(line: string, provider: Settings["provider"]): string {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith(":")) return "";
-  if (!trimmed.startsWith("data:")) return "";
-  const data = trimmed.slice(5).trim();
-  if (!data || data === "[DONE]") return "";
-  try {
-    if (provider === "anthropic") {
-      const parsed = JSON.parse(data) as {
-        type?: string;
-        delta?: {
-          type?: string;
-          text?: string;
-        };
-      };
-      if (parsed.type !== "content_block_delta" || parsed.delta?.type !== "text_delta") return "";
-      return parsed.delta.text ?? "";
-    }
-
-    const parsed = JSON.parse(data) as {
-      choices?: Array<{
-        delta?: { content?: string };
-      }>;
-    };
-    return parsed.choices?.map((choice) => choice.delta?.content ?? "").join("") ?? "";
-  } catch {
-    throw new StreamingUnsupportedError("invalid SSE data");
-  }
 }
 
 function requireBaseUrl(input: string): string {
