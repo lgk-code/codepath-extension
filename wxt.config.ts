@@ -5,7 +5,7 @@ export default defineConfig({
   manifest: {
     name: "CodePath",
     description: "GitHub source-code guide for project ideas, feature paths, and implementation reading routes.",
-    permissions: ["storage"],
+    permissions: ["storage", "alarms"],
     host_permissions: [
       "https://github.com/*",
       "https://api.github.com/*",

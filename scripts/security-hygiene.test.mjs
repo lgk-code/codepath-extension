@@ -60,3 +60,13 @@ test("zip fallback applies limits before full download and extraction", () => {
   assert.match(source, /filter\(file\)/);
   assert.match(source, /file\.originalSize > MAX_ZIP_ENTRY_BYTES/);
 });
+
+test("dev self reload is marker-driven and gated to development installs", () => {
+  const background = read("entrypoints/background.ts");
+  const config = read("wxt.config.ts");
+  assert.match(config, /"alarms"/);
+  assert.match(background, /checkDevSelfReloadOnce/);
+  assert.match(background, /chrome\.management\?\.getSelf/);
+  assert.match(background, /DEV_RELOAD_MARKER_PATH/);
+  assert.match(background, /chrome\.runtime\.reload\(\)/);
+});

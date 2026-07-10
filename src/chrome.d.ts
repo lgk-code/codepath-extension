@@ -14,8 +14,26 @@ declare const chrome: {
         ) => boolean | void
       ): void;
     };
+    onInstalled: {
+      addListener(callback: (details: { reason: string }) => void): void;
+    };
     sendMessage(message: unknown, callback: (response: unknown) => void): void;
     getURL(path: string): string;
+    reload(): void;
+  };
+  alarms?: {
+    create(name: string, alarmInfo: { periodInMinutes?: number; delayInMinutes?: number }): void;
+    clear?(name: string): void;
+    onAlarm: {
+      addListener(callback: (alarm: { name: string }) => void): void;
+    };
+  };
+  management?: {
+    getSelf?(): Promise<{ installType?: string }>;
+  };
+  tabs?: {
+    query(queryInfo: { url?: string | string[] }, callback: (tabs: Array<{ id?: number }>) => void): void;
+    reload(tabId: number): void;
   };
   storage: {
     local: {

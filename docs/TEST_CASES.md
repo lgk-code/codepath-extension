@@ -42,13 +42,14 @@ CI artifact 用于开发验证，不是正式发布包。面向用户的正式�
 npm.cmd run deploy:edge
 ```
 
-然后手动执行：
+然后确认：
 
-- 在 `edge://extensions` 重新加载 CodePath。
-- 刷新目标 GitHub 仓库页面，确认设置页绿色构建版本已变化。
+- CodePath 在 development install 中读取 `codepath-dev-reload.json` 后自行重载。首次升级到带 self reload 的版本时仍需要在 `edge://extensions` 手动重新加载一次。
+- 已打开的 GitHub 仓库页自动刷新；如果没有自动刷新，手动刷新目标 GitHub 仓库页面。
+- 设置页绿色构建版本已变化。
 - 设置页保存并测试后，确认流式输出模式能显示为实时流式、疑似缓冲、不支持流式或连接失败未测试之一。
 
-CI 通过不代表浏览器扩展已经重新加载，也不代表真实模型 API、GitHub Token 权限、流式输出和 UI 手感已经验证。
+CI 通过不代表浏览器扩展已经在本机 Edge 中 self reload，也不代表真实模型 API、GitHub Token 权限、流式输出和 UI 手感已经验证。
 
 ## 三层门禁判定
 

@@ -1,7 +1,8 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { DEV_RELOAD_MARKER_PATH, createDevReloadMarker, extractBuildId } from "./dev-reload-marker.mjs";
 
 const projectRoot = process.cwd();
 const outputDir = path.join(projectRoot, ".output", "chrome-mv3");
@@ -23,13 +24,19 @@ if (!existsSync(outputDir)) {
   throw new Error(`Build output not found: ${outputDir}`);
 }
 
+const contentSource = await readFile(path.join(projectRoot, "entrypoints", "content.tsx"), "utf8");
+const buildId = extractBuildId(contentSource);
+const marker = createDevReloadMarker(buildId);
+
 await mkdir(resolvedTargetDir, { recursive: true });
 await rm(resolvedTargetDir, { recursive: true, force: true });
 await mkdir(resolvedTargetDir, { recursive: true });
 await cp(outputDir, resolvedTargetDir, { recursive: true });
+await writeFile(path.join(resolvedTargetDir, DEV_RELOAD_MARKER_PATH), `${JSON.stringify(marker, null, 2)}\n`, "utf8");
 
 console.log(`CodePath Edge build deployed to ${resolvedTargetDir}`);
-console.log("Next: open edge://extensions, reload CodePath, then refresh the GitHub page.");
+console.log(`Dev reload marker written for ${buildId}.`);
+console.log("Next: wait for CodePath to self-reload, then refresh the GitHub page if the tab was not refreshed automatically.");
 
 function run(command, args) {
   return new Promise((resolve, reject) => {

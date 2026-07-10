@@ -13,7 +13,13 @@ import {
   getAnalysisCacheStats
 } from "../src/lib/analyzer";
 import { chat, inferProviderFromBaseUrl, listModels, normalizeBaseUrl, probeStreamingSupport } from "../src/lib/aiClient";
+import { DEV_RELOAD_MARKER_PATH, checkDevSelfReloadOnce, parseDevReloadMarker, type ExtensionInstallType } from "../src/lib/devSelfReload";
 import { GithubClient } from "../src/lib/githubClient";
+
+const BACKGROUND_BUILD = "dev-2026-07-09-self-reload-v1";
+const DEV_RELOAD_ALARM_NAME = "codepath-dev-self-reload";
+const DEV_RELOAD_ALARM_PERIOD_MINUTES = 0.5;
+const DEV_RELOAD_ACTIVE_INTERVAL_MS = 5_000;
 
 type StreamHandlers = {
   onModelStart?: () => void;
@@ -22,7 +28,20 @@ type StreamHandlers = {
   onModelFallback?: (reason: string) => void;
 };
 
+let devReloadStarted = false;
+let devReloadCheckInFlight = false;
+
 export default defineBackground(() => {
+  startDevSelfReload();
+
+  chrome.alarms?.onAlarm.addListener((alarm) => {
+    if (alarm.name === DEV_RELOAD_ALARM_NAME) void checkDevSelfReload();
+  });
+
+  chrome.runtime.onInstalled.addListener((details) => {
+    if (details.reason === "update") void refreshGithubTabsAfterDevReload();
+  });
+
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== "codepath") return;
     port.onMessage.addListener((message: unknown) => {
@@ -43,6 +62,70 @@ export default defineBackground(() => {
     return true;
   });
 });
+
+async function startDevSelfReload() {
+  if (devReloadStarted) return;
+  devReloadStarted = true;
+
+  if ((await getExtensionInstallType()) !== "development") {
+    chrome.alarms?.clear?.(DEV_RELOAD_ALARM_NAME);
+    return;
+  }
+
+  chrome.alarms?.create(DEV_RELOAD_ALARM_NAME, { periodInMinutes: DEV_RELOAD_ALARM_PERIOD_MINUTES });
+  globalThis.setInterval(() => void checkDevSelfReload(), DEV_RELOAD_ACTIVE_INTERVAL_MS);
+  void checkDevSelfReload();
+}
+
+async function checkDevSelfReload() {
+  if (devReloadCheckInFlight) return;
+  devReloadCheckInFlight = true;
+  try {
+    await checkDevSelfReloadOnce({
+      currentBuildId: BACKGROUND_BUILD,
+      getInstallType: getExtensionInstallType,
+      readMarker: readDevReloadMarker,
+      reload: () => chrome.runtime.reload()
+    });
+  } catch {
+    // Dev-only convenience path: failures should never break normal extension requests.
+  } finally {
+    devReloadCheckInFlight = false;
+  }
+}
+
+async function refreshGithubTabsAfterDevReload() {
+  try {
+    if ((await getExtensionInstallType()) !== "development") return;
+    const marker = await readDevReloadMarker();
+    if (!marker || marker.buildId !== BACKGROUND_BUILD) return;
+    chrome.tabs?.query({ url: "https://github.com/*/*" }, (tabs) => {
+      if (chrome.runtime.lastError) return;
+      for (const tab of tabs) {
+        if (typeof tab.id === "number") chrome.tabs?.reload(tab.id);
+      }
+    });
+  } catch {
+    // Page refresh is best-effort. Reloading the extension itself is the critical path.
+  }
+}
+
+async function getExtensionInstallType(): Promise<ExtensionInstallType> {
+  if (!chrome.management?.getSelf) return "unknown";
+  try {
+    const info = await chrome.management.getSelf();
+    return info.installType ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function readDevReloadMarker() {
+  const url = `${chrome.runtime.getURL(DEV_RELOAD_MARKER_PATH)}?t=${Date.now()}`;
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) return null;
+  return parseDevReloadMarker(await response.json());
+}
 
 async function handleRequest(request: RuntimeRequest, streamHandlers: StreamHandlers = {}): Promise<RuntimeResponse<unknown>> {
   try {
