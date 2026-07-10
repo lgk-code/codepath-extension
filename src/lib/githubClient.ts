@@ -1,5 +1,5 @@
-import type { RepoSnapshot, SourceClient, TreeFile, Settings } from "../types";
-import { fetchWithTimeout, readJsonResponse, safeResponseText } from "./fetchUtils";
+import type { RepoRef, RepoSnapshot, SourceClient, TreeFile, Settings } from "../types";
+import { discardResponse, fetchWithTimeout, readJsonResponse, safeResponseText } from "./fetchUtils";
 
 type GithubRepo = {
   default_branch: string;
@@ -61,29 +61,70 @@ type GithubContentResponse = {
 
 export class GithubClient implements SourceClient {
   readonly kind = "github-api" as const;
+  private readonly repoRequests = new Map<string, Promise<GithubRepo>>();
+  private readonly treeRequests = new Map<string, Promise<TreeFile[]>>();
+  private readonly snapshotRequests = new Map<string, Promise<RepoSnapshot>>();
 
   constructor(private readonly settings: Pick<Settings, "githubToken">) {}
 
   async getRepo(owner: string, repo: string): Promise<GithubRepo> {
-    return this.request<GithubRepo>(`https://api.github.com/repos/${owner}/${repo}`);
+    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+    return this.memoize(this.repoRequests, key, () => this.request<GithubRepo>(`https://api.github.com/repos/${owner}/${repo}`));
   }
 
   async getTree(owner: string, repo: string, branch: string): Promise<TreeFile[]> {
-    const data = await this.request<GithubTreeResponse>(
-      `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
-    );
-    if (data.truncated) {
-      throw new Error("GitHub API returned a truncated repository tree. 请缩小分析范围或稍后使用分层遍历版本。");
-    }
-    return data.tree.map((item) => ({
-      path: item.path,
-      type: item.type,
-      sha: item.sha,
-      size: item.size
-    }));
+    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}@${branch}`;
+    return this.memoize(this.treeRequests, key, async () => {
+      const data = await this.request<GithubTreeResponse>(
+        `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+        8 * 1024 * 1024
+      );
+      if (data.truncated) {
+        throw new Error("GitHub API returned a truncated repository tree. 请缩小分析范围或稍后使用分层遍历版本。");
+      }
+      return data.tree.map((item) => ({
+        path: item.path,
+        type: item.type,
+        sha: item.sha,
+        size: item.size
+      }));
+    });
   }
 
   async getBranchSnapshot(owner: string, repo: string, branch: string): Promise<RepoSnapshot> {
+    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}@${branch}`;
+    return this.memoize(this.snapshotRequests, key, () => this.loadBranchSnapshot(owner, repo, branch));
+  }
+
+  async resolveRepoRef(repo: RepoRef): Promise<RepoRef> {
+    const candidates = uniqueCandidates(repo.refCandidates ?? []);
+    if (candidates.length <= 1) return repo;
+    if (candidates.length > 20) throw new Error("Ambiguous GitHub ref/path has too many candidate boundaries to validate safely.");
+
+    const viable: Array<{ refName: string; path: string }> = [];
+    for (const candidate of candidates) {
+      try {
+        const snapshot = await this.getBranchSnapshot(repo.owner, repo.repo, candidate.refName);
+        const tree = await this.getTree(repo.owner, repo.repo, snapshot.treeSha);
+        const expectedType = repo.pageType === "file" ? "blob" : "tree";
+        if ((!candidate.path && repo.pageType === "directory") || tree.some((item) => item.path === candidate.path && item.type === expectedType)) {
+          viable.push(candidate);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("did not include a head commit SHA")) continue;
+        throw new Error(`Ambiguous GitHub ref/path could not be validated safely: ${message}`);
+      }
+    }
+
+    if (viable.length !== 1) {
+      const reason = viable.length === 0 ? "no candidate matched a GitHub ref and path" : "multiple candidates matched GitHub refs and paths";
+      throw new Error(`Ambiguous GitHub ref/path: ${reason}. Open an immutable commit URL or analyze the repository root.`);
+    }
+    return { ...repo, branch: viable[0]!.refName, path: viable[0]!.path, refCandidates: viable };
+  }
+
+  private async loadBranchSnapshot(owner: string, repo: string, branch: string): Promise<RepoSnapshot> {
     const capturedAt = new Date().toISOString();
     const branchData = branch.includes("/")
       ? undefined
@@ -114,7 +155,7 @@ export class GithubClient implements SourceClient {
     return decodeBase64(data.content);
   }
 
-  private async request<T>(url: string): Promise<T> {
+  private async request<T>(url: string, jsonLimit?: number): Promise<T> {
     const headers: Record<string, string> = {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28"
@@ -131,7 +172,7 @@ export class GithubClient implements SourceClient {
     if (!response.ok) {
       throw new Error(`GitHub API ${response.status}: ${await safeResponseText(response)}`);
     }
-    return readJsonResponse<T>(response);
+    return readJsonResponse<T>(response, jsonLimit);
   }
 
   private async requestOptional<T>(url: string): Promise<T | undefined> {
@@ -142,7 +183,10 @@ export class GithubClient implements SourceClient {
     if (this.settings.githubToken) headers.Authorization = `Bearer ${this.settings.githubToken}`;
 
     const response = await fetchWithTimeout(url, { headers }, 30_000);
-    if (response.status === 404) return undefined;
+    if (response.status === 404) {
+      await discardResponse(response);
+      return undefined;
+    }
     if (!response.ok) {
       const body = await safeResponseText(response);
       throw new Error(`GitHub request failed ${response.status}: ${body || response.statusText}`);
@@ -181,6 +225,23 @@ export class GithubClient implements SourceClient {
     }
     return annotated?.object?.sha?.trim() ?? "";
   }
+
+  private async memoize<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
+    const existing = cache.get(key);
+    if (existing) return existing;
+    const pending = load();
+    cache.set(key, pending);
+    try {
+      return await pending;
+    } catch (error) {
+      cache.delete(key);
+      throw error;
+    }
+  }
+}
+
+function uniqueCandidates(candidates: Array<{ refName: string; path: string }>): Array<{ refName: string; path: string }> {
+  return Array.from(new Map(candidates.map((candidate) => [`${candidate.refName}\0${candidate.path}`, candidate])).values());
 }
 
 function encodePath(path: string): string {

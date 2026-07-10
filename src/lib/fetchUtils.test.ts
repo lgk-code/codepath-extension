@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fetchWithTimeout, readResponseBytesLimited, safeResponseText } from "./fetchUtils";
+import { discardResponse, fetchWithTimeout, readResponseBytesLimited, safeResponseText } from "./fetchUtils";
 
 test("safeResponseText caps streaming error bodies without buffering the full response", async () => {
   let cancelled = false;
@@ -51,4 +51,22 @@ test("fetchWithTimeout also bounds body reads", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("discardResponse cancels an unread body", async () => {
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    })
+  );
+
+  await discardResponse(response);
+
+  assert.equal(cancelled, true);
 });

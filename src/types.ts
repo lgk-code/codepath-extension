@@ -29,6 +29,7 @@ export type RepoRef = {
   branch?: string;
   path?: string;
   pageType: "repo" | "file" | "directory" | "pull" | "unknown";
+  refCandidates?: Array<{ refName: string; path: string }>;
 };
 
 export type TreeFile = {
@@ -52,6 +53,7 @@ export type SourceClient = {
   getTree(owner: string, repo: string, branch: string): Promise<TreeFile[]>;
   getFile(owner: string, repo: string, path: string, ref: string): Promise<string>;
   getBranchSnapshot(owner: string, repo: string, branch: string): Promise<RepoSnapshot>;
+  resolveRepoRef?(repo: RepoRef): Promise<RepoRef>;
 };
 
 export type CacheStatus = "fresh" | "same-tree-new-head" | "stale" | "unchecked";

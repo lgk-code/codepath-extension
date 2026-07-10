@@ -8,7 +8,12 @@ test("parseGithubUrl handles common slash branch file URLs", () => {
     repo: "demo",
     branch: "feature/sidebar",
     path: "src/app.ts",
-    pageType: "file"
+    pageType: "file",
+    refCandidates: [
+      { refName: "feature", path: "sidebar/src/app.ts" },
+      { refName: "feature/sidebar", path: "src/app.ts" },
+      { refName: "feature/sidebar/src", path: "app.ts" }
+    ]
   });
 });
 
@@ -18,7 +23,12 @@ test("parseGithubUrl keeps common directory roots out of slash branch names", ()
     repo: "demo",
     branch: "feature/sidebar",
     path: "examples/demo.ts",
-    pageType: "file"
+    pageType: "file",
+    refCandidates: [
+      { refName: "feature", path: "sidebar/examples/demo.ts" },
+      { refName: "feature/sidebar", path: "examples/demo.ts" },
+      { refName: "feature/sidebar/examples", path: "demo.ts" }
+    ]
   });
 });
 
@@ -28,7 +38,11 @@ test("parseGithubUrl decodes file path segments", () => {
     repo: "demo",
     branch: "main",
     path: "docs/hello world.md",
-    pageType: "file"
+    pageType: "file",
+    refCandidates: [
+      { refName: "main", path: "docs/hello world.md" },
+      { refName: "main/docs", path: "hello world.md" }
+    ]
   });
 });
 
@@ -52,3 +66,17 @@ test("parseGithubUrl keeps tag refs separate from unknown directory paths", () =
     pageType: "file"
   });
 });
+
+test("parseGithubUrl preserves every possible slash ref and file path boundary", () => {
+  const parsed = parseGithubUrl("https://github.com/acme/demo/blob/release/v2/src/app.ts") as RepoRefWithCandidates;
+
+  assert.deepEqual(parsed.refCandidates, [
+    { refName: "release", path: "v2/src/app.ts" },
+    { refName: "release/v2", path: "src/app.ts" },
+    { refName: "release/v2/src", path: "app.ts" }
+  ]);
+});
+
+type RepoRefWithCandidates = NonNullable<ReturnType<typeof parseGithubUrl>> & {
+  refCandidates: Array<{ refName: string; path: string }>;
+};

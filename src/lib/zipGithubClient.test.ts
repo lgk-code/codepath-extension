@@ -38,6 +38,43 @@ test("ZipGithubClient uses a stable unchecked snapshot identity for unchanged zi
   assert.equal(first.treeSha, second.treeSha);
 });
 
+test("ZipGithubClient uses codeload HEAD when no branch was supplied", async () => {
+  const requestedUrls: string[] = [];
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    requestedUrls.push(url);
+    if (url === "https://codeload.github.com/acme/demo/zip/HEAD") {
+      return zipResponse({ "demo-trunk/README.md": "# Demo" });
+    }
+    return new Response(`unexpected URL: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  const client = new ZipGithubClient("acme", "demo");
+  const info = await client.getRepo();
+
+  assert.deepEqual(requestedUrls, ["https://codeload.github.com/acme/demo/zip/HEAD"]);
+  assert.equal(info.default_branch, "HEAD");
+});
+
+test("ZipGithubClient cancels rejected archive responses", async () => {
+  let cancelled = false;
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("not found"));
+        },
+        cancel() {
+          cancelled = true;
+        }
+      }),
+      { status: 404 }
+    )) as typeof fetch;
+
+  await assert.rejects(() => new ZipGithubClient("acme", "demo").getRepo(), /Unable to download public repository zip/);
+  assert.equal(cancelled, true);
+});
+
 function zipResponse(files: Record<string, string>): Response {
   const entries = Object.fromEntries(Object.entries(files).map(([path, content]) => [path, strToU8(content)]));
   const bytes = zipSync(entries);

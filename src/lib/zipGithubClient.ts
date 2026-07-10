@@ -1,7 +1,8 @@
 import { unzipSync, strFromU8 } from "fflate";
 import type { RepoSnapshot, SourceClient, TreeFile } from "../types";
-import { fetchWithTimeout, readResponseBytesLimited } from "./fetchUtils";
+import { discardResponse, fetchWithTimeout, readResponseBytesLimited } from "./fetchUtils";
 import { isUsefulPath } from "./fileRules";
+import { digestZipEntries } from "./sourceIdentity";
 
 type ZipEntry = {
   path: string;
@@ -17,14 +18,16 @@ export class ZipGithubClient implements SourceClient {
   readonly kind = "github-zip" as const;
 
   private entries: ZipEntry[] | null = null;
-  private resolvedBranch = "main";
+  private resolvedBranch: string;
   private snapshotIdentity = "";
 
   constructor(
     private readonly owner: string,
     private readonly repo: string,
     private readonly requestedBranch?: string
-  ) {}
+  ) {
+    this.resolvedBranch = requestedBranch || "HEAD";
+  }
 
   async getRepo(): Promise<{ default_branch: string }> {
     await this.ensureEntries();
@@ -66,19 +69,25 @@ export class ZipGithubClient implements SourceClient {
   private async ensureEntries(): Promise<ZipEntry[]> {
     if (this.entries) return this.entries;
 
-    const branches = this.requestedBranch ? [this.requestedBranch] : ["main", "master"];
+    const branches = this.requestedBranch ? [this.requestedBranch] : ["HEAD"];
     let lastError = "";
 
     for (const branch of branches) {
       try {
-        const response = await fetchWithTimeout(`https://codeload.github.com/${this.owner}/${this.repo}/zip/refs/heads/${encodeURIComponent(branch)}`, {}, 45_000);
+        const archiveUrl =
+          branch === "HEAD"
+            ? `https://codeload.github.com/${this.owner}/${this.repo}/zip/HEAD`
+            : `https://codeload.github.com/${this.owner}/${this.repo}/zip/refs/heads/${encodeURIComponent(branch)}`;
+        const response = await fetchWithTimeout(archiveUrl, {}, 45_000);
         if (!response.ok) {
           lastError = `${response.status} ${response.statusText}`;
+          await discardResponse(response);
           continue;
         }
         const contentLength = Number(response.headers.get("content-length") ?? "0");
         if (contentLength > MAX_ZIP_BYTES) {
           lastError = `zip is too large (${contentLength} bytes)`;
+          await discardResponse(response);
           continue;
         }
 
@@ -125,7 +134,7 @@ export class ZipGithubClient implements SourceClient {
 
         this.entries = entries;
         this.resolvedBranch = branch;
-        this.snapshotIdentity = `${branch}:${hashEntries(entries)}`;
+        this.snapshotIdentity = `${branch}:${await digestZipEntries(entries)}`;
         return entries;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
@@ -139,27 +148,4 @@ export class ZipGithubClient implements SourceClient {
 function stripRoot(path: string): string {
   const index = path.indexOf("/");
   return index >= 0 ? path.slice(index + 1) : path;
-}
-
-function hashEntries(entries: ZipEntry[]): string {
-  let hash = 2166136261;
-  for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
-    hash = hashString(hash, entry.path);
-    hash = hashString(hash, ":");
-    for (const byte of entry.content) {
-      hash ^= byte;
-      hash = Math.imul(hash, 16777619);
-    }
-    hash = hashString(hash, "\n");
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function hashString(hash: number, value: string): number {
-  let next = hash;
-  for (let index = 0; index < value.length; index += 1) {
-    next ^= value.charCodeAt(index);
-    next = Math.imul(next, 16777619);
-  }
-  return next;
 }

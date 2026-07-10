@@ -241,6 +241,48 @@ test("analyzeProject resolves slash branches through heads ref before commits en
   assert.equal(result.basis?.snapshot.treeSha, "tree-feature");
 });
 
+test("explainFile validates slash ref candidates before selecting the file", async () => {
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = String(request);
+    if (url === "https://api.github.com/repos/acme/demo") return jsonResponse({ default_branch: "main" });
+    if (url === "https://api.github.com/repos/acme/demo/git/ref/heads/release/v2") {
+      return jsonResponse({ object: { type: "commit", sha: "head-v2" } });
+    }
+    if (url === "https://api.github.com/repos/acme/demo/git/commits/head-v2") {
+      return jsonResponse({ tree: { sha: "tree-v2" } });
+    }
+    if (url === "https://api.github.com/repos/acme/demo/git/trees/tree-v2?recursive=1") {
+      return jsonResponse({ tree: [{ path: "src/app.ts", type: "blob", sha: "blob-app", size: 24 }], truncated: false });
+    }
+    if (url === "https://api.github.com/repos/acme/demo/contents/src/app.ts?ref=head-v2") {
+      return jsonResponse({ encoding: "base64", content: Buffer.from("export const app = true;").toString("base64") });
+    }
+    if (url === "https://models.example/v1/chat/completions") {
+      return jsonResponse({ choices: [{ message: { content: "源码确认\n- 已解析目标文件。" } }] });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const result = await explainFile(
+    {
+      owner: "acme",
+      repo: "demo",
+      branch: "release/v2",
+      path: "src/app.ts",
+      pageType: "file",
+      refCandidates: [
+        { refName: "release", path: "v2/src/app.ts" },
+        { refName: "release/v2", path: "src/app.ts" }
+      ]
+    },
+    settings
+  );
+
+  assert.equal(result.branch, "release/v2");
+  assert.equal(result.path, "src/app.ts");
+  assert.equal(result.basis?.snapshot.headSha, "head-v2");
+});
+
 test("analyzeProject resolves commit permalink refs through commits endpoint", async () => {
   globalThis.fetch = mockAnalyzeProjectFetch({
     branchName: "1234567890abcdef1234567890abcdef12345678",
@@ -594,7 +636,7 @@ test("analyzeProject marks zip fallback snapshots as unchecked and does not reus
     if (url === "https://api.github.com/repos/acme/demo") {
       return new Response("rate limited", { status: 403 });
     }
-    if (url === "https://codeload.github.com/acme/demo/zip/refs/heads/main") {
+    if (url === "https://codeload.github.com/acme/demo/zip/HEAD") {
       return zipResponse({ "demo-main/README.md": "# Demo" });
     }
     if (url === "https://models.example/v1/chat/completions") {
@@ -620,6 +662,22 @@ test("analyzeProject marks zip fallback snapshots as unchecked and does not reus
   assert.equal(second.timing?.cacheStatus, "unchecked");
   assert.equal(second.timing?.resultCacheHit, undefined);
   assert.match(first.timing?.headSha ?? "", /^unchecked:/);
+});
+
+test("analyzeProject reuses the successful API repository probe", async () => {
+  let repoRequests = 0;
+  const baseFetch = mockAnalyzeProjectFetch({
+    tree: [{ path: "README.md", type: "blob", size: 16, sha: "blob-main" }],
+    files: { "README.md": "# Demo" }
+  });
+  globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+    if (String(request) === "https://api.github.com/repos/acme/demo") repoRequests += 1;
+    return baseFetch(request, init);
+  }) as typeof fetch;
+
+  await analyzeProject(repo, settings);
+
+  assert.equal(repoRequests, 1);
 });
 
 test("answerQuestion refuses context-only answers when the previous analysis basis is stale", async () => {

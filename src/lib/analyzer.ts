@@ -50,6 +50,7 @@ type ProjectProfile = {
 };
 
 type RepoAnalysisContext = {
+  resolvedRepo: RepoRef;
   branch: string;
   snapshot: RepoSnapshot;
   files: TreeFile[];
@@ -324,23 +325,26 @@ export async function explainFile(repo: RepoRef, settings: Settings, options: An
   const gh = await measure(timing, "githubMs", () => createSourceClient(repo, settings));
   const persistResults = canUseTrustedPersistentCache(gh, settings);
   const context = await measure(timing, "contextMs", () => getRepoAnalysisContext(gh, repo, timing, persistResults));
-  const currentFile = context.files.find((file) => file.type === "blob" && file.path === repo.path) ?? { path: repo.path, type: "blob" as const };
-  const resultInputDigest = analysisInputDigest("file", settings, context, [currentFile], repo.path);
-  const cacheKey = fileExplanationCacheKey(repo, context.branch, currentFile.sha || context.snapshot.treeSha, repo.path, resultInputDigest);
+  const resolvedRepo = context.resolvedRepo;
+  const targetPath = resolvedRepo.path;
+  if (!targetPath) throw new Error("The current GitHub file URL did not resolve to a file path.");
+  const currentFile = context.files.find((file) => file.type === "blob" && file.path === targetPath) ?? { path: targetPath, type: "blob" as const };
+  const resultInputDigest = analysisInputDigest("file", settings, context, [currentFile], targetPath);
+  const cacheKey = fileExplanationCacheKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest);
   const cached = fileExplanationCache.get(cacheKey);
   if (cached && isUsableCacheRecord<FileExplanation>(cached, "file", context.snapshot, resultInputDigest)) return cachedResult(cached, context.snapshot, timing);
   if (cached) fileExplanationCache.delete(cacheKey);
   const persisted = persistResults
-    ? await persistentRead<CacheRecord<FileExplanation>>(persistentFileExplanationKey(repo, context.branch, currentFile.sha || context.snapshot.treeSha, repo.path, resultInputDigest))
+    ? await persistentRead<CacheRecord<FileExplanation>>(persistentFileExplanationKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest))
     : { hit: false };
   if (persisted.hit && isUsableCacheRecord<FileExplanation>(persisted.value, "file", context.snapshot, resultInputDigest)) {
     fileExplanationCache.set(cacheKey, persisted.value);
     return cachedResult(persisted.value, context.snapshot, timing, { persistentCacheHit: true });
   }
 
-  const content = await loadFileCached(gh, repo, context.branch, context.snapshot.headSha, currentFile, timing, persistResults);
+  const content = await loadFileCached(gh, resolvedRepo, context.branch, context.snapshot.headSha, currentFile, timing, persistResults);
   const imports = extractImports(content);
-  const structuralContext = buildStructuralContext(context, [{ path: repo.path, content, imports }]);
+  const structuralContext = buildStructuralContext(context, [{ path: targetPath, content, imports }]);
 
   const summary = await runModel(timing, settings, [
     systemPrompt(context.profile),
@@ -348,9 +352,9 @@ export async function explainFile(repo: RepoRef, settings: Settings, options: An
       role: "user",
       content: `Explain the current file for a learner or secondary developer.
 
-Repository: ${repo.owner}/${repo.repo}
+Repository: ${resolvedRepo.owner}/${resolvedRepo.repo}
 Detected project type: ${context.profile.label}
-File: ${repo.path}
+File: ${targetPath}
 Imports: ${imports.join(", ") || "none"}
 
 Structural context:
@@ -368,11 +372,11 @@ ${truncate(content, 18000)}`
     }
   ], options);
 
-  const basis = analysisBasis(context, [{ path: repo.path, content, imports, blobSha: currentFile.sha, size: currentFile.size }], resultInputDigest);
-  const result = { path: repo.path, summary, sources: [{ path: repo.path, blobSha: currentFile.sha }], branch: context.branch, basis };
+  const basis = analysisBasis(context, [{ path: targetPath, content, imports, blobSha: currentFile.sha, size: currentFile.size }], resultInputDigest);
+  const result = { path: targetPath, summary, sources: [{ path: targetPath, blobSha: currentFile.sha }], branch: context.branch, basis };
   const record = cacheRecord("file", result, basis);
   fileExplanationCache.set(cacheKey, record);
-  if (persistResults) await persistentSet(persistentFileExplanationKey(repo, context.branch, currentFile.sha || context.snapshot.treeSha, repo.path, resultInputDigest), record);
+  if (persistResults) await persistentSet(persistentFileExplanationKey(resolvedRepo, context.branch, currentFile.sha || context.snapshot.treeSha, targetPath, resultInputDigest), record);
   return withTiming(result, timing, snapshotTiming(context.snapshot, statusForCurrentSnapshot(context.snapshot)));
 }
 
@@ -675,9 +679,14 @@ async function createSourceClient(repo: RepoRef, settings: Settings): Promise<So
   }
 }
 
-async function resolveRepoSnapshot(gh: SourceClient, repo: RepoRef, timing?: TimingCollector): Promise<{ branch: string; snapshot: RepoSnapshot }> {
+async function resolveRepoSnapshot(
+  gh: SourceClient,
+  repo: RepoRef,
+  timing?: TimingCollector
+): Promise<{ branch: string; snapshot: RepoSnapshot; resolvedRepo: RepoRef }> {
+  const resolvedRepo = await resolveSourceRepoRef(gh, repo);
   const info = await measure(timing, "githubMs", () => gh.getRepo(repo.owner, repo.repo));
-  const branch = repo.branch || info.default_branch;
+  const branch = resolvedRepo.branch || info.default_branch;
   let snapshot: RepoSnapshot;
   try {
     snapshot = await measure(timing, "githubMs", () => gh.getBranchSnapshot(repo.owner, repo.repo, branch));
@@ -693,17 +702,25 @@ async function resolveRepoSnapshot(gh: SourceClient, repo: RepoRef, timing?: Tim
     timing.timing.lastValidatedAt = new Date().toISOString();
     timing.timing.cacheStatus ??= gh.kind === "github-zip" ? "unchecked" : "fresh";
   }
-  return { branch, snapshot };
+  return { branch, snapshot, resolvedRepo };
+}
+
+async function resolveSourceRepoRef(gh: SourceClient, repo: RepoRef): Promise<RepoRef> {
+  if (!repo.refCandidates || repo.refCandidates.length <= 1) return repo;
+  if (!gh.resolveRepoRef) {
+    throw new Error("Ambiguous GitHub ref/path cannot be validated by the current source connection. Open an immutable commit URL or analyze the repository root.");
+  }
+  return gh.resolveRepoRef(repo);
 }
 
 async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: TimingCollector, persistContext = true): Promise<RepoAnalysisContext> {
-  const { branch, snapshot } = await resolveRepoSnapshot(gh, repo, timing);
+  const { branch, snapshot, resolvedRepo } = await resolveRepoSnapshot(gh, repo, timing);
   const trustedCache = persistContext && gh.kind === "github-api";
   const key = repoContextCacheKey(repo, branch, snapshot.treeSha);
   const cached = repoContextCache.get(key);
   if (cached) {
     if (timing) timing.timing.sourceCacheHit ??= true;
-    return { ...cached, snapshot };
+    return { ...cached, snapshot, resolvedRepo };
   }
 
   const persisted = trustedCache ? await persistentRead<CacheRecord<RepoAnalysisContext>>(persistentTreeKey(repo, branch, snapshot.treeSha)) : { hit: false };
@@ -712,7 +729,7 @@ async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: 
       timing.timing.sourceCacheHit ??= true;
       timing.timing.persistentCacheHit ??= true;
     }
-    const context = { ...persisted.value.value, branch, snapshot };
+    const context = { ...persisted.value.value, branch, snapshot, resolvedRepo };
     repoContextCache.set(key, context);
     return context;
   }
@@ -721,7 +738,7 @@ async function getRepoAnalysisContext(gh: SourceClient, repo: RepoRef, timing?: 
   const usefulFiles = files.filter((file) => file.type === "blob" && isUsefulPath(file.path));
   const profile = detectProjectProfile(usefulFiles);
   const treeSummary = summarizeTree(usefulFiles);
-  const context = { branch, snapshot, files, usefulFiles, profile, treeSummary };
+  const context = { resolvedRepo, branch, snapshot, files, usefulFiles, profile, treeSummary };
   repoContextCache.set(key, context);
   if (trustedCache) {
     await persistentSet(

@@ -128,6 +128,14 @@ export function clearResponseTimeout(response: Response): void {
   responseDeadlines.delete(response);
 }
 
+export async function discardResponse(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel().catch(() => {});
+  } finally {
+    clearResponseTimeout(response);
+  }
+}
+
 export async function readResponseStreamChunk(
   response: Response,
   reader: ReadableStreamDefaultReader<Uint8Array>

@@ -9,13 +9,13 @@ export function parseGithubUrl(urlText: string): RepoRef | null {
   if (!owner || !repo) return null;
 
   if (marker === "blob") {
-    const { branch, path } = splitBranchAndPath(parts.slice(3), "file");
-    return { owner, repo, branch, path, pageType: "file" };
+    const selection = splitBranchAndPath(parts.slice(3), "file");
+    return { owner, repo, branch: selection.branch, path: selection.path, pageType: "file", ...candidateProperty(selection.refCandidates) };
   }
 
   if (marker === "tree") {
-    const { branch, path } = splitBranchAndPath(parts.slice(3), "directory");
-    return { owner, repo, branch, path, pageType: "directory" };
+    const selection = splitBranchAndPath(parts.slice(3), "directory");
+    return { owner, repo, branch: selection.branch, path: selection.path, pageType: "directory", ...candidateProperty(selection.refCandidates) };
   }
 
   if (marker === "pull") {
@@ -49,7 +49,10 @@ const COMMON_PATH_ROOTS = new Set([
 
 const COMMON_BRANCH_PREFIXES = new Set(["bugfix", "build", "chore", "ci", "docs", "feat", "feature", "fix", "hotfix", "refactor", "release", "test"]);
 
-function splitBranchAndPath(parts: string[], pageType: "file" | "directory"): { branch: string | undefined; path: string } {
+function splitBranchAndPath(
+  parts: string[],
+  pageType: "file" | "directory"
+): { branch: string | undefined; path: string; refCandidates?: Array<{ refName: string; path: string }> } {
   if (parts.length === 0) return { branch: undefined, path: "" };
   if (parts.length > 1 && (looksLikeCommitRef(parts[0]!) || looksLikeReleaseTag(parts[0]!))) {
     return {
@@ -60,7 +63,8 @@ function splitBranchAndPath(parts: string[], pageType: "file" | "directory"): { 
   if (parts.length > 2 && COMMON_BRANCH_PREFIXES.has(parts[0]!.toLowerCase())) {
     return {
       branch: parts.slice(0, 2).join("/"),
-      path: parts.slice(2).join("/")
+      path: parts.slice(2).join("/"),
+      refCandidates: possibleRefCandidates(parts, pageType)
     };
   }
 
@@ -68,21 +72,40 @@ function splitBranchAndPath(parts: string[], pageType: "file" | "directory"): { 
   if (pathRootIndex > 0) {
     return {
       branch: parts.slice(0, pathRootIndex).join("/"),
-      path: parts.slice(pathRootIndex).join("/")
+      path: parts.slice(pathRootIndex).join("/"),
+      refCandidates: possibleRefCandidates(parts, pageType)
     };
   }
 
   if (pageType === "file" && parts.length > 2 && looksLikeFile(parts.at(-1) ?? "")) {
     return {
       branch: parts.slice(0, -1).join("/"),
-      path: parts.at(-1) ?? ""
+      path: parts.at(-1) ?? "",
+      refCandidates: possibleRefCandidates(parts, pageType)
     };
   }
 
   return {
     branch: parts[0],
-    path: parts.slice(1).join("/")
+    path: parts.slice(1).join("/"),
+    refCandidates: possibleRefCandidates(parts, pageType)
   };
+}
+
+function possibleRefCandidates(parts: string[], pageType: "file" | "directory"): Array<{ refName: string; path: string }> | undefined {
+  const finalSplit = pageType === "file" ? parts.length - 1 : parts.length;
+  if (finalSplit < 2) return undefined;
+  return Array.from({ length: finalSplit }, (_item, index) => {
+    const split = index + 1;
+    return {
+      refName: parts.slice(0, split).join("/"),
+      path: parts.slice(split).join("/")
+    };
+  });
+}
+
+function candidateProperty(refCandidates: Array<{ refName: string; path: string }> | undefined) {
+  return refCandidates ? { refCandidates } : {};
 }
 
 function looksLikeFile(part: string): boolean {
